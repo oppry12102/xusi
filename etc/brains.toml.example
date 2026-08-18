@@ -1,0 +1,34 @@
+# ═══════════════════════════════════════════════════════════════════
+# 主密钥池模板 —— 复制为 etc/brains.toml（权限 600）并填入 api_key：
+#
+#     cp etc/brains.toml.example etc/brains.toml && chmod 600 etc/brains.toml
+#
+# etc/brains.toml 已被 .gitignore 排除，密钥永不入库。
+# 创建/改参 agent 时按所选大脑把模板（含 key）直写进该 agent 的 config.toml（600）。
+# 轮换 key：改这里后在管理界面对 agent 做任意 PATCH 触发重渲染，热重载即时生效。
+# ═══════════════════════════════════════════════════════════════════
+
+[brains.deepseek]
+api_key = ""
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+
+[brains.glm]
+api_key = ""
+base_url = "https://api.z.ai/api/coding/paas/v4"
+model = "glm-5.2"
+
+# Kimi：仅允许服务端默认 temperature → temperature = "default"（请求不带该参数）
+[brains.kimi]
+api_key = ""
+base_url = "https://api.kimi.com/coding/v1"
+model = "kimi-k3"
+temperature = "default"
+
+[brains.minimax]
+api_key = ""
+base_url = "https://api.minimaxi.com/v1"
+model = "MiniMax-M3"
+
+# 新增一家：再写一个 [brains.<名字>] 表（OpenAI 兼容 /chat/completions 即可）。
+# 可选字段：timeout（秒，默认 180）、tier、price_prompt / price_completion（CNY/1K tokens，观测用）

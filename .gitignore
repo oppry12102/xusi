@@ -1,0 +1,17 @@
+# ═══ 密钥与运行时数据 —— 永不入库 ═══
+# 四家 LLM 的 api_key（用 brains.toml.example 起手）
+etc/brains.toml
+# 管理面 token（admin/user）
+etc/tokens.json
+# 注册表（含各 agent 的观察台 token）
+etc/agents.json
+# 管理操作审计
+etc/audit.jsonl
+# agent 实例目录（config.toml 含 key、data/ 含 token 与会话）
+instances/
+
+# ═══ 环境与杂物 ═══
+.venv/
+__pycache__/
+*.pyc
+*.tmp

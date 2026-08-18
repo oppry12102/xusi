@@ -1,0 +1,17 @@
+# ═══════════════════════════════════════════════════════════════════
+# 墟司（xusi）管理面配置
+# ═══════════════════════════════════════════════════════════════════
+
+# 管理面自身的监听地址：0.0.0.0 = 对外（voidhub / 局域网 WebUI 经此一个端口）
+# 所有 agent 的访问都经 8601 反代；agent 默认只听 127.0.0.1，不单独暴露
+[server]
+host = "0.0.0.0"
+port = 8601
+
+[manager]
+# xuseek-v2 源码目录（只读共享；agent 经 systemd-run 以 --home 挂接自己的实例目录）
+source_dir = "/home/htao/work/xuseek-v2-agent"
+# agent 端口分配段（8601 归管理面，agent 从 8602 起）
+port_range = [8602, 8699]
+# 给用户展示用的时区
+display_timezone = "Asia/Shanghai"
