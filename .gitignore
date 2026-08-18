@@ -9,6 +9,8 @@ etc/agents.json
 etc/audit.jsonl
 # agent 实例目录（config.toml 含 key、data/ 含 token 与会话）
 instances/
+# xuseek-v2 源码（自管副本：部署时从 GitHub 拉取，见 etc/xusi.toml source_repo）
+xuseek-v2/
 
 # ═══ 环境与杂物 ═══
 .venv/

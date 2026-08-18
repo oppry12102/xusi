@@ -9,8 +9,9 @@ host = "0.0.0.0"
 port = 8601
 
 [manager]
-# xuseek-v2 源码目录（只读共享；agent 经 systemd-run 以 --home 挂接自己的实例目录）
-source_dir = "/home/htao/work/xuseek-v2-agent"
+# xuseek-v2 源码：自管于本目录下（不入 git；缺失时自动从 source_repo 拉取）
+source_dir = "/home/htao/work/xusi/xuseek-v2"
+source_repo = "https://github.com/oppry12102/xuseek-v2"
 # agent 端口分配段（8601 归管理面，agent 从 8602 起）
 port_range = [8602, 8699]
 # 给用户展示用的时区

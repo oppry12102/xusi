@@ -65,10 +65,45 @@ def _listen_host(agent: dict) -> str:
 
 
 def _xuseek_sh() -> Path:
+    ensure_source()
     p = get_config().source_dir / "xuseek.sh"
     if not p.exists():
         raise AgentError(f"xuseek 源码目录无效：{get_config().source_dir}")
     return p
+
+
+def ensure_source() -> Path:
+    """确保 xuseek-v2 源码就位：自管目录缺失时自动从 GitHub 拉取。
+
+    https 匿名拉不动（私有/受限仓库）时回退 ssh（运维者已配 GitHub 密钥的场景）。
+    只在部署后第一次发生（源码随目录常驻，.gitignore 不入库）。
+    """
+    cfg = get_config()
+    if (cfg.source_dir / "xuseek.sh").exists():
+        return cfg.source_dir
+    import subprocess
+    cfg.source_dir.parent.mkdir(parents=True, exist_ok=True)
+    ssh_url = cfg.source_repo.replace("https://github.com/", "git@github.com:").rstrip("/")
+    if not ssh_url.endswith(".git"):
+        ssh_url += ".git"
+    for url in (cfg.source_repo, ssh_url):
+        try:
+            r = subprocess.run(["git", "clone", url, str(cfg.source_dir)],
+                               capture_output=True, text=True, timeout=600)
+            if r.returncode == 0 and (cfg.source_dir / "xuseek.sh").exists():
+                return cfg.source_dir
+        except Exception:
+            continue
+    raise AgentError(f"xuseek-v2 源码缺失且从 {cfg.source_repo} 拉取失败"
+                     f"（https 需认证时可手动：git clone {ssh_url} {cfg.source_dir}）")
+
+
+def _spawn_unit(agent: dict) -> None:
+    """统一拉起入口：确保源码 → systemd-run 瞬态单元（Restart=always）。"""
+    cfg = get_config()
+    ensure_source()
+    systemdctl.spawn_agent(cfg.unit_name(agent["id"]), str(cfg.source_dir),
+                           str(_home(agent)), _listen_host(agent), agent["port"])
 
 
 def _run_cli(args: list[str], timeout: float = 120) -> str:
@@ -181,8 +216,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
         # 3) 注册（期望态 running）
         registry.add_agent(rec)
         # 4) systemd 拉起（Restart=always 掉线保护）
-        systemdctl.spawn_agent(unit, str(cfg.source_dir), str(home),
-                               _listen_host(rec), port)
+        _spawn_unit(rec)
         # 5) 健康验收
         wait_health(port, agent_id)
         # 6) 签发首个观察台 token（代理注入 + 用户取用）
@@ -231,8 +265,7 @@ def start(agent_id: str) -> dict:
     unit = _unit(agent)
     state = systemdctl.unit_state(unit)
     if state != "active":
-        systemdctl.spawn_agent(unit, str(get_config().source_dir),
-                               str(_home(agent)), _listen_host(agent), agent["port"])
+        _spawn_unit(agent)
         wait_health(agent["port"], agent_id)
     registry.update_agent(agent_id, {"desired_state": "running"})
     audit("agent.start", agent=agent_id)
@@ -290,8 +323,7 @@ def restart(agent_id: str) -> dict:
     if state == "active":
         systemdctl.restart(unit)
     else:
-        systemdctl.spawn_agent(unit, str(get_config().source_dir),
-                               str(_home(agent)), _listen_host(agent), agent["port"])
+        _spawn_unit(agent)
     wait_health(agent["port"], agent_id)
     registry.update_agent(agent_id, {"desired_state": "running"})
     audit("agent.restart", agent=agent_id)
@@ -395,8 +427,7 @@ def _respawn(agent: dict) -> None:
     unit = _unit(agent)
     if systemdctl.unit_state(unit) == "active":
         systemdctl.stop(unit)
-    systemdctl.spawn_agent(unit, str(get_config().source_dir), str(_home(agent)),
-                           _listen_host(agent), agent["port"])
+    _spawn_unit(agent)
     wait_health(agent["port"], agent["id"])
 
 
@@ -554,16 +585,12 @@ def reconcile() -> list[dict]:
             if desired == "running":
                 if state != "active":
                     if state == "not-found" or state == "inactive" or state == "failed":
-                        systemdctl.spawn_agent(unit, str(get_config().source_dir),
-                                               str(_home(agent)), _listen_host(agent),
-                                               agent["port"])
+                        _spawn_unit(agent)
                         wait_health(agent["port"], agent["id"], timeout=60)
                         action = "respawned"
             elif desired == "paused":
                 if state != "active":
-                    systemdctl.spawn_agent(unit, str(get_config().source_dir),
-                                           str(_home(agent)), _listen_host(agent),
-                                           agent["port"])
+                    _spawn_unit(agent)
                     wait_health(agent["port"], agent["id"], timeout=60)
                     action = "respawned"
                 systemdctl.kill_signal(unit, "SIGSTOP")

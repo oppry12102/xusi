@@ -31,7 +31,8 @@ class XusiConfig:
     port: int = 8601
     port_lo: int = 8602          # agent 端口分配下界（8601 归管理面）
     port_hi: int = 8699
-    source_dir: Path = Path.home() / "work/xuseek-v2-agent"   # xuseek-v2 源码（只读共享）
+    source_dir: Path = ROOT / "xuseek-v2"   # xuseek-v2 源码（自管：缺失时从 GitHub 拉取）
+    source_repo: str = "https://github.com/oppry12102/xuseek-v2"
     display_timezone: str = "Asia/Shanghai"
 
     # —— 派生路径 ——
@@ -76,6 +77,8 @@ def load_config() -> XusiConfig:
     cfg.port_lo, cfg.port_hi = int(lo), int(hi)
     if "source_dir" in mgr:
         cfg.source_dir = Path(os.path.expanduser(str(mgr["source_dir"]))).resolve()
+    if "source_repo" in mgr:
+        cfg.source_repo = str(mgr["source_repo"])
     if "display_timezone" in mgr:
         cfg.display_timezone = str(mgr["display_timezone"])
     cfg.ensure_dirs()

@@ -55,6 +55,10 @@ WantedBy=default.target
 
 def cmd_install(args) -> int:
     py = _ensure_venv()
+    # xuseek-v2 源码：自管于本目录下，缺失时从 GitHub 拉取（etc/xusi.toml source_repo）
+    from . import agentops
+    src = agentops.ensure_source()
+    print(f"==> xuseek-v2 源码就位：{src}")
     # 密钥池起手：etc/brains.toml 不存在时从模板复制（空 key，600）——clone 后的第一步引导
     cfg = get_config()
     if not cfg.brains_file.exists():
@@ -159,8 +163,11 @@ def cmd_doctor(_args) -> int:
     print(f"墟司 doctor（v{__version__}，root={ROOT}）")
     check("systemd 用户会话", subprocess.run(
         ["systemctl", "--user", "is-system-running"], capture_output=True).returncode in (0, 1))
-    check("xuseek 源码目录", (cfg.source_dir / "xuseek.sh").exists(), str(cfg.source_dir))
-    check("xuseek 源码 venv 可用", (cfg.source_dir / ".venv" / "bin" / "python").exists())
+    src_ok = (cfg.source_dir / "xuseek.sh").exists()
+    check("xuseek-v2 源码（自管）", src_ok,
+          f"{cfg.source_dir}" + ("" if src_ok else f"（缺失；创建 agent 时自动从 {cfg.source_repo} 拉取）"))
+    check("xuseek 源码 venv 可用", (cfg.source_dir / ".venv" / "bin" / "python").exists()
+          or not src_ok, "首次 spawn 时由 xuseek.sh 自动构建")
     pool = brains.pool_summary()
     check("密钥池至少一家可用", any(b["has_key"] for b in pool),
           f"{len(pool)} 家：{', '.join(b['name'] + ('(有key)' if b['has_key'] else '(缺key)') for b in pool)}")

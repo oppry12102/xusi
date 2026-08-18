@@ -21,8 +21,13 @@
 git clone <本仓库> && cd xusi
 cp etc/brains.toml.example etc/brains.toml && chmod 600 etc/brains.toml
 vim etc/brains.toml          # 填入各家 api_key（至少一家）
-python3 -m xusi install      # 建 venv → 装 systemd 服务 → 打印 admin token
+python3 -m xusi install      # 建 venv → 拉取 xuseek-v2 源码 → 装 systemd 服务 → 打印 admin token
 ```
+
+**xuseek-v2 源码自管**：`install`（或首次创建 agent 时）自动从
+`https://github.com/oppry12102/xuseek-v2` 克隆到本目录 `xuseek-v2/`（.gitignore
+不入库；`etc/xusi.toml` 的 `source_repo` 可改源）。不依赖机器上任何外部目录。
+升级：`cd xuseek-v2 && git pull` 后逐个 restart agent。
 
 ## 三分钟上手
 
@@ -40,6 +45,7 @@ python3 -m xusi doctor                       # 环境自检
 认证后点「＋ 新建 agent」。
 
 给外部用户/App 的接入方式见 [`docs/api.md`](docs/api.md)（也在线提供：`GET /api/docs.md`）。
+小型实验任务的现成 mission 见 [`docs/mission-examples.md`](docs/mission-examples.md)。
 
 ## 架构
 
@@ -104,12 +110,12 @@ xusi/
 - **密钥轮换**：改 `etc/brains.toml` → 对 agent 做任意 PATCH 触发重渲染 → 热生效。
 - **删除**：停运 → 注册表除名 → 目录移入 `instances/.trash/`（**遗留数据由管理员自行 rm**）。
 - **暴露面**：默认一切外部访问经 8601 反代；`expose=true` 才让 agent 直接监听 `0.0.0.0:<port>`。
-- **xuseek 源码升级**：`cd /home/htao/work/xuseek-v2-agent && git pull`，再逐个
+- **xuseek 源码升级**：`cd xuseek-v2 && git pull`，再逐个
   `restart`（源码只读共享，所有 agent 同时升级）。
 
 ## 与三个系统的关系
 
-- **xuseek-v2**（`~/work/xuseek-v2-agent`）：只读共享的源码；`--home` 挂接 `instances/<id>`。
+- **xuseek-v2**（本目录 `xuseek-v2/`）：自管源码副本，从 GitHub 拉取（见上）；`--home` 挂接 `instances/<id>`。
 - **观墟台 voidhub**（`~/work/voidhub`）：App 无需改动——host=服务器IP、port=8601、
   token=agent 观察台 token（token 路由自动定向到对应 agent）。
 - **管理面 token 与 agent token 的分工**：前者认证"谁能用管理面/哪些 agent"，
