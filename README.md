@@ -4,44 +4,19 @@
 > token 签发，**单一对外端口（8601）反代所有 agent**。外部安卓 App（观墟台 voidhub）
 > 与本地 WebUI 走同一套带 token 鉴权的接口。
 
-## 从 GitHub 部署（密钥安全）
-
-仓库**不含任何密钥**——`.gitignore` 排除了所有密钥与运行时数据：
-
-| 文件/目录 | 内容 | 入库？ |
-|---|---|---|
-| `etc/brains.toml` | 四家 LLM 的 api_key | ❌（模板 `etc/brains.toml.example` 入库） |
-| `etc/tokens.json` | 管理面 token | ❌（`install` 首次自动生成） |
-| `etc/agents.json` / `etc/audit.jsonl` | 注册表（含 agent token）/ 审计 | ❌（运行时生成） |
-| `instances/` | agent 实例（config 含 key、data 含 token） | ❌ |
-
-克隆后三步起跑：
-
-```bash
-git clone <本仓库> && cd xusi
-cp etc/brains.toml.example etc/brains.toml && chmod 600 etc/brains.toml
-vim etc/brains.toml          # 填入各家 api_key（至少一家）
-python3 -m xusi install      # 建 venv → 拉取 xuseek-v2 源码 → 装 systemd 服务 → 打印 admin token
-```
-
-**xuseek-v2 源码自管**：`install`（或首次创建 agent 时）自动从
-`https://github.com/oppry12102/xuseek-v2` 克隆到本目录 `xuseek-v2/`（.gitignore
-不入库；`etc/xusi.toml` 的 `source_repo` 可改源）。不依赖机器上任何外部目录。
-升级：`cd xuseek-v2 && git pull` 后逐个 restart agent。
-
 ## 三分钟上手
 
-管理面已作为 systemd 用户服务常驻（`xusi.service`，开机自启）：
+管理面作为 systemd 用户服务常驻（`xusi.service`，开机自启）：
 
 ```bash
-systemctl --user status xusi                 # 管理面状态
-python3 -m xusi status                       # agent 一览
-python3 -m xusi doctor                       # 环境自检
+python3 -m xusi install      # 建 venv → 安装并启动 systemd 服务 → 打印 admin token
+systemctl --user status xusi # 管理面状态
+python3 -m xusi status       # agent 一览
+python3 -m xusi doctor       # 环境自检
 ```
 
 打开 `http://<服务器IP>:8601/?mtoken=<admin token>` ——URL 带 token 打开即认证
-（存本浏览器、地址栏参数自动清除），之后直接开 `http://<服务器IP>:8601/` 即可；
-也可以在页面右上角粘贴 token。token 签发时打印过一次，忘了就 `cat etc/tokens.json`。
+（存本浏览器、地址栏参数自动清除），之后直接开 `http://<服务器IP>:8601/` 即可。
 认证后点「＋ 新建 agent」。
 
 给外部用户/App 的接入方式见 [`docs/api.md`](docs/api.md)（也在线提供：`GET /api/docs.md`）。
@@ -90,32 +65,31 @@ xusi/
 │   └── webui/           单文件管理页
 ├── etc/
 │   ├── xusi.toml        监听/端口段/源码路径
-│   ├── brains.toml      主密钥池（管理员维护；600）
+│   ├── brains.toml      主密钥池（管理员维护；600，模板见 brains.toml.example）
 │   ├── agents.json      注册表（agent 档案 + 期望态 + token 记录）
 │   ├── tokens.json      管理面 token（600）
 │   └── audit.jsonl      管理操作审计
 ├── instances/<id>/      每个 agent 一个 home（config.toml, data/, workspace/）
 ├── instances/.trash/    删除后的遗留（管理员自行清理）
-└── docs/api.md          外部 API 文档
+└── docs/                api.md（外部 API 文档）· mission-examples.md（实验任务）
 ```
 
 ## 运维要点
 
 - **掉线保护（两层）**：① agent 单元 `Restart=always`——崩溃/误杀 5s 内自动拉起；
   ② 管理面启动时 reconcile——机器重启后按注册表期望态（running/stopped/paused）拉齐。
-- **暂停** = SIGSTOP 冻结（观察台暂停响应）；恰逢在途 LLM 调用时恢复后可能超时，
-  xuseek 大脑池自动故障转移。停止/重启一律优雅停，轮边界把会话落盘后再退。
+- **暂停** = SIGSTOP 冻结大脑（它自起的后台服务继续跑）；停止/重启一律优雅停，
+  轮边界把会话落盘后再退，cgroup 内子服务一并停止。
 - **改参**：mission/brains/budgets 写 config.toml 热重载（下一口呼吸生效，不打断）；
   port/expose 需重启，界面/`?apply_restart=true` 一键执行。
 - **密钥轮换**：改 `etc/brains.toml` → 对 agent 做任意 PATCH 触发重渲染 → 热生效。
-- **删除**：停运 → 注册表除名 → 目录移入 `instances/.trash/`（**遗留数据由管理员自行 rm**）。
+- **删除**：必须先显式停止（运行/暂停态拒绝删除，防误删）→ 注册表除名 →
+  目录移入 `instances/.trash/`（遗留数据由管理员自行 rm）。
 - **暴露面**：默认一切外部访问经 8601 反代；`expose=true` 才让 agent 直接监听 `0.0.0.0:<port>`。
-- **xuseek 源码升级**：`cd xuseek-v2 && git pull`，再逐个
-  `restart`（源码只读共享，所有 agent 同时升级）。
 
 ## 与三个系统的关系
 
-- **xuseek-v2**（本目录 `xuseek-v2/`）：自管源码副本，从 GitHub 拉取（见上）；`--home` 挂接 `instances/<id>`。
+- **xuseek-v2**：agent 的源码与运行时（`--home` 挂接 `instances/<id>`，目录即自主体）。
 - **观墟台 voidhub**（`~/work/voidhub`）：App 无需改动——host=服务器IP、port=8601、
   token=agent 观察台 token（token 路由自动定向到对应 agent）。
 - **管理面 token 与 agent token 的分工**：前者认证"谁能用管理面/哪些 agent"，
