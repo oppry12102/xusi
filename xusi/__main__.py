@@ -177,6 +177,19 @@ def cmd_doctor(_args) -> int:
     check("agent 端口段有富余", len(ports.available_ports(5)) >= 5,
           f"可用示例 {ports.available_ports(5)}")
     check("管理面 token 已初始化", bool(authtok.list_tokens()))
+    # agent 自建服务清单：坏条目不致命（逐级降级），只报数
+    from . import registry, services
+    n_svc = n_err = 0
+    for a in registry.list_agents():
+        svcs, errs, _ = services.merge_services(a)
+        n_svc += len(svcs); n_err += len(errs)
+        for s in svcs:
+            if cfg.port_lo <= s["port"] <= cfg.port_hi:
+                print(f"  [WARN] 服务 {a['id']}/{s['name']} 端口 {s['port']} 在 agent 分配池内"
+                      f"（建议 8700-8799），可能与新 agent 冲突")
+        for e in errs:
+            print(f"  [WARN] {a['id']} services.json：{e}")
+    print(f"  [INFO] agent 自建服务：{n_svc} 个（清单错误 {n_err} 处）")
     units = subprocess.run(["systemctl", "--user", "list-units", "xusi-a-*",
                             "--no-legend", "--plain"], capture_output=True, text=True)
     n_units = len([l for l in units.stdout.splitlines() if l.strip()])

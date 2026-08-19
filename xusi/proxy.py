@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 from fastapi import HTTPException, Request, Response
 
-from . import agentops, registry
+from . import agentops, registry, services
 
 # 逐跳头：不透传（httpx 自动解压，长度重算）
 _HOP_HEADERS = {
@@ -61,9 +61,16 @@ async def forward(request: Request, agent: dict, target_path: str, *,
                   inject_token: str | None = None,
                   keep_query: bool = True,
                   drop_params: tuple[str, ...] = ("mtoken",),
-                  extra_params: dict[str, str] | None = None) -> Response:
-    """把请求转发到 agent 的 127.0.0.1 端口。inject_token 时替换鉴权头。"""
-    url = f"http://127.0.0.1:{agent['port']}{target_path}"
+                  extra_params: dict[str, str] | None = None,
+                  port: int | None = None,
+                  base_path: str = "",
+                  prefix: str | None = None) -> Response:
+    """把请求转发到 agent 的 127.0.0.1 端口。inject_token 时替换鉴权头。
+    port 缺省 agent["port"]（观察台）；自建服务传自己的端口。
+    base_path 用于挂在子路径的服务（前拼）；prefix 非 None 时对返回的
+    HTML / 根相对 Location 做前缀重写（/svc 场景，让 /docs 这类页面经代理可用）。"""
+    real_port = port if port is not None else agent["port"]
+    url = f"http://127.0.0.1:{real_port}{base_path}{target_path}"
     params: dict[str, str] = {}
     if keep_query:
         params = {k: v for k, v in request.query_params.items()
@@ -83,20 +90,24 @@ async def forward(request: Request, agent: dict, target_path: str, *,
         resp = await client().request(request.method, url, params=params or None,
                                       headers=headers, content=body)
     except httpx.HTTPError as e:
-        raise HTTPException(502, f"agent 不可达（{agent['id']}，"
-                                 f"127.0.0.1:{agent['port']}）：{type(e).__name__}。"
+        raise HTTPException(502, f"上游不可达（agent {agent['id']}，"
+                                 f"127.0.0.1:{real_port}）：{type(e).__name__}。"
                                  f"若已暂停（SIGSTOP）属正常现象") from e
 
     out_headers = {"content-type": resp.headers.get("content-type", "application/octet-stream")}
-    for k in ("cache-control",):
+    for k in ("cache-control", "location"):
         if k in resp.headers:
             out_headers[k] = resp.headers[k]
     content = resp.content
 
-    # agent 自带观测台页面：根绝对路径 → 前缀路径（最小重写，尽力而为）
     ct = out_headers["content-type"]
     if "text/html" in ct and target_path.rstrip("/").split("?")[0].endswith("/ui"):
+        # agent 自带观测台页面：根绝对路径 → 前缀路径（最小重写，尽力而为）
         content = rewrite_html(content, agent["id"])
+    elif prefix and "text/html" in ct:
+        content = rewrite_prefixed(content, prefix)
+    if prefix and out_headers.get("location", "").startswith("/"):
+        out_headers["location"] = prefix + out_headers["location"]
 
     return Response(content=content, status_code=resp.status_code, headers=out_headers)
 
@@ -107,6 +118,15 @@ def rewrite_html(html: bytes, agent_id: str) -> bytes:
     for q in (b"'", b'"'):
         html = html.replace(q + b"/v1/", q + p + b"/v1/")
         html = html.replace(q + b"/ui/", q + p + b"/ui/")
+    return html
+
+
+def rewrite_prefixed(html: bytes, prefix: str) -> bytes:
+    """FastAPI /docs、/redoc 内联 JS 里引用的根路径 "/openapi.json" 字面量 → 前缀路径。
+    与 rewrite_html 同一手法（带引号替换，尽力而为）。"""
+    p = prefix.encode()
+    for q in (b"'", b'"'):
+        html = html.replace(q + b"/openapi.json", q + p + b"/openapi.json")
     return html
 
 
@@ -128,6 +148,22 @@ async def prefix_proxy(request: Request, agent_id: str, sub_path: str) -> Respon
         from fastapi.responses import RedirectResponse
         return RedirectResponse(str(request.url.path) + "?" + urlencode(params))
     return await forward(request, agent, target, inject_token=inject)
+
+
+async def service_proxy(request: Request, agent: dict, svc: dict, sub_path: str) -> Response:
+    """/svc/{id}/{name}/xxx → 127.0.0.1:{svc.port}{base_path}/xxx（鉴权已在 api.svc 完成）。
+
+    Authorization 一律 replace-or-drop：manifest 声明 token_file 则服务端读取替换
+    注入（每次请求实时读，agent 轮换 token 自动跟随），否则删除——客户端的管理面
+    token 绝不透传给 agent 自建服务。"""
+    target = "/" + (sub_path or "")
+    if ".." in target.split("/"):
+        raise HTTPException(400, "路径不允许包含 ..")
+    tok = services.service_token(agent, svc)
+    return await forward(request, agent, target,
+                         port=svc["port"], base_path=svc.get("base_path") or "",
+                         inject_token=tok if tok is not None else "",
+                         prefix=f"/svc/{agent['id']}/{svc['name']}")
 
 
 async def token_routed(request: Request, target_path: str) -> Response:

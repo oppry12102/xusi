@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, agentops, authtok, brains, ports, proxy, registry
+from . import __version__, agentops, authtok, brains, ports, proxy, registry, services
 from .config import get_config
 from .systemdctl import SystemdError
 
@@ -39,6 +39,12 @@ async def _agent_error(_req: Request, exc: agentops.AgentError):
 async def _systemd_error(_req: Request, exc: SystemdError):
     return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
                     status_code=500, media_type="application/json")
+
+
+@app.exception_handler(services.ServiceError)
+async def _service_error(_req: Request, exc: services.ServiceError):
+    return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
+                    status_code=400, media_type="application/json")
 
 
 def _json_str(s: str) -> str:
@@ -212,6 +218,41 @@ for _action in ("start", "stop", "pause", "resume", "restart"):
     _mk_lifecycle(_action)
 
 
+# ── agent 自建服务（services.json 发现 + 注册表登记兜底）────────────
+# 注意：本节必须在上面 _mk_observe 循环注册之前定义——Starlette 按注册顺序
+# 匹配，GET /api/agents/{id}/services 与 GET /api/agents/{id}/{what} 同形，
+# 定义在后就走不通了。
+
+class ServiceReq(BaseModel):
+    name: str = Field(min_length=1, max_length=32,
+                      description="服务名（路由键）：小写字母数字开头，可含 - _")
+    port: int = Field(ge=1, le=65535, description="服务监听的本地端口（转发走 127.0.0.1）")
+    title: str = Field("", description="显示名（缺省 = name）")
+    base_path: str = Field("", description="服务挂在子路径时的前缀（如 /api）")
+    openapi: str | bool = Field("/openapi.json", description="OpenAPI 路径；false=无自描述")
+    probe: str = Field("/", description="探活路径")
+    token_file: str = Field("", description="服务 token 文件（相对 agent home；仅服务端读取注入）")
+    readonly: bool = Field(False, description="true=管理面拦截非 GET 方法")
+    note: str = Field("", description="备注")
+
+
+@app.get("/api/agents/{agent_id}/services")
+def api_services_list(probe: bool = True, pair: tuple = Depends(require_agent)) -> dict:
+    return services.list_services(pair[0], probe=probe)
+
+
+@app.post("/api/agents/{agent_id}/services", status_code=201)
+def api_services_add(req: ServiceReq, pair: tuple = Depends(require_agent),
+                     _rec: dict = Depends(require_admin)) -> dict:
+    return services.add_registry(pair[0]["id"], req.model_dump())
+
+
+@app.delete("/api/agents/{agent_id}/services/{name}")
+def api_services_remove(name: str, pair: tuple = Depends(require_agent),
+                        _rec: dict = Depends(require_admin)) -> dict:
+    return services.remove_registry(pair[0]["id"], name)
+
+
 # ── 观察（只读）与投信 ───────────────────────────────────────────────
 
 def _mk_observe(what: str):
@@ -275,6 +316,41 @@ async def px(request: Request, agent_id: str, sub_path: str = "") -> Response:
     elif not tok or tok not in agentops.read_agent_tokens(agent):
         raise HTTPException(401, "missing or invalid token（管理面 token 或该 agent 的观察台 token）")
     return await proxy.prefix_proxy(request, agent_id, sub_path)
+
+
+@app.api_route("/svc/{agent_id}/{svc_name}/{sub_path:path}", methods=["GET", "POST",
+                  "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def svc(request: Request, agent_id: str, svc_name: str, sub_path: str = "") -> Response:
+    """agent 自建服务反代。鉴权与 /px 同构（二选一）：
+    ① 管理面 token（admin 或该 agent 范围的 user）；
+    ② 该 agent 自己的观察台 token。
+    客户端 Authorization 不透传：清单声明 token_file 则服务端替换注入，否则删除。
+    readonly 声明的服务拦非 GET；非 GET 请求写审计 svc.write。"""
+    agent = registry.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(404, f"agent 不存在: {agent_id}")
+    tok = request.query_params.get("mtoken")
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        tok = auth[7:].strip() or tok
+    rec = authtok.verify(tok) if tok else None
+    if rec:
+        if not authtok.can_access(rec, agent_id):
+            raise HTTPException(403, f"token 无权访问 agent {agent_id}")
+    elif not tok or tok not in agentops.read_agent_tokens(agent):
+        raise HTTPException(401, "missing or invalid token（管理面 token 或该 agent 的观察台 token）")
+    svc_rec = services.find_service(agent, svc_name)
+    if not svc_rec:
+        names = ", ".join(services.service_names(agent)) or "（无）"
+        raise HTTPException(404, f"服务不存在: {svc_name}（可用：{names}）")
+    if svc_rec.get("readonly") and request.method not in ("GET", "HEAD", "OPTIONS"):
+        raise HTTPException(403, f"服务 {svc_name} 已声明 readonly，禁止写方法")
+    resp = await proxy.service_proxy(request, agent, svc_rec, sub_path)
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        agentops.audit("svc.write", agent=agent_id, service=svc_name,
+                       method=request.method, path="/" + sub_path,
+                       status=resp.status_code)
+    return resp
 
 
 @app.api_route("/v1/{sub_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])

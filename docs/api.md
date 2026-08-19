@@ -188,7 +188,7 @@ curl -s -X DELETE -H "Authorization: Bearer $T" http://SERVER:8601/api/agents/{i
 
 ---
 
-## 7. 反代：外部访问 agent 的两种方式（同一端口 8601）
+## 7. 反代：外部访问 agent 的三种方式（同一端口 8601）
 
 ### 7.1 前缀路由 `/px/{agent-id}/*`（管理面 token）—— 浏览器 / 通用客户端
 
@@ -226,6 +226,42 @@ curl -s -X POST -H "Authorization: Bearer $AGENT_TOKEN" \
 > 直接暴露（`expose=true`）的 agent 也可不经反代、直连 `http://SERVER:<agent端口>` + token 访问；
 > 默认不暴露，最小化外网面。
 
+### 7.3 服务路由 `/svc/{agent-id}/{service}/*` —— agent 自建的对外 API
+
+agent（大脑）可能在 workspace 里自建对外服务（如 FastAPI 行情/交易 API），监听独立端口。
+这些服务通过 services.json 清单声明（见 §11），管理面统一收编反代：
+
+```bash
+curl -s -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/openapi.json
+curl -s -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/api/v1/status
+curl -s -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/docs        # 原生 Swagger 页（已做路径重写）
+```
+
+- **鉴权同 `/px`**：管理面 token（admin 或该 agent 范围的 user），或该 agent 的观察台 token；
+- **token 注入不变式**：客户端的 `Authorization` 一律不透传——清单声明了 `token_file`
+  则管理面服务端读取并替换注入（每次请求实时读，agent 轮换 token 自动跟随），
+  没声明则删除。**客户端的管理面 token 绝不会到达 agent 自建服务**；
+- **readonly 拦截**：清单声明 `"readonly": true` 的服务，非 GET/HEAD/OPTIONS 一律 403；
+- **写操作审计**：经 `/svc` 的非 GET 请求写 `etc/audit.jsonl`（`svc.write`：agent/service/method/path/status）；
+- 转发始终走 `127.0.0.1:{port}`；服务自带的 CORS 头被剥掉——`/svc` 实际 same-origin only；
+- 错误：404（agent 或服务名不存在，附可用服务名清单）、403（越权 / readonly 写）、
+  400（路径含 `..`）、502（服务不可达）。
+
+**服务发现端点**（WebUI「服务」tab 与 API 探索器的数据源）：
+
+```bash
+curl -s -H "Authorization: Bearer $T" http://SERVER:8601/api/agents/{id}/services
+# → {"id":"...","services":[{"name":"astock-api","port":8765,"title":"…","openapi":"/openapi.json",
+#     "source":"file|registry","auth":true,"readonly":false,"health":{"ok":true,"status":200,"ms":35},
+#     "warn":"（仅端口落在分配池内时出现）"}],"errors":[],"shadowed":[]}
+
+# 登记（admin，注册表兜底；agent 自声明的同名条目优先）/ 删除登记
+curl -s -X POST -H "Authorization: Bearer $T" -H "Content-Type: application/json" \
+     -d '{"name":"astock-api","port":8765,"token_file":"workspace/data/api_token.txt"}' \
+     http://SERVER:8601/api/agents/{id}/services
+curl -s -X DELETE -H "Authorization: Bearer $T" http://SERVER:8601/api/agents/{id}/services/{name}
+```
+
 ---
 
 ## 8. 管理面 token 的签发（服务器本地 CLI）
@@ -260,3 +296,54 @@ cd /home/htao/work/xusi
 - LLM api_key 由管理面代持（`etc/brains.toml`，600），签发给用户的 token 只授予观察台权限，接触不到 key。
 - `?mtoken=`（管理面）与 `?token=`（观察台）会进访问日志，仅建议浏览器一次性使用；脚本/App 一律用 Bearer 头。
 - 管理操作全量审计：`etc/audit.jsonl`（谁、何时、对哪个 agent、做了什么）。
+
+---
+
+## 11. services.json：agent 自建服务的自声明约定（agent → 管理面，文件通道）
+
+agent 想把自建服务（API/看板/工具页）暴露给管理面用户时，写一份清单文件即可，
+**管理面每次请求实时读取**——换端口、轮换 token、上下线，管理面自动跟随，无需重启。
+
+**文件位置**（两处任选，同名时 workspace 侧优先）：
+
+- `<instance>/workspace/data/services.json` —— 推荐：agent 的 run_shell 顺手写的位置
+- `<instance>/data/services.json`
+
+**格式**（UTF-8 JSON 数组）：
+
+```json
+[
+  {
+    "name": "astock-api",
+    "port": 8765,
+    "title": "新药模拟盘 API",
+    "base_path": "",
+    "openapi": "/openapi.json",
+    "probe": "/health",
+    "token_file": "workspace/data/api_token.txt",
+    "readonly": false,
+    "note": "任意备注"
+  }
+]
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `name` | ✓ | 路由键 `/svc/{agent-id}/{name}/*`；`^[a-z0-9][a-z0-9_-]{0,31}$`，保持稳定 |
+| `port` | ✓ | 服务监听的本地端口；管理面转发永远走 `127.0.0.1:{port}`。**建议 8700–8799**（8602–8699 是 agent 分配池，撞上会被警告） |
+| `title` | | UI 显示名，缺省 `name` |
+| `base_path` | | 服务挂在子路径时前拼（如 `/api`） |
+| `openapi` | | OpenAPI 自描述路径，缺省 `/openapi.json`；`false` = 无自描述（WebUI 转手填模式） |
+| `probe` | | 探活路径（相对 base_path），缺省 `/` |
+| `token_file` | | 服务自身的 Bearer token 文件，**相对 agent home**（如 `workspace/data/api_token.txt`）。管理面服务端读取注入，**绝不回显给客户端**；禁绝对路径与 `..` |
+| `readonly` | | `true` = 管理面拦截非 GET 写方法（403） |
+| `note` | | 备注，UI 展示 |
+
+**要点**：
+
+- 服务建议绑 `127.0.0.1`（不写 host 或显式 `--host 127.0.0.1`）——对外只经管理面 8601 这一个端口，
+  服务 token 也不必发给任何人；
+- 非法输入逐级降级不炸管理面：缺文件=空清单、坏 JSON=该文件忽略、坏条目=跳过，
+  错误信息出现在 `GET /api/agents/{id}/services` 的 `errors` 里（WebUI 服务 tab 也会显示）；
+- 有 OpenAPI 的服务（FastAPI 自带 `/openapi.json`）在 WebUI 里自动获得**动态 API 探索器**：
+  端点列表 → 按定义生成参数表单 → 发送 → 响应按 content-type 渲染（JSON 美化/表格切换、markdown 渲染）。
