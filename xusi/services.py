@@ -1,34 +1,137 @@
-"""agent 自建对外服务的发现清单：services.json 读取 + 注册表登记 + 合并 + 探活。
+"""agent 自建对外服务的发现：services.json 声明 + 动态探测兜底。
 
 文件即通道（延续 webui_tokens.json / mailbox.jsonl 先例）：agent 是自己运行时
 状态的事实源，它把自建服务写进清单，管理面每次请求实时读取——agent 换端口、
 换 token，UI 与反代自动跟随，管理面无需任何配置。
+
+但 agent 声明千差万别（端口、openapi 路径、token 文件位置，甚至压根不写清单），
+所以发现是**三层兜底**，agent 声明永远优先：
+  1. services.json 声明（权威；见下）；
+  2. openapi 路径 / token 文件未声明或声明失效时，按候选探测补齐；
+  3. 完全没声明的服务：扫 agent 单元（cgroup）内进程的监听端口，HTTP 探活后
+     以 auto-{port} 名义收编（agent 日后写清单同名端口即接管）。
+探测全部只读（HTTP GET / /proc / 文件存在性检查），不写 agent 任何文件、
+不干预其运行；网络探测只发生在列表/发现路径，反代热路径零额外开销。
+
+/svc 反代是全功能透明管道：方法放行与否由服务自己决定，管理面不替 agent 决策；
+本模块只负责"发现"，对清单本身不代登记、不代改。
 
 清单文件（UTF-8 JSON 数组，agent 自己维护，管理面只读）：
   canonical: <home>/workspace/data/services.json   （agent 的 run_shell 顺手写的地方）
   兼容:      <home>/data/services.json             （与 outbox.jsonl 的 agent→管理面通道对称）
   同名时 workspace 侧优先（agent 最新态）。
 
-另一来源是注册表 agent["services"]（管理员 WebUI 登记的兜底，文件同名条目遮蔽之）。
 非法输入逐级降级（缺文件=空清单、坏 JSON=整文件忽略、坏条目=跳过），errors 带回 UI。
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
 
 import httpx
 
-from . import agentops, registry
 from .config import get_config
 
-_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+# 服务名的唯一硬约束：能安全充当 URL 路径段（中文/大写/数字/-/_ 都行，
+# 客户端会自动 percent-encode）。禁空白与控制符、/\?#%、. 与 ..。
+_NAME_BAD_CHARS = set(" /\\?#%") | {"\t", "\r", "\n"}
 
 
-class ServiceError(RuntimeError):
-    """业务错误（登记/删除时的用户可读信息，API 层转 400）。"""
+def _name_problem(name: str) -> str | None:
+    """返回服务名不放行的原因；None = 通过。"""
+    if not (1 <= len(name) <= 64):
+        return "长度须 1–64 字符"
+    if name in (".", ".."):
+        return "不能是 . 或 .."
+    if any(c in _NAME_BAD_CHARS or ord(c) < 0x20 for c in name):
+        return "不能包含空格、控制符或 / \\ ? # %（须能安全作 URL 路径段；其余随意）"
+    return None
+
+# openapi 自描述的候选路径（声明值优先，其余按序探测）
+_OPENAPI_CANDIDATES = ("/openapi.json", "/api/openapi.json", "/v1/openapi.json",
+                       "/docs/openapi.json", "/swagger.json", "/api/swagger.json",
+                       "/v1/swagger.json")
+
+# 服务 token 文件的候选位置（相对 agent home；token_file 未声明时按序找）
+# .txt 类整个文件即 token；.json 类为 {"tokens":[{"token":…}]}（取首个启用的，admin 优先）
+_TOKEN_FILE_CANDIDATES = ("workspace/data/api_token.txt",
+                          "workspace/data/api_tokens.json",
+                          "workspace/data/service_token.txt",
+                          "workspace/data/svc_token.txt",
+                          "data/api_token.txt",
+                          "data/api_tokens.json")
+
+# 探测结果缓存（openapi_found 等）：键 (agent_id, port, 声明值)，避免列表刷新反复打服务
+_PROBE_TTL = 60.0
+_probe_cache: dict[tuple, tuple[float, dict]] = {}
+
+# ── 对外接口 playbook：创建 agent 时播种到 workspace 根（与 BOOT.md 同级，
+#    纯被动文档——统一约定全靠它告知，agent 自愿遵守，管理面不检查不强制）──
+
+PLAYBOOK_MD = r"""# 对外接口 playbook：把你的服务开放给外部（管理面反代约定）
+
+想让你自建的 HTTP 服务（API / 看板 / 工具页）被外部程序（手机 App、脚本、
+网页）访问？**写一个清单文件即可**——管理面（墟司 xusi）会自动为它提供：
+统一入口反代、服务发现、token 服务端注入。**支持本协议 = 获得对外访问入口**；
+不写清单的服务只能被管理面按端口自动收编（`auto-{端口}` 临时命名，无标题、
+无描述、可发现性差）。其余一切（技术栈、路由、鉴权细节、要不要 OpenAPI）
+由你自由发挥，管理面全功能透传、不干预。
+
+## 做法：写 `workspace/data/services.json`（UTF-8 JSON 数组，每次变更实时生效）
+
+```json
+[
+  {
+    "name": "my-api",
+    "port": 8710,
+    "title": "我的服务（UI 显示名）",
+    "base_path": "",
+    "openapi": "/openapi.json",
+    "probe": "/health",
+    "token_file": "workspace/data/api_token.txt",
+    "note": "任意备注，展示给外部用户"
+  }
+]
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `name` | ✓ | 路由键，外部入口 `/svc/<agent-id>/<name>/*`。**怎么取名叫你定**（中文/大写/数字/`-`/`_` 均可，客户端自动 URL 编码），唯一要求是能安全当 URL 路径段：不含空格与 `/ \ ? # %`、不是 `.`/`..`、1–64 字符；**保持稳定**（改了外部入口就变） |
+| `port` | ✓ | 服务监听端口。**建议 8700–8799**（8602–8699 留给 agent 观察台，撞上会告警） |
+| `title` | | 显示名，缺省 = name |
+| `base_path` | | 服务挂在子路径时前拼（如 `/api`） |
+| `openapi` | | OpenAPI 自描述路径，缺省 `/openapi.json`（FastAPI 自带）；没有就写 `false`；有则外部客户端可自动发现你的全部端点 |
+| `probe` | | 探活路径（相对 base_path），缺省 `/` |
+| `token_file` | | 服务自身的 Bearer token 文件，相对 agent home。支持两种格式：纯文本（整文件即 token）或 JSON `{"tokens":[{"token":…,"enabled":…,"role":…}]}`（取启用中的 admin）。管理面**实时读、转发时注入**，token 轮换无需通知任何人 |
+| `note` | | 备注 |
+
+## 约定要点
+
+- 服务**绑 127.0.0.1**（外部一律经管理面单端口反代，你的 token 不必发给任何人）；
+- 写完清单即生效（管理面每次请求实时读）——换端口、换 token、上下线自动跟随；
+- 客户端的管理面 token 不会传给你，你只校验自己的 token；
+- 外部调用任意方法（GET/POST/…）原样透传，放行哪些方法由你的服务自己决定；
+- 删掉清单条目 = 服务从对外入口摘除（agent 停止/服务下线也一样，探活会显示不可达）。
+"""
+
+
+def seed_playbook(workspace: Path) -> bool:
+    """把对外接口 playbook 播种进 xuseek 经验库（workspace/playbook/对外服务接入.md，
+    与 init 播种的 llm-调用/工具与环境 等基础条目同类同位，agent 的经验机制
+    会自然读到它）。已存在则不动（agent 可能已自行修改）。返回是否新写入。"""
+    d = workspace / "playbook"
+    p = d / "对外服务接入.md"
+    if p.exists():
+        return False
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        p.write_text(PLAYBOOK_MD, encoding="utf-8")
+        return True
+    except Exception:
+        return False
 
 
 def manifest_paths(agent: dict) -> list[Path]:
@@ -62,12 +165,13 @@ def _parse_manifest(p: Path) -> tuple[list[dict], list[str]]:
     return out, errs
 
 
-def validate_entry(raw: dict, source: str) -> tuple[dict | None, str | None]:
+def validate_entry(raw: dict) -> tuple[dict | None, str | None]:
     """normalize + 校验单条。通过返回脱敏条目（不含 token 内容，只有 auth 布尔），
-    不通过返回 (None, 原因)。"""
+    不通过返回 (None, 原因)。未知字段（含历史的 readonly）忽略。"""
     name = str(raw.get("name", "")).strip()
-    if not _NAME_RE.fullmatch(name):
-        return None, f"{name or '(空)'}：name 须匹配 {_NAME_RE.pattern}"
+    prob = _name_problem(name)
+    if prob:
+        return None, f"{name or '(空)'}：name {prob}"
     try:
         port = int(raw.get("port", 0))
     except (TypeError, ValueError):
@@ -95,62 +199,209 @@ def validate_entry(raw: dict, source: str) -> tuple[dict | None, str | None]:
         "openapi": openapi,
         "probe": str(raw.get("probe", "/") or "/"),
         "token_file": token_file or None,
-        "readonly": bool(raw.get("readonly", False)),
         "note": str(raw.get("note", "") or ""),
-        "source": source,          # "file"（agent 自声明）| "registry"（管理员登记）
     }, None
 
 
-def merge_services(agent: dict) -> tuple[list[dict], list[str], list[str]]:
-    """合并双来源 → (服务条目按名排序, errors, 被文件遮蔽的注册表条目名)。"""
+def merge_services(agent: dict) -> tuple[list[dict], list[str]]:
+    """读 agent 自声明清单（两个候选路径，workspace 侧同名覆盖）→ (按名排序, errors)。"""
     out: dict[str, dict] = {}
     errors: list[str] = []
     for p in manifest_paths(agent):
         entries, errs = _parse_manifest(p)
         errors.extend(errs)
         for e in entries:
-            norm, err = validate_entry(e, source="file")
+            norm, err = validate_entry(e)
             if norm is None:
                 errors.append(f"{p.parent.name}/{p.name}：{err}")
                 continue
             out[norm["name"]] = norm          # workspace 侧后读，同名覆盖
-    shadowed: list[str] = []
-    for e in agent.get("services", []) or []:
-        norm, err = validate_entry(e, source="registry")
-        if norm is None:
-            errors.append(f"注册表 services：{err}")
-            continue
-        if norm["name"] in out:
-            shadowed.append(norm["name"])    # 文件优先（agent 是运行时事实源）
-            continue
-        out[norm["name"]] = norm
-    return sorted(out.values(), key=lambda s: s["name"]), errors, shadowed
+    return sorted(out.values(), key=lambda s: s["name"]), errors
 
 
 def find_service(agent: dict, name: str) -> dict | None:
-    svcs, _, _ = merge_services(agent)
-    for s in svcs:
+    """按名定位服务（清单 + 自动发现条目；反代路由用）。"""
+    for s in merged_with_auto(agent):
         if s["name"] == name:
             return s
     return None
 
 
-def _token_path(agent: dict, svc: dict) -> Path | None:
-    if not svc.get("token_file"):
+# ── token 定位与读取：声明优先，未声明则按候选搜（位置不一致的兜底）────
+
+def read_token_file(p: Path) -> str | None:
+    """读 token 文件。.json 解析 {"tokens":[{"token":…}]} 取首个启用的
+    （role/name 含 admin 优先）；其余按纯文本（strip 后取首行）。坏/空 → None。"""
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except Exception:
         return None
-    return get_config().instance_home(agent["id"]) / svc["token_file"]
+    if p.suffix == ".json":
+        try:
+            data = json.loads(raw)
+            toks = [t for t in data.get("tokens", []) if isinstance(t, dict)
+                    and t.get("enabled", True) and t.get("token")]
+        except Exception:
+            return None
+        if not toks:
+            return None
+        best = next((t for t in toks
+                     if t.get("role") == "admin" or "admin" in str(t.get("name", ""))),
+                    toks[0])
+        return str(best["token"]).strip() or None
+    tok = raw.strip().splitlines()
+    return tok[0].strip() if tok else None
+
+
+def resolve_token_file(agent: dict, svc: dict) -> tuple[str | None, str]:
+    """定位服务 token 文件 → (相对 home 路径, 来源)。token_file 声明优先；
+    未声明按候选搜（纯文件系统操作、无网络，反代热路径每次实时做，文件出现即生效）。"""
+    home = get_config().instance_home(agent["id"])
+    if svc.get("token_file"):
+        return svc["token_file"], "manifest"
+    for rel in _TOKEN_FILE_CANDIDATES:
+        if read_token_file(home / rel) is not None:
+            return rel, "auto"
+    return None, "none"
 
 
 def service_token(agent: dict, svc: dict) -> str | None:
-    """实时读服务 token（每次转发都读，agent 轮换 token 自动跟随）。空/不可读 → None。"""
-    p = _token_path(agent, svc)
-    if p is None:
+    """实时读服务 token（文件位置由 resolve_token_file 定位——声明或自动搜索；
+    内容每次实时读，agent 轮换 token / 换文件位置自动跟随）。空/不可读 → None。"""
+    rel, _src = resolve_token_file(agent, svc)
+    if not rel:
         return None
+    return read_token_file(get_config().instance_home(agent["id"]) / rel)
+
+
+# ── 端口发现：agent 单元（cgroup）内进程的监听端口（完全未声明的服务兜底）──
+
+def _unit_procs(agent_id: str) -> list[int]:
+    """agent 瞬态单元 xusi-a-<id>.service 的全部 PID（含 agent 派生的子进程，
+    如 run_shell 拉起的自建服务）。用户级单元挂在 user@<uid>.service 之下
+    （可能在 app.slice 等子 slice 里），按 uid 定位后浅层查找；任何失败 → []
+    （降级为仅清单，绝不报错）。"""
+    uid = os.getuid()
+    unit = f"xusi-a-{agent_id}.service"
+    base = Path(f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service")
+    procs_file = None
+    for cand in (base / unit, *base.glob(f"*/{unit}"), *base.glob(f"*/*/{unit}")):
+        if (cand / "cgroup.procs").is_file():
+            procs_file = cand / "cgroup.procs"
+            break
+    if procs_file is None:
+        return []
     try:
-        tok = p.read_text(encoding="utf-8").strip()
+        return [int(x) for x in procs_file.read_text().split()]
+    except Exception:
+        return []
+
+
+def _listen_ports(pids: list[int]) -> set[int]:
+    """/proc/net/tcp(|6) 里处于 LISTEN 且 socket inode 归属这些 PID 的端口。"""
+    inodes: set[int] = set()
+    for pid in pids:
+        try:
+            fds = os.scandir(f"/proc/{pid}/fd")
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(fd.path)
+            except OSError:
+                continue
+            if target.startswith("socket:["):
+                inodes.add(int(target[8:-1]))
+    ports: set[int] = set()
+    for tbl in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(tbl).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for ln in lines:
+            f = ln.split()
+            if len(f) < 10 or f[3] != "0A":                  # 0A = TCP_LISTEN
+                continue
+            if int(f[9]) in inodes:
+                ports.add(int(f[1].split(":")[1], 16))
+    return ports
+
+
+def agent_extra_ports(agent: dict) -> set[int]:
+    """agent 进程监听的、观察台端口之外的端口（= 自建服务候选）。纯 /proc 读。"""
+    return _listen_ports(_unit_procs(agent["id"])) - {agent["port"]}
+
+
+# ── openapi 定位：声明优先，失效/未声明按候选探测（路径不一致的兜底）──
+
+def _http_get(url: str, token: str | None = None, timeout: float = 1.0):
+    headers = {"authorization": f"Bearer {token}"} if token else {}
+    try:
+        return httpx.get(url, headers=headers, timeout=timeout, follow_redirects=True)
     except Exception:
         return None
-    return tok or None
+
+
+def find_openapi(agent: dict, svc: dict) -> tuple[str | None, str]:
+    """定位可用的 OpenAPI 自描述 → (路径, 来源)。agent 显式声明 false → (None, "none")；
+    声明路径先验证，404/坏内容则按候选探测（带服务 token）；全不中 → (None, "probed-none")。
+    只在列表/发现路径调用；结果缓存 _PROBE_TTL 秒，刷新不反复打服务。"""
+    if svc.get("openapi") is False:
+        return None, "none"
+    key = ("openapi", agent["id"], svc["port"], svc.get("base_path", ""),
+           str(svc.get("openapi")))
+    now = time.monotonic()
+    hit = _probe_cache.get(key)
+    if hit and now - hit[0] < _PROBE_TTL:
+        return hit[1]["path"], hit[1]["source"]
+
+    tok = service_token(agent, svc)
+    base = f"http://127.0.0.1:{svc['port']}{svc.get('base_path', '')}"
+    declared = str(svc.get("openapi") or "/openapi.json")
+    found, source = None, "probed-none"
+    for cand in [declared] + [c for c in _OPENAPI_CANDIDATES if c != declared]:
+        r = _http_get(base + cand, token=tok)
+        if r is None:                       # 连不上（服务停了），再探无意义
+            break
+        if r.status_code != 200:
+            continue
+        try:
+            spec = json.loads(r.text)
+        except Exception:
+            continue
+        if isinstance(spec, dict) and isinstance(spec.get("paths"), dict):
+            found = cand
+            source = "manifest" if cand == declared else "probed"
+            break
+    _probe_cache[key] = (now, {"path": found, "source": source})
+    return found, source
+
+
+# ── 自动发现条目 + 合并 ───────────────────────────────────────────────
+
+def auto_services(agent: dict, *, http_check: bool = True) -> list[dict]:
+    """完全未声明的监听端口 → 候补服务条目（auto-{port}）。http_check 时做 HTTP
+    探活（列表路径用，过滤非 HTTP 的内部 socket）；反代路由路径省略（省网络开销，
+    服务死活由转发结果自然反映）。agent 日后在清单声明同端口即被清单条目接管。"""
+    out: list[dict] = []
+    for port in sorted(agent_extra_ports(agent)):
+        if http_check:
+            r = _http_get(f"http://127.0.0.1:{port}/")
+            if r is None or r.status_code >= 500:
+                continue
+        out.append({"name": f"auto-{port}", "port": port,
+                    "title": f"自动发现 :{port}", "base_path": "",
+                    "openapi": None, "probe": "/", "token_file": None,
+                    "note": "管理面自动发现（agent 未在 services.json 声明）"})
+    return out
+
+
+def merged_with_auto(agent: dict) -> list[dict]:
+    """清单 + 自动发现（端口去重：清单声明的端口吃掉 auto 条目——agent 声明优先）。"""
+    svcs, _errs = merge_services(agent)
+    declared_ports = {s["port"] for s in svcs}
+    return svcs + [s for s in auto_services(agent, http_check=False)
+                   if s["port"] not in declared_ports]
 
 
 def probe_service(svc: dict) -> dict:
@@ -166,61 +417,26 @@ def probe_service(svc: dict) -> dict:
 
 
 def list_services(agent: dict, *, probe: bool = True) -> dict:
-    """清单聚合（API 端点用）：合并 + auth 标记 + 端口池警告 + 可选探活。"""
+    """发现聚合（API 端点用）：清单 + 自动发现 + token/openapi 动态解析标记
+    + 端口池警告 + 可选探活。"""
     cfg = get_config()
-    svcs, errors, shadowed = merge_services(agent)
+    svcs, errors = merge_services(agent)
+    declared_ports = {s["port"] for s in svcs}
     out = []
-    for s in svcs:
+    for s in svcs + [x for x in auto_services(agent) if x["port"] not in declared_ports]:
         row = dict(s)
+        row["auto"] = s["name"].startswith("auto-")
+        _rel, tok_src = resolve_token_file(agent, s)
         row["auth"] = service_token(agent, s) is not None
+        row["token_source"] = tok_src
+        row["openapi_found"], row["openapi_source"] = find_openapi(agent, s)
         if cfg.port_lo <= s["port"] <= cfg.port_hi:
             row["warn"] = f"端口 {s['port']} 在管理面分配池 [{cfg.port_lo},{cfg.port_hi}] 内，可能与新 agent 冲突（建议 8700-8799）"
         if probe:
             row["health"] = probe_service(s)
         out.append(row)
-    return {"id": agent["id"], "services": out, "errors": errors, "shadowed": shadowed}
-
-
-# ── 注册表登记（管理员兜底；agent 自声明走文件）────────────────────
-
-def add_registry(agent_id: str, req: dict) -> dict:
-    agent = registry.get_agent(agent_id)
-    if not agent:
-        raise ServiceError(f"agent 不存在: {agent_id}")
-    norm, err = validate_entry(req, source="registry")
-    if norm is None:
-        raise ServiceError(f"服务条目非法：{err}")
-    cfg = get_config()
-    if norm["port"] == cfg.port:
-        raise ServiceError(f"端口 {norm['port']} 是管理面自身端口")
-    used = registry.used_ports()
-    if norm["port"] in used:
-        raise ServiceError(f"端口 {norm['port']} 已被 agent {used[norm['port']]} 占用")
-    entries = [e for e in (agent.get("services") or []) if e.get("name") != norm["name"]]
-    keep = [{k: v for k, v in e.items() if k not in ("source", "auth", "health", "warn")}
-            for e in entries]
-    registry.update_agent(agent_id, {"services": keep + [req]})
-    agentops.audit("service.add", agent=agent_id, name=norm["name"], port=norm["port"])
-    return list_services(registry.get_agent(agent_id) or agent)
-
-
-def remove_registry(agent_id: str, name: str) -> dict:
-    agent = registry.get_agent(agent_id)
-    if not agent:
-        raise ServiceError(f"agent 不存在: {agent_id}")
-    reg_entries = agent.get("services") or []
-    if not any(e.get("name") == name for e in reg_entries):
-        # 注册表里没有：若文件里自声明了，提醒找 agent；否则就是这个名字不存在
-        svc = find_service(agent, name)
-        if svc and svc["source"] == "file":
-            raise ServiceError(f"服务 {name} 由 agent 在 services.json 里自声明，管理面不代改——请投信让 agent 修改")
-        raise ServiceError(f"注册表里没有服务 {name}")
-    entries = [e for e in reg_entries if e.get("name") != name]
-    registry.update_agent(agent_id, {"services": entries})
-    agentops.audit("service.remove", agent=agent_id, name=name)
-    return list_services(registry.get_agent(agent_id) or agent)
+    return {"id": agent["id"], "services": out, "errors": errors}
 
 
 def service_names(agent: dict) -> list[str]:
-    svcs, _, _ = merge_services(agent)
-    return [s["name"] for s in svcs]
+    return [s["name"] for s in merged_with_auto(agent)]

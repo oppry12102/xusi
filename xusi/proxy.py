@@ -1,12 +1,15 @@
 """反代核心：单一对外端口（管理面端口）承载所有 agent 的观察台访问。
 
-两种路由，同一端口：
+三种路由，同一端口：
 1. 前缀路由 /px/{agent-id}/* —— 管理面 token 鉴权（admin 或该 agent 范围的
    user），转发时自动注入该 agent 的观察台 token，客户端无需持有第二层 token；
    agent 自带的 /ui/ 页面做最小 HTML 路径重写 + 自动带 token，经代理可用。
 2. token 路由（根路径 /v1/*、/ui/*）—— 凭 agent 观察台 token 实时定向到
    所属 agent，原样透传。voidhub App（host+port+token 形态）零改动接入：
    host=服务器IP、port=管理面端口、token=该 agent 的观察台 token。
+3. 服务路由 /svc/{agent-id}/{服务名}/* —— agent 自建服务的**全功能透明**
+   反代：任意方法与请求体原样转发、响应流式回传；方法放行与否由服务自己
+   决定，管理面只做鉴权、token 注入与被动审计（不替 agent 决策）。
 
 manager 对 agent 的转发只到 127.0.0.1（无论 agent 是否对外暴露）。
 """
@@ -16,14 +19,25 @@ from typing import Any
 
 import httpx
 from fastapi import HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 
 from . import agentops, registry, services
 
-# 逐跳头：不透传（httpx 自动解压，长度重算）
+# 请求侧不透传的头（httpx 自动解压请求体无意义，长度重算）
 _HOP_HEADERS = {
     "connection", "keep-alive", "transfer-encoding", "upgrade", "te",
     "trailers", "proxy-authenticate", "proxy-authorization",
     "content-encoding", "content-length", "host",
+}
+
+# 响应侧不透传的头：逐跳 + content-length（流式重分块）+ date/server
+# （uvicorn 自加，防重复）。content-encoding 流式保留（压缩直传），
+# 缓冲改写路径丢弃（httpx 已解压）。其余全透传——上游 CORS 等可达客户端。
+_DROP_RESP_HEADERS = {
+    "connection", "keep-alive", "transfer-encoding", "upgrade", "te",
+    "trailers", "proxy-authenticate", "proxy-authorization",
+    "content-length", "date", "server",
 }
 
 _client: httpx.AsyncClient | None = None
@@ -64,11 +78,17 @@ async def forward(request: Request, agent: dict, target_path: str, *,
                   extra_params: dict[str, str] | None = None,
                   port: int | None = None,
                   base_path: str = "",
-                  prefix: str | None = None) -> Response:
-    """把请求转发到 agent 的 127.0.0.1 端口。inject_token 时替换鉴权头。
-    port 缺省 agent["port"]（观察台）；自建服务传自己的端口。
-    base_path 用于挂在子路径的服务（前拼）；prefix 非 None 时对返回的
-    HTML / 根相对 Location 做前缀重写（/svc 场景，让 /docs 这类页面经代理可用）。"""
+                  prefix: str | None = None,
+                  timeout: httpx.Timeout | None = None) -> Response:
+    """把请求转发到 agent 的 127.0.0.1 端口（透明管道：任意方法与请求体
+    原样转发）。inject_token 时替换鉴权头。port 缺省 agent["port"]（观察台）；
+    自建服务传自己的端口。base_path 用于挂在子路径的服务（前拼）；prefix
+    非 None 时对返回的 HTML / 根相对 Location 做前缀重写（/svc 场景，让
+    /docs 这类页面经代理可用）。timeout 缺省用客户端默认（读 30s），自建
+    服务传长读超时（长任务 POST / SSE）。
+
+    响应除需改写的 HTML（/px 的 /ui 页、/svc 前缀下的 docs 页）缓冲处理外，
+    一律流式回传——SSE / 分块 / 大响应原样通过，不被整包缓冲掐断。"""
     real_port = port if port is not None else agent["port"]
     url = f"http://127.0.0.1:{real_port}{base_path}{target_path}"
     params: dict[str, str] = {}
@@ -86,30 +106,64 @@ async def forward(request: Request, agent: dict, target_path: str, *,
             headers["authorization"] = f"Bearer {inject_token}"
 
     body = await request.body()
+    req = client().build_request(request.method, url, params=params or None,
+                                 headers=headers, content=body, timeout=timeout)
     try:
-        resp = await client().request(request.method, url, params=params or None,
-                                      headers=headers, content=body)
+        resp = await client().send(req, stream=True)
     except httpx.HTTPError as e:
         raise HTTPException(502, f"上游不可达（agent {agent['id']}，"
                                  f"127.0.0.1:{real_port}）：{type(e).__name__}。"
                                  f"若已暂停（SIGSTOP）属正常现象") from e
 
-    out_headers = {"content-type": resp.headers.get("content-type", "application/octet-stream")}
-    for k in ("cache-control", "location"):
-        if k in resp.headers:
-            out_headers[k] = resp.headers[k]
-    content = resp.content
+    # 响应头：multi_items 保重复头（如 set-cookie），location 做前缀重写
+    out_headers = [(k, v) for k, v in resp.headers.multi_items()
+                   if k.lower() not in _DROP_RESP_HEADERS]
+    if not any(k.lower() == "content-type" for k, _ in out_headers):
+        out_headers.append(("content-type", "application/octet-stream"))
+    if prefix:
+        out_headers = [(k, prefix + v if k.lower() == "location" and v.startswith("/") else v)
+                       for k, v in out_headers]
 
-    ct = out_headers["content-type"]
+    ct = resp.headers.get("content-type", "")
     if "text/html" in ct and target_path.rstrip("/").split("?")[0].endswith("/ui"):
         # agent 自带观测台页面：根绝对路径 → 前缀路径（最小重写，尽力而为）
-        content = rewrite_html(content, agent["id"])
-    elif prefix and "text/html" in ct:
-        content = rewrite_prefixed(content, prefix)
-    if prefix and out_headers.get("location", "").startswith("/"):
-        out_headers["location"] = prefix + out_headers["location"]
+        content = rewrite_html(await resp.aread(), agent["id"])
+        await resp.aclose()
+        return _buf_resp(content, resp.status_code, out_headers)
+    if prefix and "text/html" in ct:
+        content = rewrite_prefixed(await resp.aread(), prefix)
+        await resp.aclose()
+        return _buf_resp(content, resp.status_code, out_headers)
 
-    return Response(content=content, status_code=resp.status_code, headers=out_headers)
+    # 流式回传（含压缩原样直传）；BackgroundTask 保证上游连接必被释放
+    heads, extra = _split_headers(out_headers)
+    out = StreamingResponse(resp.aiter_raw(), status_code=resp.status_code,
+                            headers=heads, background=BackgroundTask(resp.aclose))
+    out.raw_headers.extend(extra)
+    return out
+
+
+def _split_headers(pairs: list[tuple[str, str]]
+                   ) -> tuple[dict[str, str], list[tuple[bytes, bytes]]]:
+    """starlette Response 的 headers 参数只收 Mapping（重复键会被 dict 吞）——
+    首个键值进 dict，重复键（如多个 set-cookie）以 raw 对返回、事后追加。"""
+    first: dict[str, str] = {}
+    extra: list[tuple[bytes, bytes]] = []
+    for k, v in pairs:
+        if k in first:
+            extra.append((k.lower().encode("latin-1"), v.encode("latin-1")))
+        else:
+            first[k] = v
+    return first, extra
+
+
+def _buf_resp(content: bytes, status: int, pairs: list[tuple[str, str]]) -> Response:
+    """缓冲路径的响应：去掉 content-encoding（httpx aread 已解压）。"""
+    heads, extra = _split_headers(
+        [(k, v) for k, v in pairs if k.lower() != "content-encoding"])
+    out = Response(content=content, status_code=status, headers=heads)
+    out.raw_headers.extend(extra)
+    return out
 
 
 def rewrite_html(html: bytes, agent_id: str) -> bytes:
@@ -153,9 +207,10 @@ async def prefix_proxy(request: Request, agent_id: str, sub_path: str) -> Respon
 async def service_proxy(request: Request, agent: dict, svc: dict, sub_path: str) -> Response:
     """/svc/{id}/{name}/xxx → 127.0.0.1:{svc.port}{base_path}/xxx（鉴权已在 api.svc 完成）。
 
+    全功能透明转发：任意方法与请求体原样过，方法放行与否由服务自己决定。
     Authorization 一律 replace-or-drop：manifest 声明 token_file 则服务端读取替换
     注入（每次请求实时读，agent 轮换 token 自动跟随），否则删除——客户端的管理面
-    token 绝不透传给 agent 自建服务。"""
+    token 绝不透传给 agent 自建服务。读超时放宽到 600s（长任务 POST / SSE）。"""
     target = "/" + (sub_path or "")
     if ".." in target.split("/"):
         raise HTTPException(400, "路径不允许包含 ..")
@@ -163,7 +218,8 @@ async def service_proxy(request: Request, agent: dict, svc: dict, sub_path: str)
     return await forward(request, agent, target,
                          port=svc["port"], base_path=svc.get("base_path") or "",
                          inject_token=tok if tok is not None else "",
-                         prefix=f"/svc/{agent['id']}/{svc['name']}")
+                         prefix=f"/svc/{agent['id']}/{svc['name']}",
+                         timeout=httpx.Timeout(600.0, connect=5.0))
 
 
 async def token_routed(request: Request, target_path: str) -> Response:

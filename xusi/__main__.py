@@ -181,7 +181,7 @@ def cmd_doctor(_args) -> int:
     from . import registry, services
     n_svc = n_err = 0
     for a in registry.list_agents():
-        svcs, errs, _ = services.merge_services(a)
+        svcs, errs = services.merge_services(a)
         n_svc += len(svcs); n_err += len(errs)
         for s in svcs:
             if cfg.port_lo <= s["port"] <= cfg.port_hi:

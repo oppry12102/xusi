@@ -41,6 +41,9 @@
   .b-err{background:#fae5e5;color:var(--err)} .b-exp{background:#fdf3e1;color:var(--warn)}
   .row{display:flex;gap:8px;flex-wrap:wrap;color:var(--sub);font-size:12.5px;align-items:center}
   .chip{background:#f0f2f7;border-radius:6px;padding:0 7px;font-size:12px;color:var(--ink)}
+  .chip.bcur{background:#eaf0fb;color:var(--acc);font-weight:700}
+  .chip.bsw{cursor:pointer}
+  .chip.bsw:hover{background:#eaf0fb;color:var(--acc)}
   .mono{font-family:var(--mono)}
   .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
   .acts button{padding:4px 10px;font-size:12.5px}
@@ -81,6 +84,15 @@
   .ev .t{color:var(--sub);font-family:var(--mono);font-size:11.5px}
   .mailrow{padding:7px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:7px;font-size:13px}
   .mailrow .t{color:var(--sub);font-size:11.5px;font-family:var(--mono)}
+  /* 呼吸（会话）总结列表：点行展开全文 */
+  details.sessrow{border:1px solid var(--line);border-radius:8px;margin-bottom:7px;overflow:hidden}
+  details.sessrow summary{cursor:pointer;padding:7px 10px;font-size:12.5px;display:flex;gap:8px;
+      align-items:center;flex-wrap:wrap;list-style:none;color:var(--ink)}
+  details.sessrow summary::-webkit-details-marker{display:none}
+  details.sessrow summary:hover{background:#f6f7fa}
+  details.sessrow[open] summary{border-bottom:1px solid var(--line);background:#f9fafc}
+  .sessbody{padding:8px 12px}
+  .sesskv{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;font-size:11.5px;color:var(--sub)}
   .tokrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dashed var(--line)}
   .tokrow code{font-family:var(--mono);font-size:11.5px;word-break:break-all;flex:1}
   .sendbox{display:flex;gap:8px;margin:10px 0}
@@ -113,10 +125,24 @@
   .fld input,.fld select,.fld textarea{flex:1}
   .fld input[type=checkbox]{flex:none}
   .respbar{display:flex;gap:12px;align-items:baseline;font-size:12.5px;color:var(--sub);flex-wrap:wrap}
+  .vbar{display:flex;gap:6px;margin:2px 0 8px}
+  .vbar button{padding:3px 11px;font-size:12.5px}
+  .vbar button.on{border-color:var(--acc);color:var(--acc);background:#eaf0fb}
   table.jt{border-collapse:collapse;font-size:12px;margin-top:6px}
   table.jt th,table.jt td{border:1px solid var(--line);padding:4px 8px;text-align:left;max-width:280px;
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   table.jt th{background:#f6f7fa;font-weight:600}
+  table.jt th.dim{color:var(--sub);font-weight:400;font-style:italic}
+  details.cell summary{cursor:pointer;color:var(--acc);font-size:11.5px;list-style:none}
+  details.cell summary::-webkit-details-marker{display:none}
+  details.cell pre{margin:6px 0 2px;font-size:11px;white-space:pre-wrap;word-break:break-all;
+      max-width:360px;max-height:220px;overflow:auto;background:#f6f7fa;border-radius:6px;padding:8px}
+  .mdcard{border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:10px}
+  .mdmeta{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+  .mdsec{margin:8px 0 2px}
+  .mdsec .secl{font-size:11.5px;color:var(--sub);margin-bottom:2px}
+  .mdsec ul{margin:2px 0;padding-left:1.5em}
+  .mdsec li p{margin:0}
   .md{line-height:1.7;font-size:13.5px}
   .md h1,.md h2,.md h3,.md h4{margin:.7em 0 .35em}
   .md h1{font-size:1.35em}.md h2{font-size:1.2em}.md h3{font-size:1.08em}
@@ -143,7 +169,7 @@
 <main>
   <div class="bar">
     <span class="hint" id="summary"></span>
-    <span class="hint" style="margin-left:auto">每 15s 自动刷新 · 观察操作全程只读</span>
+    <span class="hint" style="margin-left:auto">看板每 15s 自动刷新（打开详情时暂停，观察/操作不被打扰）</span>
   </div>
   <div id="login-tip" hidden>
     <p style="font-size:15px;color:var(--ink)">请打开带 token 的链接认证（推荐）</p>
@@ -189,11 +215,41 @@
 <!-- 详情抽屉 -->
 <div id="drawer">
   <div class="dh"><span class="nm" id="d-nm"></span><span class="aid mono" id="d-id" style="color:var(--sub);font-size:12px"></span>
-    <a id="d-ui" href="#" target="_blank" style="margin-left:auto;font-size:12.5px">观测台 ↗</a>
+    <button id="d-refresh" onclick="loadDetail()" style="margin-left:auto" title="手动刷新（详情打开期间自动刷新已暂停，数据不会被刷掉）">⟳</button>
+    <button id="d-edit" onclick="openEdit(cur)" hidden>✎ 改参</button>
+    <a id="d-ui" href="#" target="_blank" style="font-size:12.5px">观测台 ↗</a>
     <button onclick="drawer.classList.remove('open')">✕</button></div>
   <div id="tabs"></div>
   <div id="pane"></div>
 </div>
+
+<!-- 改参对话框 -->
+<dialog id="dlg-edit">
+  <div class="dlg-h">改参 <button onclick="dlgEdit.close()">✕</button></div>
+  <div class="dlg-b">
+    <div><label>名称</label><input id="e-name" type="text"></div>
+    <div><label>使命 mission（热生效：下一口呼吸起 agent 围绕新使命工作）</label>
+      <textarea id="e-mission"></textarea></div>
+    <div><label>大脑（勾选参与的大脑；<b>默认大脑 = 列表中第一个勾选的</b>，顺序 = 故障转移序；
+      勾选变化热生效。日常切默认可直接在看板卡片上点大脑徽章）</label>
+      <div id="e-brains" class="check"></div></div>
+    <div style="display:flex;gap:12px">
+      <div style="flex:1"><label>端口（改端口需重启进程）</label>
+        <select id="e-port"></select></div>
+      <div style="flex:1;display:flex;align-items:end"><div class="switch">
+        <input id="e-expose" type="checkbox"><label for="e-expose" style="margin:0">暴露外网（改后需重启）</label>
+      </div></div>
+    </div>
+    <div><label>备注（可选）</label><input id="e-note" type="text"></div>
+    <div id="e-err" class="err"></div>
+    <div class="hint" style="color:var(--sub);font-size:12px">
+      mission / 大脑 / 备注 为热改参：写注册表并重渲染 config.toml，agent 下一口呼吸自动重读，不打断运行中的会话；
+      端口 / 暴露开关 改的是监听参数，需重启进程（提交时询问）。
+    </div>
+  </div>
+  <div class="dlg-f"><button onclick="dlgEdit.close()">取消</button>
+    <button id="btn-edit-save" class="pri">保存</button></div>
+</dialog>
 
 <!-- API 探索器（全宽覆盖层，覆盖在抽屉之上） -->
 <div id="xp">
@@ -206,35 +262,16 @@
   <div class="xb"><div class="xl" id="xp-list"></div><div class="xr" id="xp-main"></div></div>
 </div>
 
-<!-- 登记服务对话框 -->
-<dialog id="dlg-svc">
-  <div class="dlg-h">登记服务（注册表兜底；agent 也可自声明 workspace/data/services.json） <button onclick="dlgSvc.close()">✕</button></div>
-  <div class="dlg-b">
-    <div><label>name（路由键：小写字母数字开头，可含 - _）</label><input id="s-name" type="text" placeholder="astock-api"></div>
-    <div><label>port（服务监听的本地端口；转发永远走 127.0.0.1）</label><input id="s-port" type="number" placeholder="8765"></div>
-    <div><label>显示名（可选）</label><input id="s-title" type="text"></div>
-    <div><label>token_file（可选；相对 agent home，服务端读取注入、绝不回显）</label>
-      <input id="s-token" type="text" placeholder="workspace/data/api_token.txt"></div>
-    <div><label>base_path（可选；服务挂子路径时前拼，如 /api）</label><input id="s-base" type="text"></div>
-    <div class="switch"><input id="s-ro" type="checkbox"><label for="s-ro" style="margin:0">readonly（管理面拦截非 GET 写方法）</label></div>
-    <div><label>备注（可选）</label><input id="s-note" type="text"></div>
-    <div id="s-err" class="err"></div>
-    <div class="hint" style="color:var(--sub);font-size:12px">
-      端口建议 8700–8799（8602–8699 是 agent 分配池）。agent 自声明的同名条目会遮蔽登记条目。
-    </div>
-  </div>
-  <div class="dlg-f"><button onclick="dlgSvc.close()">取消</button>
-    <button id="btn-svc-add" class="pri">登记</button></div>
-</dialog>
-
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
 const dlgNew = document.getElementById("dlg-new");   // id 带连字符，无隐式全局，须显式取
+const dlgEdit = document.getElementById("dlg-edit");
 const TOKKEY = "xusi_token";
 let tok = localStorage.getItem(TOKKEY) || "";
-let me = null, pollTimer = null, detailTimer = null;
+let me = null, pollTimer = null;
 let cur = null, curTab = "状态";
+let agentsCache = [];   // 看板最近一次的 agent 列表（卡片上的大脑切换要用完整档案）
 
 // URL 带 token 直达：/ ?mtoken=<token>（或 ?token=）。认证一次存 localStorage，
 // 随即从地址栏抹掉（token 不留在浏览器历史/地址栏）；之后直接打开 / 即可
@@ -301,6 +338,7 @@ async function refresh(first = false) {
     $("#hstate").textContent = `${who.label}（${who.role === "admin" ? "管理员" : "用户"}）· ${list.length} 个 agent`;
     $("#btn-logout").hidden = false;
     $("#login-tip").hidden = true;
+    agentsCache = list;
     renderCards(list);
     if (first) { console.log("ok"); if (!pollTimer) pollTimer = setInterval(refresh, 15000); }
   } catch (e) { if (String(e.message) !== "401") $("#summary").textContent = "⚠ " + e.message; }
@@ -349,7 +387,7 @@ function renderCards(list) {
       <div class="mission">${esc(a.mission)}</div>
       <div class="row">
         <span class="chip mono">127.0.0.1:${a.port}</span>
-        ${(a.brains || []).map(b => `<span class="chip">${esc(b)}</span>`).join("")}
+        ${brainChips(a)}
       </div>
       <div class="row">
         <span>会话 <b>${(a.agent_status?.daemon?.session_count ?? "-")}</b></span>
@@ -363,6 +401,70 @@ function renderCards(list) {
 }
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* ── 面板重绘的状态保全：轮询刷新不能打扰用户 ─────────
+   覆盖：信箱草稿等输入值、聚焦点与光标、<details> 展开态、滚动位置 */
+let paneSnap = null;
+
+function snapshotPane() {
+  const pane = $("#pane");
+  const snap = {scroll: pane.scrollTop, focus: null, sel: [0, 0],
+                open: new Set(), drafts: {}};
+  const ae = document.activeElement;
+  if (ae && pane.contains(ae) && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT")) {
+    snap.focus = ae.id || null;
+    snap.sel = [ae.selectionStart ?? 0, ae.selectionEnd ?? 0];
+  }
+  pane.querySelectorAll("details[data-key][open]").forEach(d => snap.open.add(d.dataset.key));
+  pane.querySelectorAll("textarea, input[type=text]").forEach(el => {
+    if (el.id && el.value) snap.drafts[el.id] = el.value;
+  });
+  return snap;
+}
+
+function setPane(html) {
+  $("#pane").innerHTML = html;
+  if (!paneSnap) return;
+  const pane = $("#pane"), snap = paneSnap;
+  pane.scrollTop = snap.scroll;
+  for (const [did, v] of Object.entries(snap.drafts)) {
+    const el = document.getElementById(did);
+    if (el && !el.value) el.value = v;
+  }
+  pane.querySelectorAll("details[data-key]").forEach(d => {
+    if (snap.open.has(d.dataset.key)) d.open = true;
+  });
+  if (snap.focus) {
+    const el = document.getElementById(snap.focus);
+    if (el) { el.focus(); try { el.setSelectionRange(snap.sel[0], snap.sel[1]); } catch {} }
+  }
+}
+
+/* 大脑徽章：当前默认（列表首位）加粗高亮；admin 可点其他徽章切默认（热生效） */
+function brainChips(a) {
+  const bs = a.brains || [];
+  return bs.map((b, i) => {
+    if (i === 0)
+      return `<b class="chip bcur" title="当前默认大脑">${esc(b)}</b>`;
+    if (me?.role !== "admin")
+      return `<span class="chip">${esc(b)}</span>`;
+    return `<span class="chip bsw" title="点击切换为默认大脑（热生效：下一口呼吸起用）"
+              onclick="switchBrain('${a.id}','${esc(b)}')">${esc(b)}</span>`;
+  }).join("");
+}
+
+async function switchBrain(id, brain) {
+  const a = agentsCache.find(x => x.id === id);
+  if (!a) return;
+  const order = [brain, ...(a.brains || []).filter(b => b !== brain)];
+  if (!confirm(`把「${a.name}」的默认大脑切换为 ${brain}？\n\n` +
+      `热生效：当前会话继续用旧大脑跑完，下一口呼吸起用新配置（config.toml 已重渲染）。\n` +
+      `优先序变为：${order.join(" → ")}`)) return;
+  try {
+    await api(`/api/agents/${id}`, {method: "PATCH", body: JSON.stringify({brains: order})});
+    refresh();
+  } catch (e) { alert(e.message); }
+}
 
 async function act(id, action) {
   if (!confirm(`确认对 ${id} 执行「${action}」？`)) return;
@@ -420,10 +522,11 @@ async function create() {
 }
 
 /* ── 详情抽屉 ─────────────────────────────────────── */
-const TABS = ["状态", "事件", "会话", "信箱", "服务", "Token", "日志"];
+const TABS = ["状态", "事件", "会话", "信箱", "服务", "工具", "Token", "日志"];
 async function openDetail(id) {
   cur = id; curTab = "状态";
   drawer.classList.add("open");
+  $("#d-edit").hidden = me?.role !== "admin";   // 改参需要 admin（PATCH 侧同样校验）
   $("#tabs").innerHTML = TABS.map(t => `<button data-t="${t}" onclick="switchTab('${t}')">${t}</button>`).join("");
   // 观测台链接：双 token —— mtoken 过 /px 鉴权，token 给页面自身存 localStorage
   //（页面从浏览器地址栏读 ?token=，注入必须落在 URL 上才有效）
@@ -433,15 +536,21 @@ async function openDetail(id) {
     if (ts[0]?.token) href += `&token=${encodeURIComponent(ts[0].token)}`;
   } catch (e) { /* 取不到 token 也能开（后端会 302 补） */ }
   $("#d-ui").href = href;
+  // 用户正在详情里看/操作：暂停全部自动刷新（看板 15s + 抽屉轮询），
+  // 数据在打开、切 tab、手动 ⟳ 或操作后按需拉取；关闭详情即恢复看板轮询。
+  clearInterval(pollTimer); pollTimer = null;
   loadDetail();
-  clearInterval(detailTimer); detailTimer = setInterval(() => cur && loadDetail(), 10000);
 }
-function closeDetail() { cur = null; drawer.classList.remove("open"); clearInterval(detailTimer); }
+function closeDetail() {
+  cur = null; drawer.classList.remove("open");
+  if (!pollTimer && tok) refresh(true);   // 恢复看板轮询
+}
 function switchTab(t) { curTab = t; loadDetail(); }
 
 async function loadDetail() {
   if (xp.on) return;   // API 探索器开着时不重拉（防 10s 轮询刷掉表单）
   const id = cur;
+  paneSnap = snapshotPane();   // 10s 轮询重绘不打扰用户：草稿/展开态/焦点/滚动一并带走
   [...$("#tabs").children].forEach(b => b.classList.toggle("on", b.dataset.t === curTab));
   try {
     if (curTab === "状态") {
@@ -449,7 +558,8 @@ async function loadDetail() {
       if (id !== cur) return;
       $("#d-nm").textContent = s.name; $("#d-id").textContent = id;
       const d = s.agent_status?.daemon || {};
-      $("#pane").innerHTML = `
+      setPane(
+`
         <div class="kv">
           <b>id</b><span class="mono">${esc(id)}</span>
           <b>期望态</b><span>${s.desired_state}</span>
@@ -464,12 +574,13 @@ async function loadDetail() {
           <b>访问</b><span class="mono" style="font-size:11.5px">直连 ${s.listen_host === "0.0.0.0" ? s.port + " 端口" : "未暴露"} · 反代 /px/${id}/ · App 端口 ${location.port} + agent token</span>
         </div>
         <h4 style="margin:14px 0 6px">原始 status（只读 GET /v1/status）</h4>
-        <pre>${esc(JSON.stringify(s.agent_status || {note: `未运行（单元 ${s.process?.active || "?"}）`}, null, 2))}</pre>`;
+        <pre>${esc(JSON.stringify(s.agent_status || {note: `未运行（单元 ${s.process?.active || "?"}）`}, null, 2))}</pre>`
+      );
     } else if (curTab === "事件") {
       const r = await api(`/api/agents/${id}/events?limit=80`);
       if (id !== cur) return;
       const evs = r.data || [];
-      $("#pane").innerHTML = evs.slice().reverse().map(e => {
+      setPane(evs.slice().reverse().map(e => {
         const t = e.at || e.sent_at || e._logged_at || "";
         const k = e.event || e.kind || "ev";
         let body = "";
@@ -487,38 +598,42 @@ async function loadDetail() {
           body = esc(JSON.stringify(e).slice(0, 200));
         }
         return `<div class="ev"><span class="t">${fmtT(t)} · ${esc(k)}</span><br>${body}</div>`;
-      }).join("") || "<p>（事件流为空：agent 刚启动，或进程重启过——事件仅存于内存）</p>";
+      }).join("") || "<p>（事件流为空：agent 刚启动，或进程重启过——事件仅存于内存）</p>");
     } else if (curTab === "会话") {
+      // 每口呼吸一条：点行展开完整总结（final_summary，markdown 渲染）
       const [r, st] = await Promise.all([
-        api(`/api/agents/${id}/sessions?limit=20`), api(`/api/agents/${id}`)]);
+        api(`/api/agents/${id}/sessions?limit=30`), api(`/api/agents/${id}`)]);
       if (id !== cur) return;
       const ss = r.data || [];
       const running = (st.agent_status?.daemon?.state) === "running_session";
       const curId = st.agent_status?.daemon?.current_session;
-      $("#pane").innerHTML =
-        (running ? `<div class="mailrow" style="border-color:var(--acc)"><b>会话进行中</b> <span class="t">${esc(curId || "")}</span>——首个/当前会话结束后才会出现在下方列表</div>` : "") +
-        ss.map(s => `<div class="mailrow">
-          <div class="t">${esc(s.id || s.session_id)} · ${fmtT(s.at || s.started_at)} · ${esc(s.stop_reason || "")}</div>
-          ${esc((s.summary || s.result?.summary || "").slice(0, 300))}</div>`).join("") || (!running ? "<p>（还没有完成的会话）</p>" : "");
+      setPane(
+        (running ? `<div class="mailrow" style="border-color:var(--acc)"><b>呼吸进行中</b> <span class="t">${esc(curId || "")}</span>——本口呼吸结束后出现在下方列表</div>` : "") +
+        ss.map(s => sessRowHtml(s)).join("") || (!running ? "<p>（还没有完成的呼吸）</p>" : ""));
     } else if (curTab === "信箱") {
       const [m, o] = await Promise.all([
         api(`/api/agents/${id}/messages?limit=30`), api(`/api/agents/${id}/outbox?limit=30`)]);
       if (id !== cur) return;
-      $("#pane").innerHTML = `
+      setPane(
+`
         <h4 style="margin:4px 0 6px">投信（写入信箱文件，休眠中 5s 内唤醒）</h4>
         <div class="sendbox"><textarea id="m-txt" placeholder="给大脑写信…"></textarea>
           <button class="pri" onclick="sendMail('${id}')">投递</button></div>
         <h4 style="margin:12px 0 6px">来信历史（管理员 → 大脑）</h4>
         ${(m.data || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)}</div>${esc(x.text)}</div>`).join("") || "<p>（还没有来信——用上方表单给大脑投第一封）</p>"}
         <h4 style="margin:12px 0 6px">外发（大脑 → 管理员，send_mail）</h4>
-        ${(o.data || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)}</div>${esc(x.text)}</div>`).join("") || "<p>（大脑还没外发过——它有话想说时会出现在这里）</p>"}`;
+        ${(o.data || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)}</div>${esc(x.text)}</div>`).join("") || "<p>（大脑还没外发过——它有话想说时会出现在这里）</p>"}`
+      );
     } else if (curTab === "服务") {
       await renderSvcTab(id);
+    } else if (curTab === "工具") {
+      await renderToolsTab(id);
     } else if (curTab === "Token") {
       const ts = await api(`/api/agents/${id}/tokens`);
       if (id !== cur) return;
       const isAdmin = me?.role === "admin";
-      $("#pane").innerHTML = `
+      setPane(
+`
         <p class="hint" style="color:var(--sub)">观察台 token = 访问该 agent 的凭证。用法：
         ① 管理面反代 <code class="mono">/px/${id}/…</code>（管理面 token 认证，无需此 token）；
         ② 直连 <code class="mono">http://&lt;IP&gt;:${location.port}</code> + 此 token（App「IP+端口+token」形态，零改动）；
@@ -528,19 +643,147 @@ async function loadDetail() {
           <code id="tk-${t.token.slice(0, 8)}">${esc(t.token)}</code>
           <span class="hint" style="color:var(--sub);font-size:12px">${esc(t.label || "")}</span>
           ${isAdmin ? `<button class="danger" onclick="revTok('${id}','${t.token.slice(0, 10)}')">撤销</button>` : ""}
-        </div>`).join("") || "<p>（无）</p>"}</div>`;
+        </div>`).join("") || "<p>（无）</p>"}</div>`
+      );
     } else if (curTab === "日志") {
       const r = await api(`/api/agents/${id}/logs?limit=300`);
       if (id !== cur) return;
-      $("#pane").innerHTML = `<pre>${esc((r.lines || []).join("\n"))}</pre>`;
+      setPane(`<pre>${esc((r.lines || []).join("\n"))}</pre>`);
     }
-  } catch (e) { if (String(e.message) !== "401") $("#pane").innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+  } catch (e) { if (String(e.message) !== "401") setPane(`<p class="err">${esc(e.message)}</p>`); }
 }
 
 async function sendMail(id) {
   const t = $("#m-txt").value.trim(); if (!t) return;
   try { await api(`/api/agents/${id}/mail`, {method: "POST", body: JSON.stringify({text: t})});
     $("#m-txt").value = ""; loadDetail(); } catch (e) { alert(e.message); }
+}
+
+/* ── 呼吸总结（会话列表）与工具统计 ─────────────────── */
+
+function sessRowHtml(s) {
+  const fs = s.final_summary || "";
+  const dur = Math.round(s.elapsed_s ?? 0);
+  const durTxt = dur >= 3600 ? `${Math.floor(dur / 3600)}时${Math.round(dur % 3600 / 60)}分` :
+                 dur >= 60 ? `${Math.floor(dur / 60)}分${dur % 60}秒` : `${dur}秒`;
+  const kv = [
+    s.context_tokens != null ? `上下文 ${s.context_tokens} tok` : "",
+    s.total_tokens != null ? `累计 ${s.total_tokens} tok` : "",
+    s.requested_sleep_seconds != null ? `请求休眠 ${s.requested_sleep_seconds}s` : "",
+    s.carry_context ? "携带上下文" : "",
+  ].filter(Boolean).map(x => `<span class="chip">${esc(x)}</span>`).join("");
+  return `<details class="sessrow" data-key="${esc(s.session_id || s.id || "")}">
+    <summary>
+      <span class="t" style="color:var(--sub);font-size:11.5px;font-family:var(--mono)">${fmtT(s.started_at || s.at)}</span>
+      <b>${s.rounds ?? "?"} 轮</b>
+      <span style="color:var(--sub)">${durTxt}</span>
+      <span>¥${(+s.total_cost_cny || 0).toFixed(2)}</span>
+      <span class="chip" style="color:var(--sub)">${esc(String(s.stop_reason || "").slice(0, 24))}</span>
+      <span style="margin-left:auto;color:var(--sub)">▾</span>
+    </summary>
+    <div class="sessbody">
+      <div class="sesskv"><span class="chip mono">${esc(s.session_id || s.id || "")}</span>${kv}</div>
+      ${fs ? `<div class="md">${mdRender(fs)}</div>` : '<p style="color:var(--sub)">（本口呼吸没有留下总结）</p>'}
+    </div>
+  </details>`;
+}
+
+async function renderToolsTab(id) {
+  // 工具/技能调用统计：聚合最近事件窗口里的 tool_exec / tool_error / tool_timeout。
+  // 事件仅存于 agent 进程内存（重启清零），属进程生命周期内的真实计数。
+  const r = await api(`/api/agents/${id}/events?limit=500`);
+  if (id !== cur) return;
+  const evs = r.data || [];
+  const stat = {};
+  const slot = t => (stat[t] ??= {n: 0, err: 0, tmo: 0, last: ""});
+  let llmRounds = 0, started = 0;
+  for (const e of evs) {
+    if (e.event === "llm_response") llmRounds++;
+    if (e.event === "session_start") started++;
+    if (!e.tool) continue;
+    if (e.event === "tool_exec") {
+      const s = slot(e.tool); s.n++;
+      if (!s.last || e.at > s.last) s.last = e.at;
+    } else if (e.event === "tool_error") slot(e.tool).err++;
+    else if (e.event === "tool_timeout") slot(e.tool).tmo++;
+  }
+  const rows = Object.entries(stat).sort((a, b) => b[1].n - a[1].n);
+  const tot = rows.reduce((m, [, s]) => ({n: m.n + s.n, err: m.err + s.err, tmo: m.tmo + s.tmo}),
+                          {n: 0, err: 0, tmo: 0});
+  setPane(
+`
+    <p class="hint" style="color:var(--sub)">工具与技能（自注册的技能也是一等工具）的调用统计。
+    数据来自事件流：仅存于 agent 进程内存，<b>进程重启后清零</b>；此处回看最近 500 条事件，
+    覆盖 ${started} 口呼吸 / ${llmRounds} 轮 LLM 调用。</p>
+    ${rows.length ? `<table class="jt"><thead><tr><th>工具</th><th>调用</th><th>失败</th><th>超时</th><th>最近调用</th></tr></thead>
+      <tbody>${rows.map(([t, s]) => `<tr>
+        <td class="mono">${esc(t)}</td>
+        <td><b>${s.n}</b></td>
+        <td>${s.err ? `<span style="color:var(--err)">${s.err}</span>` : "0"}</td>
+        <td>${s.tmo ? `<span style="color:var(--warn)">${s.tmo}</span>` : "0"}</td>
+        <td style="color:var(--sub)">${s.last ? fmtT(s.last) : "-"}</td>
+      </tr>`).join("")}
+      <tr><td><b>合计</b></td><td><b>${tot.n}</b></td><td>${tot.err}</td><td>${tot.tmo}</td><td></td></tr>
+      </tbody></table>` : "<p>（事件窗口内没有工具调用记录——agent 刚启动或进程重启过）</p>"}`
+  );
+}
+
+/* ── 改参（PATCH 热字段 + 可选重启字段）──────────────── */
+let editCur = null;   // 打开对话框时的完整档案（判断 port/expose 是否变化）
+
+async function openEdit(id) {
+  if (me?.role !== "admin") { alert("改参需要 admin token"); return; }
+  try {
+    const [s, bs] = await Promise.all([api(`/api/agents/${id}`), api("/api/brains")]);
+    editCur = s;
+    $("#e-name").value = s.name || "";
+    $("#e-mission").value = s.mission || "";
+    $("#e-note").value = s.note || "";
+    $("#e-expose").checked = !!s.expose;
+    const cur = s.brains || [];
+    $("#e-brains").innerHTML = bs.map(b =>
+      `<label><input type="checkbox" value="${esc(b.name)}" ${cur.includes(b.name) ? "checked" : ""} ${b.has_key ? "" : "disabled"}>
+        ${esc(b.name)}${b.has_key ? "" : "（缺key）"} <small style="color:var(--sub)">${esc(b.model)}</small></label>`).join("");
+    $("#e-port").innerHTML = `<option value="">保持 ${s.port}</option>`;   // 先占位，可选端口异步补
+    api("/api/ports/available?count=12").then(ps => {
+      $("#e-port").innerHTML = `<option value="">保持 ${s.port}</option>` +
+        ps.ports.map(p => `<option value="${p}">${p}</option>`).join("");
+    }).catch(() => {});
+    $("#e-err").textContent = "";
+    dlgEdit.showModal();
+  } catch (e) { alert(e.message); }
+}
+
+async function saveEdit() {
+  const id = cur;
+  const brains = [...$("#e-brains").querySelectorAll("input:checked")].map(i => i.value);
+  const mission = $("#e-mission").value.trim();
+  if (!brains.length) { $("#e-err").textContent = "至少勾选一家大脑"; return; }
+  if (!mission) { $("#e-err").textContent = "mission 不能为空"; return; }
+  const body = {
+    name: $("#e-name").value.trim() || editCur.name,
+    mission, brains,
+    expose: $("#e-expose").checked,
+    note: $("#e-note").value.trim(),
+  };
+  const p = $("#e-port").value;
+  if (p) body.port = parseInt(p, 10);
+  const needRestart = (p && parseInt(p, 10) !== editCur.port) || (body.expose !== !!editCur.expose);
+  let applyRestart = false;
+  if (needRestart) {
+    applyRestart = confirm("端口 / 暴露开关变了：这两项改的是进程监听参数，需要重启进程。\n\n" +
+      "「确定」= 保存并立即重启（优雅停 → 新参数拉起 → 健康验收）；「取消」= 仅保存，稍后手动重启生效。");
+  }
+  $("#btn-edit-save").disabled = true; $("#e-err").textContent = "";
+  try {
+    await api(`/api/agents/${id}?apply_restart=${applyRestart}`,
+              {method: "PATCH", body: JSON.stringify(body)});
+    dlgEdit.close();
+    if (!needRestart)
+      alert("已保存（热改参）：mission / 大脑 / 备注 写入注册表并重渲染 config.toml，下一口呼吸自动生效，当前会话不受影响。");
+    refresh(); loadDetail();
+  } catch (e) { $("#e-err").textContent = e.message; }
+  finally { $("#btn-edit-save").disabled = false; }
 }
 async function newTok(id) {
   const label = prompt("token 备注（label）：", "phone") || "";
@@ -553,26 +796,23 @@ async function revTok(id, prefix) {
   catch (e) { alert(e.message); }
 }
 
-/* ── 服务发现（agent 自建对外 API）──────────────────── */
-const dlgSvc = document.getElementById("dlg-svc");
-let svcDlgId = null;
-
+/* ── 服务发现（agent 自建对外 API；全功能反代）──────── */
 async function renderSvcTab(id) {
   const r = await api(`/api/agents/${id}/services`);
   if (id !== cur) return;
-  const isAdmin = me?.role === "admin";
-  $("#pane").innerHTML = `
-    <p class="hint" style="color:var(--sub)">agent 自建的对外 API 服务。清单来源：agent 在
-      <code class="mono">workspace/data/services.json</code> 自声明（优先，换端口自动跟随）或管理员在此登记。
-      访问一律经 <code class="mono">/svc/${id}/&lt;服务名&gt;/</code> 反代，服务 token 由管理面服务端注入。</p>
+  setPane(
+`
+    <p class="hint" style="color:var(--sub)">agent 自建的对外 API 服务（由 agent 在
+      <code class="mono">workspace/data/services.json</code> 自声明，换端口自动跟随）。
+      访问一律经 <code class="mono">/svc/${id}/&lt;服务名&gt;/</code> 全功能反代，服务 token 由管理面服务端注入；
+      方法放行与否由服务自己决定，写方法调用会记入审计。</p>
     ${(r.errors || []).map(e => `<div class="mailrow" style="border-color:var(--warn);color:var(--warn)">⚠ ${esc(e)}</div>`).join("")}
-    ${(r.shadowed || []).length ? `<div class="mailrow" style="color:var(--sub)">登记条目 ${r.shadowed.map(esc).join("、")} 被服务的自声明遮蔽（文件优先）</div>` : ""}
-    ${(r.services || []).map(s => svcRowHtml(id, s, isAdmin)).join("") ||
-      "<p>（该 agent 暂无自建服务——它可写 services.json 自声明，或由管理员登记）</p>"}
-    ${isAdmin ? `<button class="pri" onclick="svcDlgOpen('${id}')">＋ 登记服务</button>` : ""}`;
+    ${(r.services || []).map(s => svcRowHtml(id, s)).join("") ||
+      "<p>（该 agent 暂无自建服务——它写 services.json 自声明即可被管理面发现）</p>"}`
+  );
 }
 
-function svcRowHtml(id, s, isAdmin) {
+function svcRowHtml(id, s) {
   const h = s.health || {};
   const dot = h.ok === undefined ? "" : (h.ok ? "ok" : "bad");
   const htxt = h.ok === undefined ? "" :
@@ -581,48 +821,21 @@ function svcRowHtml(id, s, isAdmin) {
     <div class="hd"><span class="dot ${dot}"></span>
       <b>${esc(s.title || s.name)}</b>
       <span class="chip mono">:${s.port}</span>
-      ${s.source === "file" ? '<span class="chip">自声明</span>' : '<span class="chip">登记</span>'}
-      ${s.readonly ? '<span class="chip">readonly</span>' : ""}
-      ${s.auth ? '<span class="chip">token 注入</span>' : '<span class="chip" style="color:var(--warn)">无 token</span>'}
+      ${s.auto ? '<span class="chip" style="color:var(--warn)">自动发现</span>' : ""}
+      ${s.auth ? `<span class="chip">token 注入${s.token_source === "auto" ? "·自动" : ""}</span>` : '<span class="chip" style="color:var(--warn)">无 token</span>'}
       <span class="hint" style="color:var(--sub);font-size:12px">${esc(htxt)}</span></div>
     ${s.note ? `<div class="hint" style="color:var(--sub);font-size:12.5px;margin-top:4px">${esc(s.note)}</div>` : ""}
+    ${s.openapi_found == null && s.openapi_source !== "none" ? `<div class="hint" style="color:var(--warn);font-size:12px;margin-top:4px">⚠ 未探测到 OpenAPI 自描述（探索器转手填模式）</div>` : ""}
     ${s.warn ? `<div class="hint" style="color:var(--warn);font-size:12px;margin-top:4px">⚠ ${esc(s.warn)}</div>` : ""}
     <div class="acts">
       <button class="pri" onclick="openExplorer('${id}','${esc(s.name)}')">探索 API</button>
       <button onclick="svcDocs('${id}','${esc(s.name)}')">原生文档 ↗</button>
-      ${s.source === "registry" && isAdmin ? `<button class="danger" onclick="svcDel('${id}','${esc(s.name)}')">删除登记</button>` : ""}
     </div></div>`;
 }
 
 function svcDocs(id, name) {
   // 新标签没有 Authorization 头，用 ?mtoken= 过 /svc 鉴权
   window.open(`/svc/${id}/${name}/docs?mtoken=${encodeURIComponent(tok)}`, "_blank");
-}
-
-async function svcDel(id, name) {
-  if (!confirm(`删除登记的服务 ${name}？（不影响服务本身运行）`)) return;
-  try { await api(`/api/agents/${id}/services/${name}`, {method: "DELETE"}); loadDetail(); }
-  catch (e) { alert(e.message); }
-}
-
-function svcDlgOpen(id) {
-  svcDlgId = id;
-  ["s-name", "s-port", "s-title", "s-token", "s-base", "s-note"].forEach(i => $("#" + i).value = "");
-  $("#s-ro").checked = false; $("#s-err").textContent = "";
-  dlgSvc.showModal();
-}
-
-async function svcAdd() {
-  const body = {
-    name: $("#s-name").value.trim(), port: parseInt($("#s-port").value, 10),
-    title: $("#s-title").value.trim(), token_file: $("#s-token").value.trim(),
-    base_path: $("#s-base").value.trim(), readonly: $("#s-ro").checked,
-    note: $("#s-note").value.trim()};
-  $("#s-err").textContent = "";
-  try {
-    await api(`/api/agents/${svcDlgId}/services`, {method: "POST", body: JSON.stringify(body)});
-    dlgSvc.close(); loadDetail();
-  } catch (e) { $("#s-err").textContent = e.message; }
 }
 
 /* ── API 探索器（openapi.json 驱动，全动态）────────── */
@@ -658,9 +871,14 @@ async function openExplorer(id, name) {
   $("#xp-title").textContent = xp.svc?.title || name;
   $("#xp-sub").textContent = `/svc/${id}/${name}/ · 127.0.0.1:${xp.svc?.port ?? "?"}`;
   $("#xp-docs").href = `/svc/${id}/${name}/docs?mtoken=${encodeURIComponent(tok)}`;
-  if (xp.svc && xp.svc.openapi === false) { xpManual("清单声明该服务无 OpenAPI 自描述"); return; }
+  if (xp.svc && xp.svc.openapi_found == null) {
+    xpManual(xp.svc.openapi_source === "none"
+      ? "清单声明该服务无 OpenAPI 自描述"
+      : "未探测到 OpenAPI 自描述（已按候选路径搜索）");
+    return;
+  }
   try {
-    const r = await rawFetch(`/svc/${id}/${name}${xp.svc?.openapi || "/openapi.json"}`);
+    const r = await rawFetch(`/svc/${id}/${name}${xp.svc?.openapi_found || "/openapi.json"}`);
     if (r.status !== 200) { xpManual(`OpenAPI 拉取失败（HTTP ${r.status}）`); return; }
     const spec = JSON.parse(r.text);
     if (!spec.paths || !Object.keys(spec.paths).length) { xpManual("OpenAPI 里没有 paths"); return; }
@@ -746,13 +964,15 @@ function xpRenderForm() {
       <div class="respbar" style="margin:0"><b>手填模式</b>
         <span>该服务未提供可用的 OpenAPI 自描述，直接填方法与路径</span></div>
       <div id="xp-form">
-        <div class="fld"><label>方法</label>
-          <select id="mf-m"><option>GET</option><option>POST</option><option>PUT</option>
-            <option>DELETE</option><option>PATCH</option></select></div>
-        <div class="fld"><label>路径</label>
-          <input id="mf-p" class="mono" type="text" placeholder="/api/v1/status（可直接带 ?参数）"></div>
-        <div class="fld"><label>JSON 请求体</label>
-          <textarea id="mf-b" class="mono" placeholder='{"k":"v"}'></textarea></div>
+        <div style="display:flex;gap:8px">
+          <div class="fld" style="width:110px"><label>方法</label>
+            <select id="mf-m"><option>GET</option><option>POST</option><option>PUT</option>
+              <option>DELETE</option><option>PATCH</option></select></div>
+          <div class="fld" style="flex:1"><label>路径</label>
+            <input id="mf-p" class="mono" type="text" placeholder="/api/v1/status（可直接带 ?参数）"></div>
+        </div>
+        <details style="margin:4px 0"><summary style="cursor:pointer;font-size:12.5px;color:var(--sub)">请求体（JSON；写方法用）</summary>
+          <textarea id="mf-body" class="mono" style="min-height:90px;margin-top:6px"></textarea></details>
       </div>
       <div><button id="xp-send" class="pri" onclick="xpSend()">发送</button></div>
       <div id="xp-resp"></div>`;
@@ -804,17 +1024,17 @@ function xpRenderForm() {
       <span class="mb m-${method.toLowerCase()}">${method}</span>
       <b class="mono" style="font-size:13px">${esc(path)}</b>
       <span class="hint" style="color:var(--sub)">${esc(op.summary || "")}</span>
-      ${xp.svc?.readonly ? '<span class="chip">readonly</span>' : ""}
     </div>
     ${op.description ? `<div class="md" style="font-size:12.5px">${mdRender(op.description)}</div>` : ""}
     <div id="xp-form">
       ${fields.join("")}
       ${others.length ? `<p class="hint" style="color:var(--sub);font-size:12px">另有 ${others.length} 个 header/cookie 参数未列出（经反代通常无需）</p>` : ""}
       ${bodyHtml}
-      <details style="margin:4px 0"><summary style="cursor:pointer;font-size:12.5px;color:var(--sub)">直接编辑完整 JSON 请求体（优先于上方字段）</summary>
-        <textarea id="xp-body-raw" class="mono" style="min-height:90px;margin-top:6px"></textarea></details>
+      ${method === "GET" ? `<details style="margin:4px 0"><summary style="cursor:pointer;font-size:12.5px;color:var(--sub)">附加 JSON 请求体（罕见；仅记录用）</summary>
+        <textarea id="xp-body-raw" class="mono" style="min-height:90px;margin-top:6px"></textarea></details>` : ""}
     </div>
-    <div><button id="xp-send" class="pri" onclick="xpSend()">发送</button></div>
+    <div><button id="xp-send" class="pri" onclick="xpSend()">发送</button>
+      ${method !== "GET" && method !== "HEAD" ? '<span class="hint" style="color:var(--sub);margin-left:8px">写方法，将记入审计</span>' : ""}</div>
     <div id="xp-resp"></div>`;
 }
 
@@ -828,7 +1048,7 @@ async function xpSend() {
       const p = $("#mf-p").value.trim();
       if (!p.startsWith("/")) throw new Error("路径要以 / 开头");
       url = `/svc/${xp.id}/${xp.name}${p}`;
-      body = $("#mf-b").value.trim() || null;
+      body = $("#mf-body")?.value.trim() || null;
     } else {
       const {method: m, path} = xp.ep;
       method = m;
@@ -875,33 +1095,52 @@ function xpRenderResp() {
   if (!r) return;
   const good = r.status >= 200 && r.status < 300;
   const text = r.size > 65536 ? r.text.slice(0, 65536) + "\n[…已截断，共 " + r.size + " 字符]" : r.text;
-  let bodyHtml;
+  // 视图优先级：阅读（markdown 渲染）> 表格 > JSON；文本响应：渲染 > 原始。
+  // 缺省取第一个可用视图，其余可随时切换（原始数据永远可达）。
+  let views;
   if (r.ct.includes("json")) {
     try {
       const j = JSON.parse(r.text);
-      bodyHtml = viewToggle(JSON.stringify(j, null, 2), jsonToTable(findRows(j)));
-    } catch { bodyHtml = `<pre>${esc(text)}</pre>`; }
+      views = [];
+      const mdv = buildMdView(j);
+      if (mdv) views.push({label: "阅读", html: mdv});
+      const rows = findRows(j);
+      if (rows) views.push({label: "表格", html: jsonToTable(rows)});
+      views.push({label: "JSON", html: `<pre>${esc(JSON.stringify(j, null, 2))}</pre>`});
+    } catch { views = [{label: "原始", html: `<pre>${esc(text)}</pre>`}]; }
   } else if (r.ct.startsWith("text/")) {
     // text/markdown 与 text/plain 都按 markdown 渲染（agent 输出常无细分 content-type）
-    bodyHtml = `<div class="md">${mdRender(text)}</div>`;
+    views = [{label: "渲染", html: `<div class="md">${mdRender(text)}</div>`},
+             {label: "原始", html: `<pre>${esc(text)}</pre>`}];
   } else {
-    bodyHtml = `<pre>${esc(text)}</pre>`;
+    views = [{label: "原始", html: `<pre>${esc(text)}</pre>`}];
   }
   $("#xp-resp").innerHTML = `
     <div class="respbar">
       <b style="color:${good ? "var(--ok)" : "var(--err)"}">HTTP ${r.status}</b>
       <span>${r.ms}ms</span><span>${(r.size / 1024).toFixed(1)}KB</span>
       <span class="mono" style="font-size:11.5px">${esc(r.ct)}</span></div>
-    ${bodyHtml}`;
+    ${viewBar(views)}`;
 }
 
-function viewToggle(jsonText, tableHtml) {
-  if (!tableHtml) return `<pre>${esc(jsonText)}</pre>`;
+/* ── 响应视图：阅读（md 渲染）/ 表格 / JSON，可切换 ── */
+
+function viewBar(views) {
+  // views: [{label, html}]；第一个为缺省
   const n = ++xpViewN;
-  const sw = `const a=document.getElementById('vj${n}'),b=document.getElementById('vt${n}');a.hidden=!a.hidden;b.hidden=!b.hidden;`;
-  return `<div style="margin:2px 0 6px"><button onclick="${sw}">⇄ 表格 / JSON</button></div>
-    <div id="vj${n}"><pre>${esc(jsonText)}</pre></div>
-    <div id="vt${n}" hidden>${tableHtml}</div>`;
+  const btns = views.map((v, i) =>
+    `<button id="vb${n}_${i}" class="${i === 0 ? "on" : ""}" onclick="xpSwitchView(${n},${i})">${v.label}</button>`).join("");
+  const divs = views.map((v, i) =>
+    `<div id="vv${n}_${i}" ${i === 0 ? "" : "hidden"}>${v.html}</div>`).join("");
+  return `<div class="vbar" id="vb${n}" data-c="${views.length}">${btns}</div>${divs}`;
+}
+
+function xpSwitchView(n, i) {
+  const c = +document.getElementById("vb" + n).dataset.c;
+  for (let k = 0; k < c; k++) {
+    document.getElementById(`vv${n}_${k}`).hidden = k !== i;
+    document.getElementById(`vb${n}_${k}`).classList.toggle("on", k === i);
+  }
 }
 
 function findRows(j) {
@@ -913,17 +1152,115 @@ function findRows(j) {
   return null;
 }
 
+/* markdown 字段识别：常见键名优先，否则任意含 ≥2 种 md 语法的长字符串 */
+const MD_KEYS = ["body", "summary", "description", "content", "markdown", "md", "readme", "note", "text"];
+
+function mdLooksLike(s) {
+  if (typeof s !== "string" || s.length < 24) return false;
+  let n = 0;
+  if (/^#{1,6}\s+\S/m.test(s)) n++;
+  if (/\*\*[^*\n]+\*\*/.test(s)) n++;
+  if (/```/.test(s)) n++;
+  if (/^[-*+]\s+\S/m.test(s)) n++;
+  if (/\[[^\]\n]+\]\([^)\s]+\)/.test(s)) n++;
+  if (/^\|.*\|/m.test(s)) n++;
+  return n >= 2;
+}
+
+function mdFieldOf(obj) {
+  let best = null;
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v !== "string" || !mdLooksLike(v)) continue;
+    const pri = MD_KEYS.includes(k.toLowerCase()) ? 1 : 0;
+    if (!best || pri > best.pri || (pri === best.pri && v.length > best.v.length))
+      best = {k, v, pri};
+  }
+  return best;
+}
+
+/* 记录是否"文本丰富"（适合阅读视图）：有 md 语法的字段，或字符串数组（文本块）。
+   纯数据记录（全是标量，如 trades 行）不触发——缺省走表格。 */
+function textRich(o) {
+  if (mdFieldOf(o)) return true;
+  return Object.values(o).some(v =>
+    Array.isArray(v) && v.length && typeof v[0] === "string" && v[0].length);
+}
+
+/* 记录卡片：短标量 → meta chips；md 字段 → 渲染正文；字符串数组 → 列表小节；
+   长字符串 → 小节段落；嵌套对象/数组 → 折叠明细（与表格同款 details） */
+function mdCard(o) {
+  if (!textRich(o)) return null;
+  const f = mdFieldOf(o);
+  const chips = [], secs = [];
+  for (const [k, v] of Object.entries(o)) {
+    if (v === null || v === undefined || (f && k === f.k)) continue;
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+      if (String(v).length < 44 && chips.length < 8)
+        chips.push(`<span class="chip">${esc(k)}: ${esc(String(v))}</span>`);
+      else
+        secs.push(`<div class="mdsec"><div class="secl">${esc(k)}</div><div class="md">${mdRender(String(v))}</div></div>`);
+    } else if (Array.isArray(v) && v.length && typeof v[0] === "string") {
+      secs.push(`<div class="mdsec"><div class="secl">${esc(k)}</div><ul>` +
+        v.map(x => `<li>${mdRender(x)}</li>`).join("") + `</ul></div>`);
+    } else {
+      secs.push(`<div class="mdsec"><div class="secl">${esc(k)}</div>${cellHtml(v)}</div>`);
+    }
+  }
+  return `<div class="mdcard">` +
+    (chips.length ? `<div class="mdmeta">${chips.join("")}</div>` : "") +
+    (f ? `<div class="md">${mdRender(f.v)}</div>` : "") +
+    secs.join("") + `</div>`;
+}
+
+function buildMdView(j) {
+  if (typeof j === "string") return mdLooksLike(j) ? `<div class="md">${mdRender(j)}</div>` : null;
+  if (Array.isArray(j)) {
+    const cards = j.slice(0, 30)
+      .map(it => (it && typeof it === "object" && !Array.isArray(it)) ? mdCard(it) : null)
+      .filter(Boolean);
+    return cards.length
+      ? cards.join("") + (j.length > 30 ? `<p class="hint" style="color:var(--sub)">… 共 ${j.length} 条，仅显示前 30</p>` : "")
+      : null;
+  }
+  if (j && typeof j === "object") {
+    const card = mdCard(j);
+    if (card) return card;
+    // 包装对象（{count,ts,items:[…]}）：沿首个对象数组下钻（与表格取行同源）
+    const rows = findRows(j);
+    if (rows) return buildMdView(rows);
+  }
+  return null;
+}
+
+/* 表格：_ 前缀字段（如 _raw，原始明细）排最后、表头弱化、单元格折叠；
+   对象/数组单元格一律折叠成 details，点开看美化 JSON */
+function truncate(s, n) { return s.length > n ? s.slice(0, n) + "…" : s; }
+
+function cellHtml(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") {
+    const brief = esc(truncate(JSON.stringify(v), 48));
+    return `<details class="cell"><summary class="mono">{…} ${brief}</summary>` +
+           `<pre>${esc(JSON.stringify(v, null, 2))}</pre></details>`;
+  }
+  const s = String(v);
+  return s.length > 120 ? `<span title="${esc(s)}">${esc(truncate(s, 120))}</span>` : esc(s);
+}
+
 function jsonToTable(rows) {
-  const cols = [...new Set(rows.flatMap(r => Object.keys(r)))].slice(0, 12);
-  const trs = rows.slice(0, 50).map(r => `<tr>${cols.map(c => {
-    let v = r?.[c];
-    if (v === null || v === undefined) v = "";
-    else if (typeof v === "object") v = JSON.stringify(v);
-    return `<td title="${esc(String(v))}">${esc(String(v))}</td>`;
-  }).join("")}</tr>`).join("");
-  const more = rows.length > 50 ? `<tr><td colspan="${cols.length}">… 共 ${rows.length} 行，仅显示前 50</td></tr>` : "";
-  return `<table class="jt"><thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>
-    <tbody>${trs}${more}</tbody></table>`;
+  const cols = [...new Set(rows.flatMap(r => Object.keys(r ?? {})))];
+  const normal = cols.filter(c => !c.startsWith("_")).slice(0, 10);
+  const under = cols.filter(c => c.startsWith("_")).slice(0, 4);
+  const order = [...normal, ...under];
+  const dropped = cols.length - order.length;
+  const th = order.map(c => `<th class="${c.startsWith("_") ? "dim" : ""}">${esc(c)}</th>`).join("");
+  const trs = rows.slice(0, 50).map(r =>
+    `<tr>${order.map(c => `<td>${cellHtml(r?.[c])}</td>`).join("")}</tr>`).join("");
+  const notes = [];
+  if (rows.length > 50) notes.push(`共 ${rows.length} 行，仅显示前 50`);
+  if (dropped > 0) notes.push(`另有 ${dropped} 列未显示`);
+  const foot = notes.length ? `<tr><td colspan="${order.length}" style="color:var(--sub)">… ${notes.join("；")}</td></tr>` : "";
+  return `<table class="jt"><thead><tr>${th}</tr></thead><tbody>${trs}${foot}</tbody></table>`;
 }
 
 /* ── mini-markdown 渲染器（先全文转义后变换，绝不透传 HTML）── */
@@ -997,7 +1334,7 @@ $("#tip-tok").addEventListener("keydown", e => { if (e.key === "Enter") login();
 $("#btn-logout").onclick = logout;
 $("#btn-new").onclick = openNew;
 $("#btn-create").onclick = create;
-$("#btn-svc-add").onclick = svcAdd;
+$("#btn-edit-save").onclick = saveEdit;
 refresh(true);
 </script>
 </body>

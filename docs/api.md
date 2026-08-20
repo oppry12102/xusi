@@ -43,6 +43,8 @@ HTTP/1.1 403 Forbidden
 | `/api/health` | 无 | 管理面探活 |
 | `/api/*` | 管理面 token | 管理 API（§3–§6） |
 | `/px/{agent-id}/*` | 管理面 token | 前缀反代到该 agent（§7.1，自动注入 agent token） |
+| `/svc` | 管理面 token 或 agent 观察台 token | agent 自建服务**发现**（§7.3.1） |
+| `/svc/{agent-id}/{服务名}/*` | 管理面 token 或 agent 观察台 token | agent 自建服务**全功能反代**（§7.3） |
 | `/v1/*`、`/ui/*` | agent 观察台 token | token 路由反代（§7.2，App 直连形态） |
 | `/` | 可 `?mtoken=<管理面token>` 直达 | WebUI 管理页（URL 带 token 打开即认证并存本浏览器，地址栏参数自动清除） |
 | `/docs`、`/api/openapi.json` | 无 | Swagger / OpenAPI |
@@ -226,41 +228,100 @@ curl -s -X POST -H "Authorization: Bearer $AGENT_TOKEN" \
 > 直接暴露（`expose=true`）的 agent 也可不经反代、直连 `http://SERVER:<agent端口>` + token 访问；
 > 默认不暴露，最小化外网面。
 
-### 7.3 服务路由 `/svc/{agent-id}/{service}/*` —— agent 自建的对外 API
+### 7.3 服务路由 `/svc/{agent-id}/{service}/*` —— agent 自建的对外 API（**全功能反代**）
 
-agent（大脑）可能在 workspace 里自建对外服务（如 FastAPI 行情/交易 API），监听独立端口。
-这些服务通过 services.json 清单声明（见 §11），管理面统一收编反代：
+agent（大脑）可能在 workspace 里自建对外服务（如 FastAPI 行情/交易 API），监听独立端口
+（仅 `127.0.0.1`）。这些服务通过 services.json 清单声明（见 §11），管理面统一收编反代——
+**全功能透明转发**：任意 HTTP 方法（GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS）、请求体、
+查询参数原样过，响应**流式回传**（SSE / 分块 / 大响应不被掐断）。某方法是否允许由
+服务自己决定（上游的 405 等状态码原样透传），管理面不替 agent 决策。
 
 ```bash
-curl -s -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/openapi.json
-curl -s -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/api/v1/status
-curl -s -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/docs        # 原生 Swagger 页（已做路径重写）
+curl -s  -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/openapi.json
+curl -s  -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/api/v1/status
+curl -s -X POST -H "Authorization: Bearer $T" -H "Content-Type: application/json" \
+      -d '{"id":"example-1"}' http://SERVER:8601/svc/{id}/{svc}/api/v1/items  # 写方法照常透传
+curl -s -N -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/api/v1/stream   # SSE/流式
+curl -s  -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/docs  # 原生 Swagger 页（已做路径重写）
 ```
 
-- **鉴权同 `/px`**：管理面 token（admin 或该 agent 范围的 user），或该 agent 的观察台 token；
+- **鉴权同 `/px`（二选一）**：管理面 token（admin 或该 agent 范围的 user），或该 agent 的
+  观察台 token——voidhub App 等只持观察台 token 的客户端直接可用；
 - **token 注入不变式**：客户端的 `Authorization` 一律不透传——清单声明了 `token_file`
   则管理面服务端读取并替换注入（每次请求实时读，agent 轮换 token 自动跟随），
-  没声明则删除。**客户端的管理面 token 绝不会到达 agent 自建服务**；
-- **readonly 拦截**：清单声明 `"readonly": true` 的服务，非 GET/HEAD/OPTIONS 一律 403；
-- **写操作审计**：经 `/svc` 的非 GET 请求写 `etc/audit.jsonl`（`svc.write`：agent/service/method/path/status）；
-- 转发始终走 `127.0.0.1:{port}`；服务自带的 CORS 头被剥掉——`/svc` 实际 same-origin only；
-- 错误：404（agent 或服务名不存在，附可用服务名清单）、403（越权 / readonly 写）、
-  400（路径含 `..`）、502（服务不可达）。
+  没声明则删除。**客户端的 token 绝不会到达 agent 自建服务**；
+- **写审计**：非 GET/HEAD/OPTIONS 的调用记录进 `etc/audit.jsonl`（`svc.write`：谁、何时、
+  哪个服务、方法、路径、上游状态码）——只被动记录，不干预；
+- **响应头透传**：除逐跳头与 content-length/date/server 外全部透传（上游的 CORS 头可达
+  浏览器端）；浏览器 **CORS 预检**（OPTIONS + `Access-Control-Request-Method`）由管理面
+  本地应答 204——预检发不出 Authorization，真实请求照常鉴权，安全性不变；
+- 转发始终走 `127.0.0.1:{port}`；读超时放宽到 600s（长任务 POST / SSE）；
+- 错误：404（agent 或服务名不存在，附可用服务名清单）、403（越权）、
+  400（路径含 `..`）、502（服务不可达）；上游业务状态码原样透传。
 
-**服务发现端点**（WebUI「服务」tab 与 API 探索器的数据源）：
+#### 7.3.1 外部程序三步接入
+
+**凭 token 能做什么**（先回答三个常见问题）：
+
+| 问题 | 答案 |
+|---|---|
+| 凭 token 能查有哪些 agent 吗？ | **agent 观察台 token → `GET /svc`** 返回该 token 所属 agent 的档案与服务清单（App 用它确认 token 归属）。要**枚举全部 agent** 需管理面 token（`GET /api/agents` 或 `GET /svc`，user 限范围）——观察台 token 只属于一个 agent，这是刻意的权限边界 |
+| 能查管理面的接口文档吗？ | 能，且无需 token：`GET /api/docs.md`（本文档）；Swagger `GET /docs` |
+| 能拿到 agent 服务的 API 文档吗？ | 能：`GET /svc` 返回每个服务的 `openapi`（管理面动态解析出的**实际可用路径**，null=无自描述）；再按该路径取 spec。无自描述的服务（如自写 HTTP 服务）路径需问 agent 或看其 workspace |
+
+**第一步 · 发现**——只持 token 的客户端（App 形态：IP + 端口 + token）用 `GET /svc`：
+
+```bash
+# 凭 agent 观察台 token → 仅该 agent 的服务清单
+curl -s -H "Authorization: Bearer $AGENT_TOKEN" http://SERVER:8601/svc
+# → {"agents":[{"agent":"<agent-id>","name":"<agent 显示名>","base":"/svc/<agent-id>/",
+#     "services":[{"name":"my-api","title":"我的服务","port":8710,
+#       "base_path":"","openapi":"/openapi.json","auth":true,"auto":false,
+#       "token_source":"manifest","openapi_source":"manifest"}]}]}
+
+# 凭管理面 token → admin 返回全部 agent，user 返回范围内 agent
+curl -s -H "Authorization: Bearer $T" http://SERVER:8601/svc
+```
+
+字段说明：`auto: true` = agent 未写清单、管理面自动发现的服务（命名 `auto-{port}`）；
+`auth: true` = 管理面已定位到服务 token、转发时自动注入（`token_source` 为 `manifest`
+=agent 声明 / `auto`=管理面按候选搜索）；`openapi` = 实际可用的自描述路径
+（`openapi_source` 同理），`null` = 无自描述。**服务名完全由 agent 自定**，与协议无关。
+
+**第二步 · 读接口定义**——`openapi` 非空时取 spec：
+
+```bash
+curl -s -H "Authorization: Bearer $AGENT_TOKEN" \
+     http://SERVER:8601/svc/<agent-id>/my-api/openapi.json
+```
+
+> openapi.json 里的 `paths` 是**服务本地路径**（如 `/api/v1/items`），经反代调用时
+> 要前拼 `/svc/{agent-id}/{服务名}`——管理面不改写 agent 的自描述，保持代理透明。
+> 无自描述的服务（`openapi: null`）只能直接调路径（向 agent 问或读其 workspace 文档），
+> WebUI 探索器对此类服务自动转手填模式。
+
+**第三步 · 调用**——拼上 `base`，任意方法：
+
+```bash
+BASE=http://SERVER:8601/svc/<agent-id>/my-api
+curl -s -H "Authorization: Bearer $AGENT_TOKEN" $BASE/api/v1/items
+curl -s -X POST -H "Authorization: Bearer $AGENT_TOKEN" -H "Content-Type: application/json" \
+     -d '{"id":"example-1"}' $BASE/api/v1/items
+```
+
+（路径为示意，实际以该服务 openapi.json / agent 说明为准。）
+
+**管理 API 形态的服务发现**（WebUI「服务」tab、API 探索器的数据源，含探活与清单错误）：
 
 ```bash
 curl -s -H "Authorization: Bearer $T" http://SERVER:8601/api/agents/{id}/services
-# → {"id":"...","services":[{"name":"astock-api","port":8765,"title":"…","openapi":"/openapi.json",
-#     "source":"file|registry","auth":true,"readonly":false,"health":{"ok":true,"status":200,"ms":35},
-#     "warn":"（仅端口落在分配池内时出现）"}],"errors":[],"shadowed":[]}
-
-# 登记（admin，注册表兜底；agent 自声明的同名条目优先）/ 删除登记
-curl -s -X POST -H "Authorization: Bearer $T" -H "Content-Type: application/json" \
-     -d '{"name":"astock-api","port":8765,"token_file":"workspace/data/api_token.txt"}' \
-     http://SERVER:8601/api/agents/{id}/services
-curl -s -X DELETE -H "Authorization: Bearer $T" http://SERVER:8601/api/agents/{id}/services/{name}
+# → {"id":"...","services":[{"name":"my-api","port":8710,"title":"…","openapi":"/openapi.json",
+#     "auth":true,"health":{"ok":true,"status":200,"ms":35},
+#     "warn":"（仅端口落在分配池内时出现）"}],"errors":[]}
+# 清单完全由 agent 的 services.json 自声明；管理面不代登记、不代改（不干预 agent）。
 ```
+
+> 线上实际入口以 `GET /svc` 实时返回为准（服务名各 agent 自定，与协议无关）。
 
 ---
 
@@ -269,7 +330,7 @@ curl -s -X DELETE -H "Authorization: Bearer $T" http://SERVER:8601/api/agents/{i
 ```bash
 cd /home/htao/work/xusi
 .venv/bin/python -m xusi token new <label>                          # user（默认无范围）
-.venv/bin/python -m xusi token new alice --role user --agents astronomy-7f3k,astock-9k2d
+.venv/bin/python -m xusi token new alice --role user --agents astronomy-7f3k,weather-9k2d
 .venv/bin/python -m xusi token new boss --role admin                # 管理员
 .venv/bin/python -m xusi token list                                 # 含完整 token
 .venv/bin/python -m xusi token revoke <token前缀≥8位>
@@ -291,18 +352,44 @@ cd /home/htao/work/xusi
 
 ## 10. 安全说明
 
-- 管理面监听 `0.0.0.0:8601`，是**唯一**需要放行的对外端口；agent 默认仅 `127.0.0.1`。
+- 管理面监听 `0.0.0.0:8601`，是**唯一**需要放行的对外端口；agent 默认仅 `127.0.0.1`，自建服务也建议仅 `127.0.0.1`。
 - token 明文存于服务器上 600 权限文件（`etc/tokens.json` / 各 agent `data/webui_tokens.json`），管理员可随时读回、撤销即时生效。
 - LLM api_key 由管理面代持（`etc/brains.toml`，600），签发给用户的 token 只授予观察台权限，接触不到 key。
+- `/svc` 反代里客户端的 `Authorization` 绝不透传给 agent 自建服务（声明 `token_file` 则服务端替换注入，否则删除）。
 - `?mtoken=`（管理面）与 `?token=`（观察台）会进访问日志，仅建议浏览器一次性使用；脚本/App 一律用 Bearer 头。
-- 管理操作全量审计：`etc/audit.jsonl`（谁、何时、对哪个 agent、做了什么）。
+- 管理操作全量审计：`etc/audit.jsonl`（谁、何时、对哪个 agent、做了什么）；`/svc` 对 agent 服务的写调用同样入审计（`svc.write`）。
 
 ---
 
 ## 11. services.json：agent 自建服务的自声明约定（agent → 管理面，文件通道）
 
+**约定的告知通道**：创建 agent 时管理面自动在 `workspace/playbook/对外服务接入.md`
+播种一份「对外接口 playbook」——与 init 播种的 llm-调用/工具与环境 等基础经验条目
+同类同位，agent 的经验机制自然读到它（已存在不覆盖）——
+agent 据此知道"支持本协议 = 获得正式对外入口"，其余自由发挥；不写清单的服务由
+动态发现兜底收编（`auto-{port}` 临时命名，可发现性差，正式入口以清单为准）。
+
 agent 想把自建服务（API/看板/工具页）暴露给管理面用户时，写一份清单文件即可，
 **管理面每次请求实时读取**——换端口、轮换 token、上下线，管理面自动跟随，无需重启。
+
+**声明的字段只是"提示"，不是门槛**——管理面的发现是三层兜底，agent 声明永远优先：
+
+1. **services.json 声明**（权威）：port / token_file / openapi 按声明用；
+2. **字段未声明或失效时按候选补齐**：
+   - `openapi`：先验证声明路径，404/坏内容则按候选探测
+     （`/openapi.json` `/api/openapi.json` `/v1/openapi.json` `/docs/openapi.json`
+     `/swagger.json` …，带服务 token），命中即用（结果缓存 60s）；
+   - `token_file`：未声明则按候选搜索
+     （`workspace/data/api_token.txt`、`workspace/data/api_tokens.json`
+     （JSON 里取 `tokens[]` 首个启用的、admin 优先）、`service_token.txt` 等），
+     找到即注入——**token 内容仍每次实时读**，轮换自动跟随；
+3. **完全没写清单的服务**：管理面扫 agent 单元（systemd cgroup）内进程的监听端口
+   （观察台端口除外），HTTP 探活后以 **`auto-{port}`** 名义收编进发现结果与
+   `/svc` 路由——agent 什么都不写也能被外部访问；agent 日后在清单声明同端口，
+   即由清单条目（含正式命名）接管，`auto-` 条目自动消失。
+
+所有探测只读（HTTP GET / `/proc` / 文件存在性），不写 agent 任何文件、不干预其运行；
+网络探测只发生在发现/列表路径，反代转发热路径零额外开销。
 
 **文件位置**（两处任选，同名时 workspace 侧优先）：
 
@@ -314,14 +401,13 @@ agent 想把自建服务（API/看板/工具页）暴露给管理面用户时，
 ```json
 [
   {
-    "name": "astock-api",
-    "port": 8765,
-    "title": "新药模拟盘 API",
+    "name": "my-api",
+    "port": 8710,
+    "title": "我的服务（UI 显示名）",
     "base_path": "",
     "openapi": "/openapi.json",
     "probe": "/health",
     "token_file": "workspace/data/api_token.txt",
-    "readonly": false,
     "note": "任意备注"
   }
 ]
@@ -329,21 +415,25 @@ agent 想把自建服务（API/看板/工具页）暴露给管理面用户时，
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| `name` | ✓ | 路由键 `/svc/{agent-id}/{name}/*`；`^[a-z0-9][a-z0-9_-]{0,31}$`，保持稳定 |
+| `name` | ✓ | 路由键 `/svc/{agent-id}/{name}/*`。取名自由（中文/大写/数字/`-`/`_` 均可，客户端自动 URL 编码），唯一要求是能安全作 URL 路径段：不含空格与 `/ \ ? # %`、非 `.`/`..`、1–64 字符；**保持稳定**（改了外部入口就变） |
 | `port` | ✓ | 服务监听的本地端口；管理面转发永远走 `127.0.0.1:{port}`。**建议 8700–8799**（8602–8699 是 agent 分配池，撞上会被警告） |
 | `title` | | UI 显示名，缺省 `name` |
 | `base_path` | | 服务挂在子路径时前拼（如 `/api`） |
 | `openapi` | | OpenAPI 自描述路径，缺省 `/openapi.json`；`false` = 无自描述（WebUI 转手填模式） |
 | `probe` | | 探活路径（相对 base_path），缺省 `/` |
 | `token_file` | | 服务自身的 Bearer token 文件，**相对 agent home**（如 `workspace/data/api_token.txt`）。管理面服务端读取注入，**绝不回显给客户端**；禁绝对路径与 `..` |
-| `readonly` | | `true` = 管理面拦截非 GET 写方法（403） |
 | `note` | | 备注，UI 展示 |
+
+（未知字段忽略。要不要拦某类方法由服务自己实现——管理面全功能透传，不替 agent 决策。）
 
 **要点**：
 
 - 服务建议绑 `127.0.0.1`（不写 host 或显式 `--host 127.0.0.1`）——对外只经管理面 8601 这一个端口，
-  服务 token 也不必发给任何人；
+  服务 token 也不必发给任何人（管理面按 token_file 或候选搜索服务端注入）；
+- 清单声明**建议写**（命名稳定、可读性好），但漏写/写错不阻断接入——三层兜底会补齐
+  （见上）；`auto-{port}` 命名在 agent 补写清单后自动升级为正式名；
 - 非法输入逐级降级不炸管理面：缺文件=空清单、坏 JSON=该文件忽略、坏条目=跳过，
   错误信息出现在 `GET /api/agents/{id}/services` 的 `errors` 里（WebUI 服务 tab 也会显示）；
-- 有 OpenAPI 的服务（FastAPI 自带 `/openapi.json`）在 WebUI 里自动获得**动态 API 探索器**：
-  端点列表 → 按定义生成参数表单 → 发送 → 响应按 content-type 渲染（JSON 美化/表格切换、markdown 渲染）。
+- 有 OpenAPI 的服务（FastAPI 自带 `/openapi.json`，或候选路径探测命中）在 WebUI 里自动获得
+  **动态 API 探索器**：端点列表 → 按定义生成表单（含写方法的请求体表单）→
+  发送（任意方法，写方法记审计）→ 响应按 content-type 渲染（JSON 美化/表格切换、markdown 渲染）。

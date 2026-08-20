@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from . import brains, ports, registry, systemdctl
+from . import brains, ports, registry, services, systemdctl
 from .config import get_config
 
 
@@ -44,8 +44,10 @@ def _iso() -> str:
 # ── 基础工具 ─────────────────────────────────────────────────────────
 
 def slugify(name: str) -> str:
-    s = re.sub(r"[^a-z0-9-]+", "-", name.strip().lower()).strip("-")
-    return s[:24] or "agent"
+    s = re.sub(r"[^a-z0-9-]+", "-", name.strip().lower()).strip("-")[:24]
+    # 残根守卫：中文名常只剩零星字母（如「A股…」→ "a"），短于 2 位不成词，
+    # 一律走 agent 兜底，保证 id 前缀风格统一（agent-xxxx）。
+    return s if len(s) >= 2 else "agent"
 
 
 def gen_id(name: str) -> str:
@@ -211,6 +213,9 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
         # 1) init：建 home/data、workspace，播种 playbook 经验库（v2 公开 CLI）
         _run_cli(["--home", str(home), "init", "--mission", mission, "--force"],
                  timeout=300)
+        # 1b) 播种对外接口 playbook（workspace/EXTERNAL-API.md：管理面反代约定，
+        #     agent 据此自建对外服务可获得正式外部入口；纯被动文档，已存在不动）
+        services.seed_playbook(home / "workspace")
         # 2) 渲染 config.toml（含所选大脑与 key，600）
         brains.write_agent_config(home, mission, brain_list, rec["budgets"])
         # 3) 注册（期望态 running）
