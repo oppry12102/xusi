@@ -218,7 +218,7 @@
     <button id="d-refresh" onclick="loadDetail()" style="margin-left:auto" title="手动刷新（详情打开期间自动刷新已暂停，数据不会被刷掉）">⟳</button>
     <button id="d-edit" onclick="openEdit(cur)" hidden>✎ 改参</button>
     <a id="d-ui" href="#" target="_blank" style="font-size:12.5px">观测台 ↗</a>
-    <button onclick="drawer.classList.remove('open')">✕</button></div>
+    <button onclick="closeDetail()" title="关闭并恢复看板 15s 自动刷新">✕</button></div>
   <div id="tabs"></div>
   <div id="pane"></div>
 </div>
@@ -329,6 +329,7 @@ const fmtDur = s => { if (!s) return "-"; const d = new Date(s); const ms = Date
 /* ── 看板 ─────────────────────────────────────────── */
 async function refresh(first = false) {
   if (!tok) { setLogin(); return; }
+  if (first && !pollTimer) pollTimer = setInterval(refresh, 15000);   // 先武装：首拉失败也保住轮询自愈
   try {
     const [h, who, list] = await Promise.all([
       fetch("/api/health").then(r => r.json()),
@@ -340,7 +341,7 @@ async function refresh(first = false) {
     $("#login-tip").hidden = true;
     agentsCache = list;
     renderCards(list);
-    if (first) { console.log("ok"); if (!pollTimer) pollTimer = setInterval(refresh, 15000); }
+    if (first) console.log("ok");
   } catch (e) { if (String(e.message) !== "401") $("#summary").textContent = "⚠ " + e.message; }
 }
 
