@@ -195,8 +195,8 @@
       <textarea id="f-mission" placeholder="持续获取中国A股的交易数据，形成本地数据库，并对外提供查询服务。"></textarea></div>
     <div><label>大脑（首个为默认；顺序 = 故障转移序；密钥由管理面代持）</label>
       <div id="f-brains" class="check"></div></div>
-    <div><label>xuseek-v2 版本（源码副本随实例隔离，创建后不可改；缺省 = 共享主源码）</label>
-      <select id="f-version"><option value="">主源码（跟随 GitHub 主干）</option></select></div>
+    <div><label>xuseek-v2 版本（源码副本随实例隔离、实例可单独迁移，创建后不可改；缺省 = 仓库最新版）</label>
+      <select id="f-version"><option value="">最新版本</option></select></div>
     <div style="display:flex;gap:12px">
       <div style="flex:1"><label>端口（8601–8699，缺省自动分配）</label>
         <select id="f-port"><option value="">自动分配</option></select></div>
@@ -503,12 +503,17 @@ async function openNew() {
     $("#f-brains").innerHTML = bs.map(b =>
       `<label><input type="checkbox" value="${esc(b.name)}" ${b.has_key ? "checked" : "disabled"}>
         ${esc(b.name)}${b.has_key ? "" : "（缺key）"} <small style="color:var(--sub)">${esc(b.model)}</small></label>`).join("");
-    const defLabel = vs.default_ready
-      ? "主源码（本地就绪，跟随 GitHub 主干）"
-      : "主源码（本地缺失：创建时试 GitHub 拉取，失败自动改用仓库最新版）";
-    $("#f-version").innerHTML = `<option value="">${defLabel}</option>` +
-      (vs.versions || []).map(v =>
-        `<option value="${esc(v.version)}">${esc(v.version)}（${(v.size_bytes / 1048576).toFixed(1)} MB）</option>`).join("");
+    const vers = vs.versions || [];
+    const mainLabel = vs.default_ready
+      ? "共享主源码（过渡期保留，将逐步废弃）"
+      : "共享主源码（本地缺失：创建时试 GitHub；过渡期保留，将逐步废弃）";
+    $("#f-version").innerHTML =
+      (vers.length
+        ? `<option value="">最新版本（${esc(vers[0].version)}）</option>` +
+          vers.slice(1).map(v =>
+            `<option value="${esc(v.version)}">${esc(v.version)}（${(v.size_bytes / 1048576).toFixed(1)} MB）</option>`).join("")
+        : `<option value="">仓库为空 → 缺省回落共享主源码</option>`) +
+      `<option value="main">${mainLabel}</option>`;
     $("#f-port").innerHTML = `<option value="">自动分配</option>` +
       ps.ports.map(p => `<option value="${p}">${p}</option>`).join("");
   } catch (e) { $("#f-err").textContent = e.message; }
@@ -576,7 +581,7 @@ async function loadDetail() {
           <b>进程单元</b><span>${s.process?.active}/${esc(s.process?.sub || "")} · 自动重启 ${s.process?.auto_restarts ?? 0}</span>
           <b>监听</b><span class="mono">${s.listen_host}:${s.port}${s.expose ? "（外网直连）" : "（仅本机，经反代）"}</span>
           <b>大脑</b><span>${(s.brains || []).map(esc).join(" → ")}</span>
-          <b>源码</b><span>${s.source_version ? `xuseek-v2 ${esc(s.source_version)}（实例私有副本）` : "主源码（共享）"}</span>
+          <b>源码</b><span>${s.source_version ? `xuseek-v2 ${esc(s.source_version)}（实例私有副本）` : "主源码（共享，逐步废弃中）"}</span>
           <b>daemon</b><span>${esc(d.state || "-")} · 会话 ${d.session_count ?? "-"} · 待收信 ${d.mailbox_pending ?? "-"}</span>
           <b>下次呼吸</b><span class="mono">${fmtT(d.next_wake_at)}</span>
           <b>BOOT.md</b><span>${s.agent_status?.boot_file?.exists ? `${s.agent_status.boot_file.chars} 字` : "未写"}</span>

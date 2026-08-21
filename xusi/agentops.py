@@ -192,32 +192,37 @@ def wait_health(port: int, agent_id: str, timeout: float = 90.0) -> None:
 
 # ── 生命周期 ─────────────────────────────────────────────────────────
 
+# source_version 保留值：显式选共享主源码（过渡期保留，逐步废弃——勿用作版本号）
+MAIN_SOURCE = "main"
+
+
 def _resolve_source_choice(src_ver: str) -> str:
     """创建时的源码抉择，返回实际使用的版本号（"" = 共享主源码）。
 
-    显式选了版本 → 直接用它（提前校验，失败零副作用）；
-    没选 → 主源码：本地已在 → 用（**不需要 GitHub**）；不在 → 试 GitHub 拉取；
-    都不可得 → 降级用版本仓库最新包。降级结果会写进注册表 source_version，
-    后续 spawn 走实例私有副本，不再依赖 GitHub。
-
-    部署可移植性：xusi 拷到别处时 xuseek-v2/（不入 git）可能没跟去、私仓可能
-    无权限——这条降级链让「不选版本」在新环境也能创建。
+    缺省（未选版本）→ **版本仓库最新包**：每个 agent 自带 xuseek-v2 私有副本，
+    instances/<id>/ 自洽、可单独迁移（共享主源码逐步废弃中）；
+    显式版本 → 直接用它（提前校验，失败零副作用）；
+    显式 "main"，或仓库为空时的缺省回落 → 共享主源码：本地已在 → 用
+    （零网络）；不在 → 试 GitHub 拉取；都不可得 → 报错并给出指引。
     """
-    if src_ver:
+    if src_ver and src_ver != MAIN_SOURCE:
         versions.zip_for(src_ver)
         return src_ver
-    try:
-        ensure_source()
-        return ""
-    except AgentError:
+    want_main = src_ver == MAIN_SOURCE
+    if not want_main:
         avail = versions.list_versions()
         if avail:
             return avail[0]["version"]   # list_versions 已按版本号新→旧排序
+    try:
+        ensure_source()
+        return ""
+    except AgentError as e:
+        if want_main:
+            raise
         raise AgentError(
-            f"xuseek-v2 主源码缺失且从 GitHub 拉取失败，版本仓库"
-            f"（{get_config().versions_dir}）也为空。请管理员投放"
-            f" xuseek-v2-<版本号>.zip（见 docs/versions.md），或手动 git clone"
-            f" 到 {get_config().source_dir}") from None
+            f"版本仓库（{get_config().versions_dir}）为空，共享主源码也不可得：{e}。"
+            f"请管理员投放 xuseek-v2-<版本号>.zip（见 docs/versions.md），"
+            f"或手动 git clone 到 {get_config().source_dir}") from None
 
 
 def create_agent(name: str, mission: str, brain_list: list[str], *,
@@ -226,10 +231,10 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
                  source_version: str = "") -> dict:
     """创建并启动一个 agent：init（播种经验库）→ 渲染 config → systemd 拉起 → 健康验收 → 签发首个 token。
 
-    source_version 非空：从版本仓库选定 xuseek-v2 版本，源码解压成该实例的私有副本
-    （instances/<id>/xuseek-v2/，删除 agent 时随 home 一起进 .trash）；
-    留空：共享主源码（现存 agent 的既有行为；主源码不可得时自动降级仓库最新版，
-    见 _resolve_source_choice）。
+    source_version：版本号 → 该版本源码解压成实例私有副本（instances/<id>/xuseek-v2/，
+    删除时随 home 进 .trash）；"main" → 共享主源码（过渡期保留，逐步废弃）；
+    缺省 → 版本仓库最新包（每 agent 自带私有副本，实例自洽可单独迁移；
+    仓库为空时回落共享主源码，见 _resolve_source_choice）。
     """
     cfg = get_config()
     mission = (mission or "").strip()
@@ -293,7 +298,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
 
     audit("agent.create", agent=agent_id, name=rec["name"], port=port,
           expose=expose, brains=brain_list, source=src_ver or "main",
-          source_fallback=bool(src_ver) and not (source_version or "").strip())
+          source_defaulted=not (source_version or "").strip())
     return get_agent_or_404(agent_id)
 
 

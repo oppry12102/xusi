@@ -114,8 +114,9 @@ class CreateAgentReq(BaseModel):
     port: int | None = Field(None, description="指定端口（缺省自动分配，自 8601 起）")
     budgets: dict | None = Field(None, description="预算 {max_rounds, max_seconds, max_context_tokens}")
     note: str = Field("", description="备注")
-    source_version: str = Field("", description="xuseek-v2 版本号（GET /api/versions；空=共享主源码）——"
-                                                "选定后源码解压为该实例私有副本，实例间隔离")
+    source_version: str = Field("", description="xuseek-v2 版本号（GET /api/versions）。缺省 = 仓库最新版"
+                                                "（每 agent 自带私有副本，可单独迁移）；'main' = 共享主源码"
+                                                "（保留值，过渡期后废弃）。私有副本创建后不可改")
 
 
 class PatchAgentReq(BaseModel):
@@ -162,8 +163,8 @@ def api_brains(_rec: dict = Depends(require_auth)) -> list[dict]:
 @app.get("/api/versions")
 def api_versions(_rec: dict = Depends(require_auth)) -> dict:
     """xuseek-v2 版本仓库清单（zip 由管理员投放于 versions/，约定见 docs/versions.md）。
-    创建 agent 传 source_version 选用；空 = 共享主源码（default_ready=false 且创建时
-    拉取失败 → 自动降级用仓库最新版，注册表记录实际版本）。"""
+    创建 agent 的 source_version 缺省 = 清单最新版（每 agent 私有副本）；'main' = 共享
+    主源码（default_ready 标示其是否本地就绪）。"""
     return {"repo_dir": str(get_config().versions_dir),
             "default_ready": (get_config().source_dir / "xuseek.sh").exists(),
             "versions": versions.list_versions()}
