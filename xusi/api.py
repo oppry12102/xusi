@@ -162,8 +162,10 @@ def api_brains(_rec: dict = Depends(require_auth)) -> list[dict]:
 @app.get("/api/versions")
 def api_versions(_rec: dict = Depends(require_auth)) -> dict:
     """xuseek-v2 版本仓库清单（zip 由管理员投放于 versions/，约定见 docs/versions.md）。
-    创建 agent 传 source_version 选用；空 = 共享主源码。"""
+    创建 agent 传 source_version 选用；空 = 共享主源码（default_ready=false 且创建时
+    拉取失败 → 自动降级用仓库最新版，注册表记录实际版本）。"""
     return {"repo_dir": str(get_config().versions_dir),
+            "default_ready": (get_config().source_dir / "xuseek.sh").exists(),
             "versions": versions.list_versions()}
 
 

@@ -192,6 +192,34 @@ def wait_health(port: int, agent_id: str, timeout: float = 90.0) -> None:
 
 # ── 生命周期 ─────────────────────────────────────────────────────────
 
+def _resolve_source_choice(src_ver: str) -> str:
+    """创建时的源码抉择，返回实际使用的版本号（"" = 共享主源码）。
+
+    显式选了版本 → 直接用它（提前校验，失败零副作用）；
+    没选 → 主源码：本地已在 → 用（**不需要 GitHub**）；不在 → 试 GitHub 拉取；
+    都不可得 → 降级用版本仓库最新包。降级结果会写进注册表 source_version，
+    后续 spawn 走实例私有副本，不再依赖 GitHub。
+
+    部署可移植性：xusi 拷到别处时 xuseek-v2/（不入 git）可能没跟去、私仓可能
+    无权限——这条降级链让「不选版本」在新环境也能创建。
+    """
+    if src_ver:
+        versions.zip_for(src_ver)
+        return src_ver
+    try:
+        ensure_source()
+        return ""
+    except AgentError:
+        avail = versions.list_versions()
+        if avail:
+            return avail[0]["version"]   # list_versions 已按版本号新→旧排序
+        raise AgentError(
+            f"xuseek-v2 主源码缺失且从 GitHub 拉取失败，版本仓库"
+            f"（{get_config().versions_dir}）也为空。请管理员投放"
+            f" xuseek-v2-<版本号>.zip（见 docs/versions.md），或手动 git clone"
+            f" 到 {get_config().source_dir}") from None
+
+
 def create_agent(name: str, mission: str, brain_list: list[str], *,
                  expose: bool = False, port: int | None = None,
                  budgets: dict | None = None, note: str = "",
@@ -200,7 +228,8 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
 
     source_version 非空：从版本仓库选定 xuseek-v2 版本，源码解压成该实例的私有副本
     （instances/<id>/xuseek-v2/，删除 agent 时随 home 一起进 .trash）；
-    留空：共享主源码（现存 agent 的既有行为）。
+    留空：共享主源码（现存 agent 的既有行为；主源码不可得时自动降级仓库最新版，
+    见 _resolve_source_choice）。
     """
     cfg = get_config()
     mission = (mission or "").strip()
@@ -215,9 +244,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
         raise AgentError(f"这些大脑没配 api_key（etc/brains.toml）：{', '.join(no_key)}")
     if not brain_list:
         raise AgentError("至少选择一家大脑")
-    src_ver = (source_version or "").strip()
-    if src_ver:
-        versions.zip_for(src_ver)   # 提前校验（命名/存在性），失败时零副作用
+    src_ver = _resolve_source_choice((source_version or "").strip())
 
     agent_id = gen_id(name)
     port = ports.allocate(port)
@@ -265,7 +292,8 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
         raise AgentError(f"创建失败已回滚：{e}") from e
 
     audit("agent.create", agent=agent_id, name=rec["name"], port=port,
-          expose=expose, brains=brain_list, source=src_ver or "main")
+          expose=expose, brains=brain_list, source=src_ver or "main",
+          source_fallback=bool(src_ver) and not (source_version or "").strip())
     return get_agent_or_404(agent_id)
 
 

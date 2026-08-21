@@ -503,7 +503,10 @@ async function openNew() {
     $("#f-brains").innerHTML = bs.map(b =>
       `<label><input type="checkbox" value="${esc(b.name)}" ${b.has_key ? "checked" : "disabled"}>
         ${esc(b.name)}${b.has_key ? "" : "（缺key）"} <small style="color:var(--sub)">${esc(b.model)}</small></label>`).join("");
-    $("#f-version").innerHTML = `<option value="">主源码（跟随 GitHub 主干）</option>` +
+    const defLabel = vs.default_ready
+      ? "主源码（本地就绪，跟随 GitHub 主干）"
+      : "主源码（本地缺失：创建时试 GitHub 拉取，失败自动改用仓库最新版）";
+    $("#f-version").innerHTML = `<option value="">${defLabel}</option>` +
       (vs.versions || []).map(v =>
         `<option value="${esc(v.version)}">${esc(v.version)}（${(v.size_bytes / 1048576).toFixed(1)} MB）</option>`).join("");
     $("#f-port").innerHTML = `<option value="">自动分配</option>` +

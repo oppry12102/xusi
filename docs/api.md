@@ -66,8 +66,10 @@ curl -s -H "Authorization: Bearer $T" http://SERVER:8601/api/brains
 # api_key 永不回显
 
 curl -s -H "Authorization: Bearer $T" http://SERVER:8601/api/versions
-# {"repo_dir":".../versions","versions":[{"version":"v2.3.0","file":"xuseek-v2-v2.3.0.zip",
-#   "size_bytes":123456,"mtime":"..."}]}   ← 管理员投放的 xuseek-v2 版本包（docs/versions.md）
+# {"repo_dir":".../versions","default_ready":true,
+#  "versions":[{"version":"v2.3.0","file":"xuseek-v2-v2.3.0.zip",
+#   "size_bytes":123456,"mtime":"..."}]}   ← 管理员投放的 xuseek-v2 版本包（docs/versions.md）；
+#   default_ready = 共享主源码是否本地就绪（false 时创建不选版本会试 GitHub，失败自动降级仓库最新版）
 
 curl -s -H "Authorization: Bearer $T" "http://SERVER:8601/api/ports/available?count=5"
 # {"range":[8602,8699],"ports":[8602,8603,8604,8605,8606]}
@@ -99,7 +101,7 @@ curl -s -X POST http://SERVER:8601/api/agents \
 | `expose` | bool | `true`=agent 监听 `0.0.0.0:port` 直接对外；默认 `false` 仅 `127.0.0.1`，一切外部访问走管理面反代 |
 | `port` | int? | 指定端口（8602–8699，已做占用检验）；缺省自动分配 |
 | `budgets` | object? | 探索回路安全网 `{max_rounds, max_seconds, max_context_tokens}`。**缺省不写任何预算**（全不限，LLM 完全自主）；给了才写、只写给出的键，0 = 不限 |
-| `source_version` | str? | xuseek-v2 版本号（`GET /api/versions`）。选定后该版本源码解压为**实例私有副本**（`instances/<id>/xuseek-v2/`，实例间隔离，可各跑各的版本）；缺省 = 共享主源码。创建后不可改 |
+| `source_version` | str? | xuseek-v2 版本号（`GET /api/versions`）。选定后该版本源码解压为**实例私有副本**（`instances/<id>/xuseek-v2/`，实例间隔离，可各跑各的版本）；缺省 = 共享主源码（本地缺失时创建试 GitHub，失败自动降级仓库最新版——实际版本见返回的 `source_version`）。创建后不可改 |
 | `note` | str? | 备注 |
 
 创建过程（同步，约数秒）：〔选了版本：解压私有源码副本〕→ 初始化实例目录 → 播种经验库 → 渲染 config.toml（含所选大脑 key，600 权限）→ systemd 拉起（**Restart=always 掉线保护**）→ 健康验收 → 签发首个观察台 token（label `xusi-proxy`）。失败自动回滚。成功返回 `201` + agent 档案（含 `source_version`）。

@@ -88,8 +88,9 @@ xusi/
 - **xuseek-v2 版本仓库**：管理员把版本源码打包投放 `versions/xuseek-v2-<版本号>.zip`
   （打包方法见 `docs/versions.md`；**整个 versions/ 目录不入 git**——zip 含私有源码）→ 新建 agent 时按版本号选用，源码解压成
   **实例私有副本**（`instances/<id>/xuseek-v2/`，各自构建 .venv，实例间互不影响，
-  删除时随实例目录一起进 .trash）；不选版本 = 共享主源码（`source_dir`，缺失自动
-  GitHub 拉取）。已有 agent 一律不受影响，版本创建后不可改。
+  删除时随实例目录一起进 .trash）；不选版本 = 共享主源码（`source_dir`，本地缺失时
+  创建试 GitHub，失败**自动降级仓库最新版**——xusi 拷去无 GitHub 权限的机器也能建
+  agent，实际版本记入注册表）。已有 agent 一律不受影响，版本创建后不可改。
 - **删除**：必须先显式停止（运行/暂停态拒绝删除，防误删）→ 注册表除名 →
   目录移入 `instances/.trash/`（遗留数据由管理员自行 rm）。
 - **暴露面**：默认一切外部访问经 8601 反代；`expose=true` 才让 agent 直接监听 `0.0.0.0:<port>`。

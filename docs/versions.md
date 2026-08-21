@@ -47,6 +47,10 @@ zip -r /path/to/xusi/versions/xuseek-v2-v2.3.0.zip . \
 - **选定版本创建** agent → 源码解压到 `instances/<id>/xuseek-v2/`，每实例一份
   私有副本（首次启动各自构建 `.venv`）：实例之间、与共享主源码互不影响，
   不同 agent 可跑不同版本。删除 agent 时副本随实例目录一起进 `.trash`。
-- **不选版本** → 与从前一样用共享主源码（`etc/xusi.toml` 的 `source_dir`，
-  缺失时自动从 GitHub 拉取）。
+- **不选版本** → 用共享主源码（`etc/xusi.toml` 的 `source_dir`），按降级链取得：
+  ① 主源码目录已在本地（整目录拷贝迁移时随之而来）→ 直接用，**不需要 GitHub**；
+  ② 不在 → 创建时自动从 GitHub 拉取；③ 拉取失败（典型：xusi 拷到无权限的机器）
+  → **自动降级用本仓库最新版**，并把实际版本写进注册表（后续 spawn 走实例私有
+  副本，不再依赖 GitHub）；④ 仓库也为空 → 报错并提示投放 zip 或手动 clone。
+  `GET /api/versions` 的 `default_ready` 标示主源码是否本地就绪。
 - 已有 agent 不受本仓库影响；版本在创建后不可改。
