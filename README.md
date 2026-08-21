@@ -69,8 +69,10 @@ xusi/
 │   ├── agents.json      注册表（agent 档案 + 期望态 + token 记录）
 │   ├── tokens.json      管理面 token（600）
 │   └── audit.jsonl      管理操作审计
-├── instances/<id>/      每个 agent 一个 home（config.toml, data/, workspace/）
+├── instances/<id>/      每个 agent 一个 home（config.toml, data/, workspace/；
+│                        选了版本的 agent 还有私有源码副本 xuseek-v2/）
 ├── instances/.trash/    删除后的遗留（管理员自行清理）
+├── versions/            xuseek-v2 版本仓库（不入 git；管理员投放 zip，约定见 docs/versions.md）
 └── docs/                api.md（外部 API 文档）· mission-examples.md（实验任务）
 ```
 
@@ -83,6 +85,11 @@ xusi/
 - **改参**：mission/brains/budgets 写 config.toml 热重载（下一口呼吸生效，不打断）；
   port/expose 需重启，界面/`?apply_restart=true` 一键执行。
 - **密钥轮换**：改 `etc/brains.toml` → 对 agent 做任意 PATCH 触发重渲染 → 热生效。
+- **xuseek-v2 版本仓库**：管理员把版本源码打包投放 `versions/xuseek-v2-<版本号>.zip`
+  （打包方法见 `docs/versions.md`；**整个 versions/ 目录不入 git**——zip 含私有源码）→ 新建 agent 时按版本号选用，源码解压成
+  **实例私有副本**（`instances/<id>/xuseek-v2/`，各自构建 .venv，实例间互不影响，
+  删除时随实例目录一起进 .trash）；不选版本 = 共享主源码（`source_dir`，缺失自动
+  GitHub 拉取）。已有 agent 一律不受影响，版本创建后不可改。
 - **删除**：必须先显式停止（运行/暂停态拒绝删除，防误删）→ 注册表除名 →
   目录移入 `instances/.trash/`（遗留数据由管理员自行 rm）。
 - **暴露面**：默认一切外部访问经 8601 反代；`expose=true` 才让 agent 直接监听 `0.0.0.0:<port>`。

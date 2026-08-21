@@ -33,6 +33,7 @@ class XusiConfig:
     port_hi: int = 8699
     source_dir: Path = ROOT / "xuseek-v2"   # xuseek-v2 源码（自管：缺失时从 GitHub 拉取）
     source_repo: str = "https://github.com/oppry12102/xuseek-v2"
+    versions_dir: Path = ROOT / "versions"  # 版本仓库：管理员投放 xuseek-v2-<版本号>.zip
     display_timezone: str = "Asia/Shanghai"
 
     # —— 派生路径 ——
@@ -62,7 +63,8 @@ class XusiConfig:
         return f"xusi-a-{agent_id}"
 
     def ensure_dirs(self) -> None:
-        for d in (self.etc_dir, self.instances_dir, self.trash_dir, self.webui_dir):
+        for d in (self.etc_dir, self.instances_dir, self.trash_dir,
+                  self.versions_dir, self.webui_dir):
             d.mkdir(parents=True, exist_ok=True)
 
 
@@ -77,6 +79,8 @@ def load_config() -> XusiConfig:
     cfg.port_lo, cfg.port_hi = int(lo), int(hi)
     if "source_dir" in mgr:
         cfg.source_dir = Path(os.path.expanduser(str(mgr["source_dir"]))).resolve()
+    if "versions_dir" in mgr:
+        cfg.versions_dir = Path(os.path.expanduser(str(mgr["versions_dir"]))).resolve()
     if "source_repo" in mgr:
         cfg.source_repo = str(mgr["source_repo"])
     if "display_timezone" in mgr:

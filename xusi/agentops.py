@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from . import brains, ports, registry, services, systemdctl
+from . import brains, ports, registry, services, systemdctl, versions
 from .config import get_config
 
 
@@ -66,11 +66,29 @@ def _listen_host(agent: dict) -> str:
     return "0.0.0.0" if agent.get("expose") else "127.0.0.1"
 
 
-def _xuseek_sh() -> Path:
-    ensure_source()
-    p = get_config().source_dir / "xuseek.sh"
+def _source_for(agent: dict | None = None) -> Path:
+    """该 agent 的 xuseek-v2 源码目录。
+
+    注册表带 source_version → 实例私有副本 instances/<id>/xuseek-v2/（创建时从
+    版本仓库解压，实例间完全隔离，可各跑各的版本）；不带（含全部现存 agent）→
+    共享主源码 source_dir，行为与从前一字不差。
+    """
+    ver = str((agent or {}).get("source_version") or "").strip()
+    if not ver:
+        return ensure_source()
+    p = _home(agent) / versions.SRC_DIR_NAME
+    if not (p / "xuseek.sh").exists():
+        raise AgentError(
+            f"agent {agent['id']} 的私有源码副本缺失：{p}（版本 {ver}）。"
+            f"实例目录可能被改动——可从版本仓库重新解压到该路径，或停机重建")
+    return p
+
+
+def _xuseek_sh(agent: dict | None = None) -> Path:
+    src = _source_for(agent)
+    p = src / "xuseek.sh"
     if not p.exists():
-        raise AgentError(f"xuseek 源码目录无效：{get_config().source_dir}")
+        raise AgentError(f"xuseek 源码目录无效：{src}")
     return p
 
 
@@ -101,17 +119,19 @@ def ensure_source() -> Path:
 
 
 def _spawn_unit(agent: dict) -> None:
-    """统一拉起入口：确保源码 → systemd-run 瞬态单元（Restart=always）。"""
+    """统一拉起入口：定位该 agent 的源码（私有副本或共享主源码）→ systemd-run
+    瞬态单元（Restart=always）。"""
     cfg = get_config()
-    ensure_source()
-    systemdctl.spawn_agent(cfg.unit_name(agent["id"]), str(cfg.source_dir),
+    src = _source_for(agent)
+    systemdctl.spawn_agent(cfg.unit_name(agent["id"]), str(src),
                            str(_home(agent)), _listen_host(agent), agent["port"])
 
 
-def _run_cli(args: list[str], timeout: float = 120) -> str:
-    """调 xuseek 公开 CLI（init / token）——公开接口，非内部耦合。"""
+def _run_cli(args: list[str], timeout: float = 120, *, agent: dict | None = None) -> str:
+    """调 xuseek 公开 CLI（init / token）——公开接口，非内部耦合。
+    带版本创建的 agent 用它自己的源码副本跑 CLI。"""
     import subprocess
-    r = subprocess.run([str(_xuseek_sh()), *args], capture_output=True, text=True,
+    r = subprocess.run([str(_xuseek_sh(agent)), *args], capture_output=True, text=True,
                        timeout=timeout)
     if r.returncode != 0:
         err = (r.stderr or r.stdout or "").strip().splitlines()
@@ -174,8 +194,14 @@ def wait_health(port: int, agent_id: str, timeout: float = 90.0) -> None:
 
 def create_agent(name: str, mission: str, brain_list: list[str], *,
                  expose: bool = False, port: int | None = None,
-                 budgets: dict | None = None, note: str = "") -> dict:
-    """创建并启动一个 agent：init（播种经验库）→ 渲染 config → systemd 拉起 → 健康验收 → 签发首个 token。"""
+                 budgets: dict | None = None, note: str = "",
+                 source_version: str = "") -> dict:
+    """创建并启动一个 agent：init（播种经验库）→ 渲染 config → systemd 拉起 → 健康验收 → 签发首个 token。
+
+    source_version 非空：从版本仓库选定 xuseek-v2 版本，源码解压成该实例的私有副本
+    （instances/<id>/xuseek-v2/，删除 agent 时随 home 一起进 .trash）；
+    留空：共享主源码（现存 agent 的既有行为）。
+    """
     cfg = get_config()
     mission = (mission or "").strip()
     if not mission:
@@ -189,6 +215,9 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
         raise AgentError(f"这些大脑没配 api_key（etc/brains.toml）：{', '.join(no_key)}")
     if not brain_list:
         raise AgentError("至少选择一家大脑")
+    src_ver = (source_version or "").strip()
+    if src_ver:
+        versions.zip_for(src_ver)   # 提前校验（命名/存在性），失败时零副作用
 
     agent_id = gen_id(name)
     port = ports.allocate(port)
@@ -205,14 +234,19 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
         "port": port,
         "desired_state": "running",
         "note": note,
+        "source_version": src_ver,
         "created_at": registry.now_iso(),
         "updated_at": registry.now_iso(),
         "tokens": [],
     }
     try:
-        # 1) init：建 home/data、workspace，播种 playbook 经验库（v2 公开 CLI）
+        # 0) 选了版本：版本仓库 → 实例私有源码副本（各实例隔离，互不影响）
+        if src_ver:
+            versions.extract(src_ver, home / versions.SRC_DIR_NAME)
+        # 1) init：建 home/data、workspace，播种 playbook 经验库（v2 公开 CLI；
+        #    版本化实例用它自己的源码副本跑）
         _run_cli(["--home", str(home), "init", "--mission", mission, "--force"],
-                 timeout=300)
+                 timeout=300, agent=rec)
         # 1b) 播种对外接口 playbook（workspace/EXTERNAL-API.md：管理面反代约定，
         #     agent 据此自建对外服务可获得正式外部入口；纯被动文档，已存在不动）
         services.seed_playbook(home / "workspace")
@@ -231,7 +265,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
         raise AgentError(f"创建失败已回滚：{e}") from e
 
     audit("agent.create", agent=agent_id, name=rec["name"], port=port,
-          expose=expose, brains=brain_list)
+          expose=expose, brains=brain_list, source=src_ver or "main")
     return get_agent_or_404(agent_id)
 
 
@@ -252,7 +286,7 @@ def _rollback_create(unit: str, home: Path, agent_id: str) -> None:
 
 def _mint_token(agent_id: str, label: str) -> tuple[str, str]:
     agent = get_agent_or_404(agent_id)
-    out = _run_cli(["--home", str(_home(agent)), "token", "new", label])
+    out = _run_cli(["--home", str(_home(agent)), "token", "new", label], agent=agent)
     tok = out.strip().splitlines()[0].strip()
     registry.record_token(agent_id, tok, label)
     return tok, label
@@ -450,6 +484,7 @@ def status(agent_id: str) -> dict:
         "port": agent["port"],
         "expose": agent.get("expose", False),
         "note": agent.get("note", ""),
+        "source_version": agent.get("source_version", ""),
         "desired_state": agent.get("desired_state", "running"),
         "listen_host": _listen_host(agent),
         "created_at": agent.get("created_at"),
@@ -570,7 +605,7 @@ def token_revoke(agent_id: str, token_prefix: str) -> dict:
             break
     if not full:
         raise AgentError("没有匹配该前缀的 token")
-    _run_cli(["--home", str(_home(agent)), "token", "revoke", full])
+    _run_cli(["--home", str(_home(agent)), "token", "revoke", full], agent=agent)
     registry.drop_token(agent_id, prefix)
     audit("agent.token_revoke", agent=agent_id, prefix=prefix)
     return {"revoked": full[:8] + "…"}

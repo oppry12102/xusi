@@ -11,6 +11,8 @@ etc/audit.jsonl
 instances/
 # xuseek-v2 源码（自管副本：部署时从 GitHub 拉取，见 etc/xusi.toml source_repo）
 xuseek-v2/
+# 版本仓库整目录不入库（zip 含私有源码 xuseek-v2；约定文档在 docs/versions.md）
+versions/
 
 # ═══ 环境与杂物 ═══
 .venv/

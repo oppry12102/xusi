@@ -168,6 +168,10 @@ def cmd_doctor(_args) -> int:
           f"{cfg.source_dir}" + ("" if src_ok else f"（缺失；创建 agent 时自动从 {cfg.source_repo} 拉取）"))
     check("xuseek 源码 venv 可用", (cfg.source_dir / ".venv" / "bin" / "python").exists()
           or not src_ok, "首次 spawn 时由 xuseek.sh 自动构建")
+    from . import versions
+    vs = versions.list_versions()
+    print(f"  [INFO] 版本仓库 {cfg.versions_dir}：{len(vs)} 个版本包"
+          + (f"（{'、'.join(v['version'] for v in vs)}）" if vs else "（空——新建 agent 走共享主源码）"))
     pool = brains.pool_summary()
     check("密钥池至少一家可用", any(b["has_key"] for b in pool),
           f"{len(pool)} 家：{', '.join(b['name'] + ('(有key)' if b['has_key'] else '(缺key)') for b in pool)}")

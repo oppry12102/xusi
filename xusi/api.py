@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, agentops, authtok, brains, ports, proxy, registry, services
+from . import __version__, agentops, authtok, brains, ports, proxy, registry, services, versions
 from .config import get_config
 from .systemdctl import SystemdError
 
@@ -41,6 +41,12 @@ async def _agent_error(_req: Request, exc: agentops.AgentError):
 async def _systemd_error(_req: Request, exc: SystemdError):
     return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
                     status_code=500, media_type="application/json")
+
+
+@app.exception_handler(versions.VersionError)
+async def _version_error(_req: Request, exc: versions.VersionError):
+    return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
+                    status_code=400, media_type="application/json")
 
 
 def _json_str(s: str) -> str:
@@ -108,6 +114,8 @@ class CreateAgentReq(BaseModel):
     port: int | None = Field(None, description="指定端口（缺省自动分配，自 8601 起）")
     budgets: dict | None = Field(None, description="预算 {max_rounds, max_seconds, max_context_tokens}")
     note: str = Field("", description="备注")
+    source_version: str = Field("", description="xuseek-v2 版本号（GET /api/versions；空=共享主源码）——"
+                                                "选定后源码解压为该实例私有副本，实例间隔离")
 
 
 class PatchAgentReq(BaseModel):
@@ -151,6 +159,14 @@ def api_brains(_rec: dict = Depends(require_auth)) -> list[dict]:
     return brains.pool_summary()
 
 
+@app.get("/api/versions")
+def api_versions(_rec: dict = Depends(require_auth)) -> dict:
+    """xuseek-v2 版本仓库清单（zip 由管理员投放于 versions/，约定见 docs/versions.md）。
+    创建 agent 传 source_version 选用；空 = 共享主源码。"""
+    return {"repo_dir": str(get_config().versions_dir),
+            "versions": versions.list_versions()}
+
+
 @app.get("/api/ports/available")
 def api_ports(count: int = 10, _rec: dict = Depends(require_auth)) -> dict:
     return {"range": [get_config().port_lo, get_config().port_hi],
@@ -171,7 +187,7 @@ def api_agents_list(rec: dict = Depends(require_auth)) -> list[dict]:
 def api_agents_create(req: CreateAgentReq, _rec: dict = Depends(require_admin)) -> dict:
     return agentops.create_agent(
         req.name, req.mission, req.brains, expose=req.expose, port=req.port,
-        budgets=req.budgets, note=req.note)
+        budgets=req.budgets, note=req.note, source_version=req.source_version)
 
 
 @app.get("/api/agents/{agent_id}")
