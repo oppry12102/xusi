@@ -573,6 +573,12 @@ async function loadDetail() {
       if (id !== cur) return;
       $("#d-nm").textContent = s.name; $("#d-id").textContent = id;
       const d = s.agent_status?.daemon || {};
+      let capsHtml = "";
+      try {
+        const cl = await api(`/api/agents/${id}/capabilities`);   // 问 agent 自己的源码副本
+        if (id !== cur) return;
+        capsHtml = capsPaneHtml(id, s, cl);
+      } catch (e) { capsHtml = `<h4 style="margin:14px 0 6px">能力包</h4><p class="err">${esc(e.message)}</p>`; }
       setPane(
 `
         <div class="kv">
@@ -589,6 +595,7 @@ async function loadDetail() {
           ${s.note ? `<b>备注</b><span>${esc(s.note)}</span>` : ""}
           <b>访问</b><span class="mono" style="font-size:11.5px">直连 ${s.listen_host === "0.0.0.0" ? s.port + " 端口" : "未暴露"} · 反代 /px/${id}/ · App 端口 ${location.port} + agent token</span>
         </div>
+        ${capsHtml}
         <h4 style="margin:14px 0 6px">原始 status（只读 GET /v1/status）</h4>
         <pre>${esc(JSON.stringify(s.agent_status || {note: `未运行（单元 ${s.process?.active || "?"}）`}, null, 2))}</pre>`
       );
@@ -673,6 +680,32 @@ async function sendMail(id) {
   const t = $("#m-txt").value.trim(); if (!t) return;
   try { await api(`/api/agents/${id}/mail`, {method: "POST", body: JSON.stringify({text: t})});
     $("#m-txt").value = ""; loadDetail(); } catch (e) { alert(e.message); }
+}
+
+/* ── 能力包（只读观察：种子已播入它的世界；用不用、装不装依赖归大脑）──── */
+function capsPaneHtml(id, s, cl) {
+  if (!s.source_version)
+    return `<h4 style="margin:14px 0 6px">能力包</h4>
+      <p class="hint" style="color:var(--sub)">共享主源码的旧版本内核，无能力包架构。</p>`;
+  const packs = cl.capabilities || [];
+  if (!packs.length)
+    return `<h4 style="margin:14px 0 6px">能力包</h4>
+      <p class="hint" style="color:var(--sub)">${esc(cl.note || "该源码版本无能力包")}</p>`;
+  const rows = packs.map(p => {
+    const costs = Object.entries(p.costs || {}).map(([k, v]) => `${k}: ${esc(v)}`).join("；");
+    return `<div class="svcrow">
+      <div class="hd">
+        <b>${esc(p.name)}</b>
+        <span class="chip">${p.enabled ? "已开启" : "种子已播 · 未开启"}</span>
+        <span class="chip" style="color:var(--sub)">v${esc(p.version || "?")}</span>
+      </div>
+      <div class="hint" style="color:var(--sub);font-size:12.5px;margin-top:4px">${esc(p.summary || "")}</div>
+      ${costs ? `<div class="hint" style="color:var(--warn);font-size:12px;margin-top:3px">成本（若启用）· ${costs}</div>` : ""}
+    </div>`;
+  }).join("");
+  return `<h4 style="margin:14px 0 6px">能力包（种子已无条件播入 workspace；启用与否、依赖安装归大脑）</h4>${rows}
+    <p class="hint" style="color:var(--sub);font-size:12px">管理面只播种、只观察，不替 agent 做决定：要不要用（register_skill）、
+    何时装依赖（run_shell 后台 pip，pack 的 playbook 指南有说明）都是大脑自己的事。</p>`;
 }
 
 /* ── 呼吸总结（会话列表）与工具统计 ─────────────────── */

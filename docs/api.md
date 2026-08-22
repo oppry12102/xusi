@@ -104,7 +104,22 @@ curl -s -X POST http://SERVER:8601/api/agents \
 | `source_version` | str? | xuseek-v2 版本号（`GET /api/versions`）。该版本源码解压为**实例私有副本**（`instances/<id>/xuseek-v2/`，实例自洽可单独迁移）；缺省 = **仓库最新版**；`"main"` = 共享主源码（保留值，将逐步废弃）。创建后不可改，实际版本见返回的 `source_version` |
 | `note` | str? | 备注 |
 
-创建过程（同步，约数秒）：〔选了版本：解压私有源码副本〕→ 初始化实例目录 → 播种经验库 → 渲染 config.toml（含所选大脑 key，600 权限）→ systemd 拉起（**Restart=always 掉线保护**）→ 健康验收 → 签发首个观察台 token（label `xusi-proxy`）。失败自动回滚。成功返回 `201` + agent 档案（含 `source_version`）。
+创建过程（同步，约数秒）：〔选了版本：解压私有源码副本〕→ 初始化实例目录（**无条件播入全部能力包种子**——几 KB 文本，归大脑的世界）→ 渲染 config.toml（含所选大脑 key，600 权限；内核/大脑写入的段如 `[capabilities]` 保真回传）→ systemd 拉起（**Restart=always 掉线保护**）→ 健康验收 → 签发首个观察台 token（label `xusi-proxy`）。失败自动回滚。成功返回 `201` + agent 档案（含 `source_version`）。
+
+### 4.1b 能力包（只读观察）
+
+```bash
+# 该 agent 的能力包清单：种子已在它的 workspace 里；enabled 反映 config [capabilities]
+# 实况（通常全 false——管理面不写该段；若大脑自行写入亦如实显示）
+curl -s -H "Authorization: Bearer $T" http://SERVER:8601/api/agents/{id}/capabilities
+# → {"capabilities":[{"name":"amem","version":"1.0.0","summary":"…","extras":"amem",
+#     "enabled":false,"costs":{"disk":"~2GB…","ram":"…","llm":"…"}}]}
+```
+
+> **分工裁决**：管理面**只负责种子，剩下的事情交给 agent 自己做**——不写
+> `[capabilities]`、不装依赖、不为此重启 agent。启用与否（register_skill）、
+> 依赖安装（run_shell 后台 pip，pack 的 playbook 指南有说明）全归大脑；
+> 管理面只观察（清单、成本、开关实况）。
 
 ### 4.2 启停 / 暂停 / 续跑 / 重启（admin）
 

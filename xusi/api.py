@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, agentops, authtok, brains, ports, proxy, registry, services, versions
+from . import __version__, agentops, authtok, brains, capabilities, ports, proxy, registry, services, versions
 from .config import get_config
 from .systemdctl import SystemdError
 
@@ -45,6 +45,12 @@ async def _systemd_error(_req: Request, exc: SystemdError):
 
 @app.exception_handler(versions.VersionError)
 async def _version_error(_req: Request, exc: versions.VersionError):
+    return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
+                    status_code=400, media_type="application/json")
+
+
+@app.exception_handler(capabilities.CapabilityError)
+async def _capability_error(_req: Request, exc: capabilities.CapabilityError):
     return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
                     status_code=400, media_type="application/json")
 
@@ -191,6 +197,16 @@ def api_agents_create(req: CreateAgentReq, _rec: dict = Depends(require_admin)) 
     return agentops.create_agent(
         req.name, req.mission, req.brains, expose=req.expose, port=req.port,
         budgets=req.budgets, note=req.note, source_version=req.source_version)
+
+
+# ── 能力包（只读观察：种子已无条件播入 workspace，启用与否、依赖安装归大脑）──
+# 注意：本节必须在 _mk_observe 循环之前注册（同 services 一节的原因）。
+
+@app.get("/api/agents/{agent_id}/capabilities")
+def api_agent_capabilities(pair: tuple = Depends(require_agent)) -> dict:
+    """agent 的能力包清单（只读）。enabled 反映其 config [capabilities] 的
+    实况（通常全 false——墟司不写该段；若大脑自行写入亦如实显示）。"""
+    return capabilities.list_for_agent(pair[0])
 
 
 @app.get("/api/agents/{agent_id}")

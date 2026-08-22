@@ -128,11 +128,17 @@ def _spawn_unit(agent: dict) -> None:
 
 
 def _run_cli(args: list[str], timeout: float = 120, *, agent: dict | None = None) -> str:
-    """调 xuseek 公开 CLI（init / token）——公开接口，非内部耦合。
-    带版本创建的 agent 用它自己的源码副本跑 CLI。"""
+    """调 xuseek 公开 CLI（init / token / seed）——公开接口，非内部耦合。
+    带版本创建的 agent 用它自己的源码副本跑 CLI。注意 CLI 经启动器跑，开了
+    能力包 extras 时可能先自愈安装依赖（分钟级），超时要给足。"""
     import subprocess
-    r = subprocess.run([str(_xuseek_sh(agent)), *args], capture_output=True, text=True,
-                       timeout=timeout)
+    try:
+        r = subprocess.run([str(_xuseek_sh(agent)), *args], capture_output=True, text=True,
+                           timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise AgentError(
+            f"xuseek CLI 超时（{timeout:.0f}s）：{' '.join(args[:3])} ——"
+            "若正在安装能力包依赖属正常，稍候重试；不要在安装中途重启它") from e
     if r.returncode != 0:
         err = (r.stderr or r.stdout or "").strip().splitlines()
         raise AgentError(err[-1] if err else f"xuseek CLI 失败：{' '.join(args[:2])}")
@@ -235,6 +241,10 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     删除时随 home 进 .trash）；"main" → 共享主源码（过渡期保留，逐步废弃）；
     缺省 → 版本仓库最新包（每 agent 自带私有副本，实例自洽可单独迁移；
     仓库为空时回落共享主源码，见 _resolve_source_choice）。
+
+    能力包（capabilities）：墟司**只播种不预装**——init 无条件播全部 pack 种子
+    （几 KB 文件，归大脑的世界），不写 [capabilities]、不装 extras。启用与否、
+    依赖安装全归大脑（pack 指南有自装说明；run_shell 后台装）。
     """
     cfg = get_config()
     mission = (mission or "").strip()
@@ -275,14 +285,17 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
         # 0) 选了版本：版本仓库 → 实例私有源码副本（各实例隔离，互不影响）
         if src_ver:
             versions.extract(src_ver, home / versions.SRC_DIR_NAME)
-        # 1) init：建 home/data、workspace，播种 playbook 经验库（v2 公开 CLI；
-        #    版本化实例用它自己的源码副本跑）
+        # 1) init：建 home/data、workspace，播种 playbook 经验库与全部能力包种子
+        #    （v2 公开 CLI，播种无条件幂等；版本化实例用它自己的源码副本跑）。
+        #    不传 --capability：不写 [capabilities]、不触发 extras 预装——
+        #    启用与否、依赖安装归大脑
         _run_cli(["--home", str(home), "init", "--mission", mission, "--force"],
                  timeout=300, agent=rec)
         # 1b) 播种对外接口 playbook（workspace/EXTERNAL-API.md：管理面反代约定，
         #     agent 据此自建对外服务可获得正式外部入口；纯被动文档，已存在不动）
         services.seed_playbook(home / "workspace")
-        # 2) 渲染 config.toml（含所选大脑与 key，600）
+        # 2) 渲染 config.toml（含所选大脑与 key，600）。内核/大脑写入的段
+        #    （如 [capabilities]）保真回传——墟司只重渲染自己认识的段
         brains.write_agent_config(home, mission, brain_list, rec["budgets"])
         # 3) 注册（期望态 running）
         registry.add_agent(rec)
@@ -520,6 +533,8 @@ def status(agent_id: str) -> dict:
         "source_version": agent.get("source_version", ""),
         "desired_state": agent.get("desired_state", "running"),
         "listen_host": _listen_host(agent),
+        # 实例能力开关实况（文件直读 [capabilities] 段，零子进程开销）
+        "capabilities": brains.read_capabilities(_home(agent)),
         "created_at": agent.get("created_at"),
         "tokens_count": len(read_agent_tokens(agent)),
         "fetched_at": _iso(),

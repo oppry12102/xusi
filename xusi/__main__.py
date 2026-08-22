@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 from . import __version__, authtok
@@ -149,6 +151,29 @@ def cmd_status(_args) -> int:
     return 0
 
 
+def _zip_pack_names(zp: Path) -> list[tuple[str, str]]:
+    """zip 里有哪些能力包：走查 xuseek/capabilities/*/manifest.toml，读 [pack] 的
+    name/version（名字与目录名不一致的坏包跳过——与内核 discover 同判）。"""
+    import tomllib
+    out: list[tuple[str, str]] = []
+    try:
+        with zipfile.ZipFile(zp) as zf:
+            names = [n for n in zf.namelist()
+                     if re.fullmatch(r"(?:[^/]+/)*xuseek/capabilities/([a-z0-9-]+)/manifest\.toml", n)]
+            for n in sorted(names):
+                try:
+                    raw = tomllib.loads(zf.read(n).decode("utf-8"))
+                    p = raw.get("pack") or {}
+                    d = n.rsplit("/", 2)[-2]
+                    if str(p.get("name", "")) == d:
+                        out.append((d, str(p.get("version", ""))))
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return out
+
+
 def cmd_doctor(_args) -> int:
     from . import brains, ports, systemdctl
     cfg = get_config()
@@ -172,6 +197,21 @@ def cmd_doctor(_args) -> int:
     vs = versions.list_versions()
     print(f"  [INFO] 版本仓库 {cfg.versions_dir}：{len(vs)} 个版本包"
           + (f"（{'、'.join(v['version'] for v in vs)}）" if vs else "（空——新建 agent 走共享主源码）"))
+    # 各版本 zip 的能力包资产校验（投放校验：manifest 存在才算数；只读 manifest 名，
+    # 不解析 pack 内容——契约一只许读 manifest）
+    import zipfile
+    for v in vs:
+        packs = _zip_pack_names(cfg.versions_dir / v["file"])
+        print(f"  [INFO] {v['version']} 能力包资产："
+              + ("、".join(f"{n}@{ver}" for n, ver in packs) if packs else "（无）"))
+    # HF 镜像（能力包嵌入模型首次下载走它）：软检查——离线机可忽略，不算 FAIL
+    try:
+        import httpx
+        httpx.get("https://hf-mirror.com", timeout=5, follow_redirects=True)
+        print("  [INFO] HF 镜像 hf-mirror.com 可达（能力包嵌入模型下载走它）")
+    except Exception as e:
+        print(f"  [WARN] HF 镜像 hf-mirror.com 不可达（{type(e).__name__}）——"
+              "开了带嵌入模型的能力包（如 amem）时首次下载会失败；离线部署可忽略")
     pool = brains.pool_summary()
     check("密钥池至少一家可用", any(b["has_key"] for b in pool),
           f"{len(pool)} 家：{', '.join(b['name'] + ('(有key)' if b['has_key'] else '(缺key)') for b in pool)}")
