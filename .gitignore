@@ -1,4 +1,6 @@
 # ═══ 密钥与运行时数据 —— 永不入库 ═══
+# 管理面本地配置（端口、源路径、role 等；每台机器独立——git pull 会撞配置）
+etc/xusi.toml
 # 四家 LLM 的 api_key（用 brains.toml.example 起手）
 etc/brains.toml
 # 管理面 token（admin/user）

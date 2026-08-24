@@ -1,0 +1,42 @@
+# ═══════════════════════════════════════════════════════════════════
+# 墟司（xusi）管理面配置 —— 模板
+#
+# 首次安装：`python -m xusi install` 会自动从本模板拷一份到 etc/xusi.toml，
+# 你只需要按需取消 / 修改对应行。所有字段都可选，留空 = 用内置默认。
+#
+# 重要：本文件不进 git。每台机器的 etc/xusi.toml 都是本地的——这是 Phase 1.2
+# 修 id 撞号的根本保证（之前 id 写在本文件里，git pull 会让多台机器撞号）。
+# ═══════════════════════════════════════════════════════════════════
+
+# ── 管理面自身的监听地址 ──
+# 0.0.0.0 = 对外（局域网 / voidhub 走这一端口反代访问所有 agent）
+# 所有 agent 的访问都经 8601 反代；agent 默认只听 127.0.0.1，不单独暴露
+[server]
+host = "0.0.0.0"
+port = 8601
+
+# ── 管理面行为 ──
+[manager]
+# 版本仓库路径：管理员投放 xuseek-v2-<版本号>.zip 的目录。新建 agent 自动取
+# 最新版本作实例私有副本（instances/<id>/xuseek-v2/）。整目录不入 git。
+versions_dir = "/home/ubuntu/work/xusi/versions"
+
+# agent 端口分配段（8601 是管理面，agent 从 8602 起按需占用）
+port_range = [8602, 8699]
+
+# 给用户展示用的时区
+display_timezone = "Asia/Shanghai"
+
+# ── 集群互联（Phase 1+）──
+# 同 cluster.secret 的所有 xusi 互信，token 用 HS256-JWT 跨节点通用（一个入口访问全部 agent）。
+# 留空 = 单节点模式（今天的行为，token 是本地明文）。
+[cluster]
+# secret = "请用 openssl rand -hex 32 生成；所有节点用同一个值"
+
+# ── 节点身份 ──
+# id 不在这里写——节点身份从 /etc/machine-id 自动派生（每台机器天然不同）。
+# 也可用环境变量 XUSI_NODE_ID 覆盖（测试 / 临时改名场景）。
+# 历史：Phase 1 曾把 id 写进 toml，git pull 会让多台机器撞号，已废弃。
+[node]
+role = "worker"   # worker | backup | portal；改完需重启管理面生效
+# public_url = "http://your-host:8601"   # 给 peer 看自己的入口；空时按 host:port 自动探测

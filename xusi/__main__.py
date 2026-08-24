@@ -13,7 +13,6 @@ import argparse
 import json
 import os
 import re
-import secrets
 import subprocess
 import sys
 import zipfile
@@ -62,57 +61,22 @@ WantedBy=default.target
 """
 
 
-def _ensure_node_id() -> None:
-    """安装时若 etc/xusi.toml 没设 [node].id，自动生成 6 字节 url-safe 写回。
-    用文本保形（不重写整个文件、保留注释）：缺 [node] 段则追加；缺 id 行则插入。
+def _install_xusi_toml() -> None:
+    """若 etc/xusi.toml 不存在，从 example 拷一份落盘——这是新机器安装的最小引导。
 
-    严格匹配 `id =` ：不能 `startswith("id")`，否则 `idempotency_key` / `idea` /
-    `idempotent` 等同名字段会被误判为已设 id 行——常见踩坑。
+    Phase 1.2 起 etc/xusi.toml 已 gitignored；空 install 仍是健全的（load_config 全
+    用默认值），但常见情形（改 port / 加源路径）需要从模板起手，所以 install 给一份。
     """
-    cfg = get_config()
-    if cfg.node_id:
-        return
-    new_id = secrets.token_urlsafe(6)
-    toml = cfg.root / "etc" / "xusi.toml"
-    text = toml.read_text(encoding="utf-8") if toml.exists() else ""
-    lines = text.splitlines(keepends=True)
-    # 找 [node] 段
-    node_idx = None
-    for i, ln in enumerate(lines):
-        if ln.strip() == "[node]":
-            node_idx = i
-            break
-    if node_idx is None:
-        # 追加整段
-        if lines and not lines[-1].endswith("\n"):
-            lines.append("\n")
-        lines.append("\n[node]\n")
-        lines.append(f'id = "{new_id}"\n')
-    else:
-        # 在 [node] 段内找 `id =` 行；没找到则在段末之后插入
-        in_node = False
-        insert_at = None
-        id_re = re.compile(r"^id\s*=")
-        for i, ln in enumerate(lines):
-            s = ln.strip()
-            if s == "[node]":
-                in_node = True
-                continue
-            if in_node:
-                if s.startswith("[") and s.endswith("]"):   # 进入下一段
-                    insert_at = i
-                    break
-                if id_re.match(s):
-                    # 已经有 id 行（即使空也当作已设）——不动
-                    return
-        if insert_at is None:
-            insert_at = len(lines)
-        lines.insert(insert_at, f'id = "{new_id}"\n')
-    toml.write_text("".join(lines), encoding="utf-8")
-    # 清缓存——下次 get_config() 触发懒加载会读到新 id（load_config 不会改 _CONFIG 自身）
     from . import config as _cfg_mod
-    _cfg_mod._CONFIG = None
-    print(f"==> 节点身份：自动生成 id = {new_id}（写入 etc/xusi.toml [node].id；想换名手改）")
+    cfg = _cfg_mod.get_config()
+    toml = cfg.root / "etc" / "xusi.toml"
+    if toml.exists():
+        return
+    example = cfg.root / "etc" / "xusi.toml.example"
+    if example.exists():
+        import shutil as _sh
+        _sh.copy(example, toml)
+        print(f"==> 已从模板创建 etc/xusi.toml（按需改 port / 源路径等）")
 
 
 def cmd_install(args) -> int:
@@ -122,8 +86,7 @@ def cmd_install(args) -> int:
     # 才回落到 source_dir（缺失时自动从 GitHub 拉取）。
     from . import agentops, versions as _versions
     cfg = get_config()
-    _ensure_node_id()
-    cfg = get_config()  # reload after id 写入
+    _install_xusi_toml()
     vs = _versions.list_versions()
     if vs:
         print(f"==> 版本仓库就位：{cfg.versions_dir}（{len(vs)} 个版本包："
