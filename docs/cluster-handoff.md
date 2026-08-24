@@ -154,13 +154,21 @@ curl -s http://<对端>:8601/api/health | jq .version
 | 已做 | 没做（v2 候选） |
 |---|---|
 | peer 注册表 + 5s 探活缓存 | 写路径：lifecycle / patch / mail / backup / token revoke |
-| `/api/peers` CRUD + `/api/peers/probe` | `/px` `/svc` `/v1` `/ui` 跨节点 HTML 重写 |
+| `/api/peers` CRUD + `/api/peers/probe` | `/svc` `/v1` `/ui` 跨节点 HTML 重写 |
 | `/api/cluster` 真实化（带 latency） | peer 自动发现 |
 | `/api/agents` fan-in | WebSocket 跨节点 |
 | agent 读端点（status / capabilities / services / observe / tokens / backups）跨节点转发 | |
+| `/px/{id}/...` 跨节点转发（观察台 + 任何前缀子路径） | |
+
+> `/px/{id}/...` 已支持远端：peer 端 `prefix_proxy` 自己 inject agent token；HTML
+> 中的 `/v1/*` 由 peer 在 HTML 重写时改成 `/px/{id}/v1/*`——浏览器仍在 dev 页面里继续触发
+> `/px/...`，再被 dev 转发到 peer（递归）。所以 WebUI 上**点「观察台」即可打开对端 agent 的
+> 完整观察台页面**，所有相对路径自动转发。鉴权只接受管理面 token（peer 端的 agent tokens.json
+> 不在本机）。
 
 **所以**：
 - 在本机可以**列出**对端 agent、**读取**对端 agent 的 health / capabilities / observe log
+- 可以**经本机打开对端 agent 的观察台**（`/px/{id}/ui/`），所有 `/v1/*` 子路径透明工作
 - **不能在本机**对端 agent 做 `POST /api/agents/{id}/mailbox` 或启停 / 改参 / 投信 / 备份 / 撤销 token——这些请求**只在本机 agents 范围内生效**，对端 agent 需要登到对端 WebUI 操作
 
 ## 6. 排查 cheat sheet
