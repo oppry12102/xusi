@@ -56,7 +56,7 @@ HTTP/1.1 403 Forbidden
 
 ```bash
 curl -s http://SERVER:8601/api/health
-# {"ok":true,"service":"xusi","version":"1.0.0","agents":1,"at":"..."}
+# {"ok":true,"service":"xusi","version":"1.1.0","agents":1,"at":"..."}
 
 curl -s -H "Authorization: Bearer $T" http://SERVER:8601/api/whoami
 # {"label":"admin","role":"admin","agents":["*"]}
