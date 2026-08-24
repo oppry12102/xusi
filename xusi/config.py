@@ -6,6 +6,7 @@ etc/xusi.toml 缺失时用内置默认值起服务（首次 install 前也能 do
 from __future__ import annotations
 
 import os
+import socket
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,8 @@ class XusiConfig:
                                  # 启动后任何 peer 在 peer 名册里靠它识别节点。
     node_role: str = "worker"   # [node].role：worker | backup | portal；
                                  # 改它要重启语义；agent 启停路径依赖本字段。
+    node_public_url: str = ""   # [node].public_url 显式覆盖（推荐）——peer 名册要拿这个；
+                                 # 空时按 host:port 自动探测。
 
     # —— 派生路径 ——
     @property
@@ -80,11 +83,18 @@ class XusiConfig:
     @property
     def public_url(self) -> str:
         """本节点的对外访问地址（peer 列表相互引用的形态）。
-        来自 server.host/port：host 为 0.0.0.0 时降级为 'localhost'（配置外露 URL 不能
-        拿通配 host）。Phase1 仅用于 /api/peer/id 自报与对等名册快照。"""
+
+        三级优先：
+        ① [node].public_url 显式覆盖（推荐——明确可控）；
+        ② `host:port`，host 是 0.0.0.0/::/空 时自动探测本机出站 IP；
+        ③ 全失败时回退 'localhost'（明显坏但不会让服务起不来——前端会立即看见歧义）。
+
+        Phase1 用于 /api/peer/id 自报与对等名册快照。Phase2 peer 转发按此 url 反向调用。"""
+        if self.node_public_url:
+            return self.node_public_url
         host = self.host
         if host in ("0.0.0.0", "", "::"):
-            host = "localhost"
+            host = _detect_outbound_ip() or "localhost"
         return f"http://{host}:{self.port}"
 
     def ensure_dirs(self) -> None:
@@ -118,8 +128,24 @@ def load_config() -> XusiConfig:
         cfg.node_id = str(node["id"])
     if "role" in node:
         cfg.node_role = str(node["role"])
+    if "public_url" in node:
+        cfg.node_public_url = str(node["public_url"])
     cfg.ensure_dirs()
     return cfg
+
+
+def _detect_outbound_ip() -> str | None:
+    """UDP socket trick：不真正发包；从系统路由表反推本机出站 IP。
+    8.8.8.8 是路由探测的经典目标（Google DNS，不可达也无妨——connect 不发数据）。
+    失败（无外网/无默认路由/容器内受限）返回 None，由 caller 兜底。"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except Exception:
+        return None
+    finally:
+        s.close()
 
 
 _CONFIG: XusiConfig | None = None

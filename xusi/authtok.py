@@ -146,21 +146,31 @@ def revoke_token(prefix: str) -> int:
 
 def verify(token: str) -> dict | None:
     """校验 token，返回 {token, label, role, agents, created_at} 或 None。
-    集群模式下：先 HS256-JWT（覆盖本机签发 + 跨节点收到的合法 JWT），失败回退明文
-    等值（覆盖 secret 由空转非空那一刻的遗留 token）。
+
+    集群（cluster_secret 非空）模式下按"输入形态"分流——这是 secret 轮换正确的关键：
+    - 输入是 JWT（dot 数 == 2）：**只走 JWT 路径**。失败直接返 None。
+      这样 secret v1 签发的旧 JWT 在 secret 轮换到 v2 后必然签名不匹配 → 拒绝；
+      同时也不让"明文回退"去命中 tokens.json 里旧 JWT 的同名字符串绕过轮换。
+    - 输入非 JWT（无 / 少 dot 的旧明文 token）：走明文回退，覆盖"先发 token 后开
+      [cluster].secret"那一刻的遗留 token；过渡期内既有人仍可继续用。
+    - 输入 JWT 但不属于本集群（kpr != 'xusi'）：等同签名错，返 None。
+
     单节点模式：只看明文（今天的行为，零变化）。"""
     if not token:
         return None
     if _cluster_on():
-        payload = _jwt_verify(token, get_config().cluster_secret)
-        if payload and payload.get("kpr") == "xusi":
-            return {
-                "token": token,
-                "label": payload.get("label") or "",
-                "role": payload.get("role") or "user",
-                "agents": payload.get("agents") or [],
-                "created_at": payload.get("iat") or "",
-            }
+        if token.count(".") == 2:
+            payload = _jwt_verify(token, get_config().cluster_secret)
+            if payload and payload.get("kpr") == "xusi":
+                return {
+                    "token": token,
+                    "label": payload.get("label") or "",
+                    "role": payload.get("role") or "user",
+                    "agents": payload.get("agents") or [],
+                    "created_at": payload.get("iat") or "",
+                }
+            return None
+        # 落到这里：非 JWT 输入 + 集群模式 → 走明文回退（只覆盖过渡期遗留 plaintext）
     for t in _load()["tokens"]:
         if hmac.compare_digest(t["token"], token):
             return t

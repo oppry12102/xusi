@@ -64,7 +64,11 @@ WantedBy=default.target
 
 def _ensure_node_id() -> None:
     """安装时若 etc/xusi.toml 没设 [node].id，自动生成 6 字节 url-safe 写回。
-    用文本保形（不重写整个文件、保留注释）：缺 [node] 段则追加；缺 id 行则插入。"""
+    用文本保形（不重写整个文件、保留注释）：缺 [node] 段则追加；缺 id 行则插入。
+
+    严格匹配 `id =` ：不能 `startswith("id")`，否则 `idempotency_key` / `idea` /
+    `idempotent` 等同名字段会被误判为已设 id 行——常见踩坑。
+    """
     cfg = get_config()
     if cfg.node_id:
         return
@@ -88,6 +92,7 @@ def _ensure_node_id() -> None:
         # 在 [node] 段内找 `id =` 行；没找到则在段末之后插入
         in_node = False
         insert_at = None
+        id_re = re.compile(r"^id\s*=")
         for i, ln in enumerate(lines):
             s = ln.strip()
             if s == "[node]":
@@ -97,17 +102,16 @@ def _ensure_node_id() -> None:
                 if s.startswith("[") and s.endswith("]"):   # 进入下一段
                     insert_at = i
                     break
-                if s.startswith("id"):
+                if id_re.match(s):
                     # 已经有 id 行（即使空也当作已设）——不动
                     return
         if insert_at is None:
             insert_at = len(lines)
         lines.insert(insert_at, f'id = "{new_id}"\n')
     toml.write_text("".join(lines), encoding="utf-8")
-    # cfg 缓存要清掉——get_config 是 module global
+    # 清缓存——下次 get_config() 触发懒加载会读到新 id（load_config 不会改 _CONFIG 自身）
     from . import config as _cfg_mod
     _cfg_mod._CONFIG = None
-    _cfg_mod.load_config()
     print(f"==> 节点身份：自动生成 id = {new_id}（写入 etc/xusi.toml [node].id；想换名手改）")
 
 

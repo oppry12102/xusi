@@ -77,11 +77,12 @@ def set_name(name: str) -> dict:
 
 
 def info() -> dict:
-    """对外摘要（/api/peer/id、/api/cluster）。不含敏感字段。"""
+    """对外摘要（/api/peer/id、/api/cluster）。不含敏感字段。name 会 strip。"""
     cfg = get_config()
+    name = load_name().strip() or default_name()
     return {
         "id": cfg.node_id or "(unset)",
-        "name": load_name(),
+        "name": name,
         "role": cfg.node_role,
         "version": __version__,
         "url": cfg.public_url,
