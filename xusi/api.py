@@ -16,10 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, agentops, authtok, backup, brains, capabilities, node, ports, proxy, registry, services, versions
+from . import __version__, agentops, authtok, backup, brains, capabilities, node, peers, ports, proxy, registry, services, versions, xproxy
 from .config import get_config
 from .systemdctl import SystemdError
 
@@ -64,6 +64,20 @@ async def _backup_error(_req: Request, exc: backup.BackupError):
 @app.exception_handler(ValueError)
 async def _value_error(_req: Request, exc: ValueError):
     """node.set_name 等用户入参校验抛 ValueError，转 400 而非 500。"""
+    return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
+                    status_code=400, media_type="application/json")
+
+
+@app.exception_handler(peers.PeerUnreachable)
+async def _peer_unreachable(_req: Request, exc: peers.PeerUnreachable):
+    """peer 不可达——网络层失败，502 Bad Gateway（参照 proxy.py 内 127.0.0.1 不可达的同码处理）。"""
+    return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
+                    status_code=502, media_type="application/json")
+
+
+@app.exception_handler(peers.PeerRefused)
+async def _peer_refused(_req: Request, exc: peers.PeerRefused):
+    """本地拒绝——单节点模式 / 重名 / url 格式坏。400 Bad Request。"""
     return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
                     status_code=400, media_type="application/json")
 
@@ -123,6 +137,26 @@ def require_agent(agent_id: str, rec: dict = Depends(require_auth)) -> tuple[dic
     return agent, rec
 
 
+async def require_agent_or_remote(
+    request: Request,
+    agent_id: str,
+    rec: dict = Depends(require_auth),
+) -> tuple["xproxy.AgentTarget", dict]:
+    """Phase 2 跨节点读端点的鉴权依赖：
+    - 作用域检查先于 locality 查询（不泄露远端 agent 的存在性）
+    - 本地命中：kind="local"（pair[0].agent == registry 记录）
+    - 远端命中：kind="remote"（pair[0].peer == peer 记录；proxy 时由
+      xproxy.forward_to_peer 透传 caller JWT 到 peer，peer 端重验 + 重 enforce 作用域）
+    - 全 miss → 404
+    """
+    if not authtok.can_access(rec, agent_id):
+        raise HTTPException(403, f"token 无权访问 agent {agent_id}")
+    target = xproxy.resolve(agent_id, rec=rec)
+    if target is None:
+        raise HTTPException(404, f"agent 不存在: {agent_id}")
+    return target, rec
+
+
 # ── 请求模型 ─────────────────────────────────────────────────────────
 
 class CreateAgentReq(BaseModel):
@@ -178,6 +212,12 @@ class PatchNodeReq(BaseModel):
     name: str = Field(min_length=1, max_length=64, description="新显示名")
 
 
+class AddPeerReq(BaseModel):
+    """注册一个 peer；server 会立即探活 {peer.url}/api/peer/id 拿 id。"""
+    url: str = Field(min_length=1, description="peer 管理面 url（如 http://10.0.16.15:8601）")
+    name: str = Field("", description="显示名（缺省用 peer 自报）")
+
+
 # ── 元信息 ───────────────────────────────────────────────────────────
 
 def _health() -> dict:
@@ -215,9 +255,89 @@ def api_node_patch(req: PatchNodeReq, _rec: dict = Depends(require_admin)) -> di
 
 @app.get("/api/cluster")
 def api_cluster(_rec: dict = Depends(require_auth)) -> dict:
-    """集群视图（Phase 1 仅 self；Phase 2 加 peers[] + reachability 探测）。
-    前端顶栏的「切换节点下拉」直接用本接口的数据。"""
-    return {"self": node.info(), "peers": []}
+    """集群视图：self + 探活后的 peers[]（每个 peer 含 ok/info/error/latency_ms）。
+    前端顶栏的「切换节点下拉」与节点对话框的「其他节点」列表都直接消费本接口。
+    单节点模式（cluster_secret 未设）：peers 永远空，不探活。
+    排除自己——peer 列表来自共享 toml，集群模式下自己的 id 可能在里头。"""
+    me = node.info()
+    out = {"self": me, "peers": []}
+    if not peers.is_cluster():
+        return out
+    for p in peers.list_peers():
+        if p["id"] == me["id"]:
+            continue  # 排除自递归
+        r = peers.probe_peer(p)  # 5s TTL 缓存；前端 5s 轮询不会打爆 peer
+        entry: dict = {"id": p["id"], "name": p.get("name", ""),
+                       "url": p["url"], "ok": r["ok"]}
+        if r.get("latency_ms") is not None:
+            entry["latency_ms"] = r["latency_ms"]
+        if r["ok"]:
+            entry["info"] = r["info"]
+        else:
+            entry["error"] = r.get("error", "")
+        out["peers"].append(entry)
+    return out
+
+
+# ── peer 名册 CRUD（Phase 2） ──────────────────────────────────────
+
+@app.get("/api/peers")
+def api_peers_list(_rec: dict = Depends(require_auth)) -> dict:
+    """列出所有 peer + 探活结果（带 5s TTL）。
+    返回 shape 与 /api/cluster.peers 相同；前端若只需要名册而非 self 也用这个。"""
+    out = {"cluster": peers.is_cluster(), "peers": []}
+    if not peers.is_cluster():
+        return out
+    for p in peers.list_peers():
+        r = peers.probe_peer(p)
+        entry = {"id": p["id"], "name": p.get("name", ""),
+                 "url": p["url"], "ok": r["ok"]}
+        if r.get("latency_ms") is not None:
+            entry["latency_ms"] = r["latency_ms"]
+        if r["ok"]:
+            entry["info"] = r["info"]
+        else:
+            entry["error"] = r.get("error", "")
+        out["peers"].append(entry)
+    return out
+
+
+@app.post("/api/peers", status_code=201)
+def api_peers_add(req: AddPeerReq,
+                  _rec: dict = Depends(require_admin)) -> dict:
+    """注册一个 peer：先探活（拿 id），落 etc/peers.toml。
+    失败：peer 不可达 → 502 PeerUnreachable；本地拒绝（单节点模式 / 重名 / url 坏）→ 400 PeerRefused。"""
+    rec = peers.add_peer(req.url, name=req.name)  # 抛异常被全局 handler 接住
+    r = peers.probe_peer(rec)
+    return {
+        **rec,
+        "ok": r["ok"],
+        "latency_ms": r.get("latency_ms"),
+        "info": r.get("info") if r["ok"] else None,
+        "error": r.get("error") if not r["ok"] else None,
+    }
+
+
+@app.delete("/api/peers/{peer_id}")
+def api_peers_remove(peer_id: str,
+                     _rec: dict = Depends(require_admin)) -> dict:
+    if not peers.remove_peer(peer_id):
+        raise HTTPException(404, f"peer 不存在: {peer_id}")
+    return {"removed": peer_id}
+
+
+@app.post("/api/peers/probe")
+def api_peers_probe_all(_rec: dict = Depends(require_admin)) -> dict:
+    """强制清 5s 探活缓存 + 立即全员重探；前端手动刷新按钮用。"""
+    peers.clear_probe_cache()
+    rows = peers.list_peers()
+    out = []
+    for p in rows:
+        r = peers.probe_peer(p)
+        out.append({"id": p["id"], "url": p["url"],
+                    "ok": r["ok"], "latency_ms": r.get("latency_ms"),
+                    "error": r.get("error", "") if not r["ok"] else ""})
+    return {"probed": len(out), "results": out}
 
 
 @app.get("/api/brains")
@@ -246,11 +366,46 @@ def api_ports(count: int = 10, _rec: dict = Depends(require_auth)) -> dict:
 # ── agent 管理 ───────────────────────────────────────────────────────
 
 @app.get("/api/agents")
-def api_agents_list(rec: dict = Depends(require_auth)) -> list[dict]:
-    rows = agentops.list_status()
+async def api_agents_list(rec: dict = Depends(require_auth)) -> list[dict]:
+    """agent 一览：本地 + 集群模式下 fan-in peer（每行 _via=<peer-id>）。
+    单 peer 挂了不影响其他 / 本地——降级展示即可。"""
+    rows = list(agentops.list_status())
+    if peers.is_cluster() and authtok.is_admin(rec):
+        # 排除自己——peer 列表来自共享 etc/peers.toml，集群模式下自己的 id
+        # 也可能在里头（多机器各自 git pull 同一份 toml）；fan-in 到自己 = 自递归。
+        me_id = node.info()["id"]
+        pls = [p for p in peers.list_peers() if p["id"] != me_id]
+        if pls:
+            import asyncio
+            async def _one(p: dict) -> list[dict]:
+                try:
+                    r = await xproxy.fetch_json(p, "/api/agents", rec, timeout=5)
+                    for row in r:
+                        if isinstance(row, dict):
+                            row["_via"] = p["id"]
+                    return [row for row in r if isinstance(row, dict)]
+                except xproxy.PeerUnreachable:
+                    return []  # 单 peer 挂掉让 list 降级而非 502
+                except xproxy.PeerHttpError:
+                    return []
+            results = await asyncio.gather(*[_one(p) for p in pls])
+            for r in results:
+                rows.extend(r)
     if authtok.is_admin(rec):
         return rows
     return [r for r in rows if authtok.can_access(rec, r["id"])]
+
+
+async def _agent_or_proxy(target: "xproxy.AgentTarget", request: Request,
+                          local_handler, rec: dict) -> Response:
+    """agent-scoped 读端点统一调度：local 直接调 handler；remote 转发到 peer。
+    local_handler 必须接受 (agent_id, ...) 并返回 JSON-serializable dict。
+    写路径不用此 helper（v1 范围外）。"""
+    if target.kind == "local":
+        return JSONResponse(local_handler(target.agent["id"]))
+    # remote：透传同 path 到 peer
+    sub = request.url.path  # /api/agents/{id} 或 /api/agents/{id}/...
+    return await xproxy.forward_to_peer(target.peer, request, sub, rec=rec)
 
 
 @app.post("/api/agents", status_code=201)
@@ -264,15 +419,23 @@ def api_agents_create(req: CreateAgentReq, _rec: dict = Depends(require_admin)) 
 # 注意：本节必须在 _mk_observe 循环之前注册（同 services 一节的原因）。
 
 @app.get("/api/agents/{agent_id}/capabilities")
-def api_agent_capabilities(pair: tuple = Depends(require_agent)) -> dict:
+async def api_agent_capabilities(request: Request,
+                                pair: tuple = Depends(require_agent_or_remote)) -> Response:
     """agent 的能力包清单（只读）。enabled 反映其 config [capabilities] 的
     实况（通常全 false——墟司不写该段；若大脑自行写入亦如实显示）。"""
-    return capabilities.list_for_agent(pair[0])
+    target, rec = pair
+    if target.kind == "local":
+        return JSONResponse(capabilities.list_for_agent(target.agent))
+    return await xproxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
 
 
 @app.get("/api/agents/{agent_id}")
-def api_agent_get(pair: tuple = Depends(require_agent)) -> dict:
-    return agentops.status(pair[0]["id"])
+async def api_agent_get(request: Request,
+                        pair: tuple = Depends(require_agent_or_remote)) -> Response:
+    target, rec = pair
+    if target.kind == "local":
+        return JSONResponse(agentops.status(target.agent["id"]))
+    return await xproxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
 
 
 @app.patch("/api/agents/{agent_id}")
@@ -316,18 +479,28 @@ for _action in ("start", "stop", "pause", "resume", "restart"):
 # 定义在后就走不通了。
 
 @app.get("/api/agents/{agent_id}/services")
-def api_services_list(probe: bool = True, pair: tuple = Depends(require_agent)) -> dict:
-    return services.list_services(pair[0], probe=probe)
+async def api_services_list(request: Request, probe: bool = True,
+                            pair: tuple = Depends(require_agent_or_remote)) -> Response:
+    target, rec = pair
+    if target.kind == "local":
+        return JSONResponse(services.list_services(target.agent, probe=probe))
+    return await xproxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
 
 
 # ── 观察（只读）与投信 ───────────────────────────────────────────────
 
 def _mk_observe(what: str):
-    def _h(limit: int = 50, pair: tuple = Depends(require_agent)) -> dict:
-        if what == "logs":
-            return agentops.logs(pair[0]["id"], limit)
-        return {"id": pair[0]["id"], "what": what,
-                "data": agentops.observe(pair[0]["id"], what, limit)}
+    async def _h(request: Request, limit: int = 50,
+                 pair: tuple = Depends(require_agent_or_remote)) -> Response:
+        target, rec = pair
+        if target.kind == "local":
+            if what == "logs":
+                return JSONResponse(agentops.logs(target.agent["id"], limit))
+            return JSONResponse({"id": target.agent["id"], "what": what,
+                                 "data": agentops.observe(target.agent["id"], what, limit)})
+        # 远程：把 ?limit= 一并透传，peer 端 handler 自己解析
+        return await xproxy.forward_to_peer(target.peer, request,
+                                            request.url.path, rec=rec)
     _h.__name__ = f"api_agent_observe_{what}"
     return app.get(f"/api/agents/{{agent_id}}/{what}")(_h)
 
@@ -351,11 +524,14 @@ def api_agent_backup(req: "BackupReq", pair: tuple = Depends(require_agent),
 
 
 @app.get("/api/agents/{agent_id}/backups")
-def api_agent_backups_list(with_meta: bool = False,
-                            pair: tuple = Depends(require_agent)) -> list[dict]:
-    if with_meta:
-        return backup.list_with_meta(agent_id=pair[0]["id"])
-    return backup.list_backups(agent_id=pair[0]["id"])
+async def api_agent_backups_list(request: Request, with_meta: bool = False,
+                                 pair: tuple = Depends(require_agent_or_remote)) -> Response:
+    target, rec = pair
+    if target.kind == "local":
+        if with_meta:
+            return JSONResponse(backup.list_with_meta(agent_id=target.agent["id"]))
+        return JSONResponse(backup.list_backups(agent_id=target.agent["id"]))
+    return await xproxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
 
 
 @app.get("/api/backups")
@@ -412,8 +588,12 @@ def api_restore(req: "RestoreReq", _rec: dict = Depends(require_admin)) -> dict:
 # ── agent 观察台 token ───────────────────────────────────────────────
 
 @app.get("/api/agents/{agent_id}/tokens")
-def api_tokens_list(pair: tuple = Depends(require_agent)) -> list[dict]:
-    return agentops.tokens_list(pair[0]["id"])
+async def api_tokens_list(request: Request,
+                          pair: tuple = Depends(require_agent_or_remote)) -> Response:
+    target, rec = pair
+    if target.kind == "local":
+        return JSONResponse(agentops.tokens_list(target.agent["id"]))
+    return await xproxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
 
 
 @app.post("/api/agents/{agent_id}/tokens", status_code=201)

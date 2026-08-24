@@ -431,7 +431,72 @@ Authorization: Bearer <any-token>
 {"self": {...}, "peers": []}
 ```
 
-`peers[]` 来自 Phase 2 的 `etc/peers.toml`；Phase 1 始终为空。
+`peers[]` 来自 Phase 2 的 `etc/peers.toml`；每个 peer 含 `id/name/url/ok/info/error/latency_ms`。
+
+---
+
+## 7c. 集群互联 Phase 2：peer 名册 + 跨节点读
+
+**前置**：每台 xusi 的 `etc/xusi.toml` 都设 `[cluster].secret = "<同一段 hex>"`——空值仍是单节点模式，所有 peer 操作拒绝（HTTP 400 PeerRefused）。
+
+### peer 名册 CRUD
+
+```bash
+# CLI
+.venv/bin/python -m xusi peers add http://10.0.16.15:8601        # 注册并探活
+.venv/bin/python -m xusi peers add http://10.0.16.15:8601 --name "vm-16-15"
+.venv/bin/python -m xusi peers list                              # 列出 + 探活（5s 缓存）
+.venv/bin/python -m xusi peers probe                             # 强制重探
+.venv/bin/python -m xusi peers remove <peer-id>
+
+# API（admin 写；任意 token 读）
+GET    /api/peers            → {"cluster": bool, "peers": [...]}
+POST   /api/peers            body: {"url": "http://...", "name": "..."}    → 201
+DELETE /api/peers/{peer_id}  → 200 {"removed": "..."}
+POST   /api/peers/probe      → 200 {"probed": N, "results": [...]}    # 强制重探
+```
+
+`peers.toml` 手写亦可：
+```toml
+[[peers]]
+id = "<peer 的 etc/node.id>"
+url = "http://10.0.16.15:8601"
+name = "vm-16-15"
+```
+
+`id` 字段冗余存一份（peer 自报）方便 grep；url 是事实源。
+
+### 跨节点读路径
+
+任何 xusi 的 `/api/agents/{id}/*` 读端点在本机未命中时自动 fan-out 给所有 peer，找到就透传 caller 的 JWT 到目标 peer，peer 用同密钥重验 + 重 enforce 作用域。
+
+**v1 支持（GET，全部）**：
+- `/api/agents` —— fan-in：本地 + 全部 peer 的 agent 列表合并，peer 行带 `_via: <peer-id>`
+- `/api/agents/{id}` —— 单 agent status
+- `/api/agents/{id}/capabilities` / `services`
+- `/api/agents/{id}/{status,events,sessions,messages,outbox,logs}` —— 观察全 6 种
+- `/api/agents/{id}/tokens` —— 观察台 token 列表
+- `/api/agents/{id}/backups` —— 远端 agent 的备份包（一定在远端节点）
+
+**v1 不支持（写路径，留 v2）**：
+- `/api/agents/{id}` PATCH/DELETE
+- `/api/agents/{id}/{start,stop,pause,resume,restart}` —— 生命周期写
+- `/api/agents/{id}/mail` / `backup` / `tokens` POST+DELETE —— 投信、备份、token 撤销
+- `/px/{id}/*` `/svc/{id}/*` `/v1/*` `/ui/*` —— 浏览器反代（HTML 重写 + Location 前缀跨节点一致性 v2 再说）
+
+### locality 缓存
+
+`xproxy.resolve(agent_id)` 本地优先 → peer 并发 fan-out。TTL 30s 命中 / 5s 未命中，避免 agent 重命名后短暂不一致、避免恶意 ID 穿透打 peer。
+
+### 失败语义
+
+- peer 不可达 → 502 Bad Gateway（`PeerUnreachable`）；单个 peer 挂掉不影响其他 / 不影响本地
+- peer 4xx → 透传同码（如 403：peer 的用户作用域过滤掉 caller 拥有的 agent）
+- 集群模式未启用 → 400 PeerRefused（仅 peer 注册路径；读端点直接 404）
+
+### 前端
+
+WebUI 顶栏的节点对话框「其他节点」区显示 peer 列表（绿/红点 + 延迟 + 打开链接）。agent 卡片与详情面板对远端 agent 加 `来自 <peer 名>` 徽章——调用方无需关心 agent 实际在哪台机器。
 
 ---
 

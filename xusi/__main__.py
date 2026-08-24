@@ -348,6 +348,59 @@ def cmd_restore(args) -> int:
     return 0
 
 
+# ── peers（Phase 2 集群名册） ──────────────────────────────────────
+
+def cmd_peers_probe(_args) -> int:
+    from . import peers as _peers
+    _peers.clear_probe_cache()
+    rows = _peers.list_peers()
+    if not rows:
+        print("(尚未注册 peer)")
+        return 0
+    print(f"==> 已清缓存，开始重探 {len(rows)} 个 peer")
+    return 0
+
+
+def cmd_peers_list(_args) -> int:
+    from . import peers as _peers
+    if not _peers.is_cluster():
+        print("(单节点模式：[cluster].secret 未设，peer 名册禁用)", file=sys.stderr)
+    rows = _peers.list_peers()
+    if not rows:
+        print("(尚未注册 peer)")
+        return 0
+    for p in rows:
+        r = _peers.probe_peer(p)
+        flag = "✓" if r["ok"] else "✗"
+        detail = f"{r.get('latency_ms', '?')}ms" if r["ok"] else r.get("error", "?")
+        name = p.get("name") or ""
+        print(f"  {flag} {p['id']:14} {name:20} {p['url']}  {detail}")
+    return 0
+
+
+def cmd_peers_add(args) -> int:
+    from . import peers as _peers
+    try:
+        rec = _peers.add_peer(args.url, name=args.name)
+    except _peers.PeerUnreachable as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except _peers.PeerRefused as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(f"  ✓ {rec['id']}  {rec.get('name', '')}  {rec['url']}")
+    return 0
+
+
+def cmd_peers_remove(args) -> int:
+    from . import peers as _peers
+    if _peers.remove_peer(args.peer_id):
+        print(f"  ✓ 已移除 peer {args.peer_id}")
+        return 0
+    print(f"  ✗ 未找到 peer {args.peer_id}", file=sys.stderr)
+    return 2
+
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="xusi", description="墟司 —— xuseek 智能体管理面")
     p.add_argument("--version", action="version", version=f"xusi {__version__}")
@@ -394,6 +447,21 @@ def main() -> int:
     rs_.add_argument("--host", default="127.0.0.1", help="监听 host")
     rs_.add_argument("--overwrite", action="store_true", help="覆盖同名已存在 agent")
     rs_.set_defaults(fn=cmd_restore)
+
+    # ── peer 名册 ──
+    pr_ = sub.add_parser("peers", help="集群对等节点名册（Phase 2）")
+    prs = pr_.add_subparsers(dest="cmd", required=True)
+    prl = prs.add_parser("list", help="列出 + 探活")
+    prl.set_defaults(fn=cmd_peers_list)
+    pra = prs.add_parser("add", help="注册一个 peer（先探活拿 id）")
+    pra.add_argument("url", help="peer 的管理面 url（如 http://10.0.16.15:8601）")
+    pra.add_argument("--name", default="", help="显示名（缺省用 peer 自报）")
+    pra.set_defaults(fn=cmd_peers_add)
+    prr = prs.add_parser("remove", help="移除")
+    prr.add_argument("peer_id")
+    prr.set_defaults(fn=cmd_peers_remove)
+    prp = prs.add_parser("probe", help="强制重探（清 5s 缓存）")
+    prp.set_defaults(fn=cmd_peers_probe)
 
     args = p.parse_args()
     return args.fn(args)
