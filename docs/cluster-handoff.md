@@ -2,14 +2,18 @@
 
 > 写给对端 xusi 维护者：本文档记录的是本机 (`61FyM_3Lazg`, 入口
 > `http://81.70.43.157:8601`) 与对端 (`YktX3tUdGjs`, 入口
-> `http://82.157.131.225:8601`) 在 `commit e98bc10` (Phase 2 v1) 上对接
-> 时的全过程、踩坑、当前状态与已知未解决问题。请按下面的检查清单核对。
+> `http://82.157.131.225:8601`) 在 `commit fd97652` (Phase 2 v1 + `local_only` 修复)
+> 上对接的全过程、踩坑、当前状态与已知未解决问题。请按下面的检查清单核对。
+>
+> **前置要求**：双边必须都是 `fd97652` 或之后（含 `api: /api/agents 加 local_only 参数，破双边 fan-in 回环`）。
+> 任一方是老 `e98bc10` 都会触发双边 fan-in 回环（详见 §4）。
 
 ## 0. TL;DR
 
 - 两边都设了同一个 `[cluster].secret`（HS256 共享密钥），token 走 JWT 跨节点 verify 通过
 - 握手 (`/api/peer/id`) 通：latency ~30–700ms 不等
-- **单边注册可工作**；**双边注册会触发 fan-in 回环 + 5s 超时**，见 §4
+- **双边注册现在可工作**——`commit fd97652`（`/api/agents?local_only=1`）已破 fan-in 回环
+  - 双边注册 = 两边互相在 `etc/peers.toml` 写入对方；每个节点 `/api/agents` 看到「本地 + 对方 local」共一层，不再递归
 - 当前版本范围限定：**只读路径通了**；**写路径 v1 没做**，详见 §5
 
 ## 1. 对端需要核对 / 必改的配置
@@ -51,9 +55,9 @@ public_url = "http://82.157.131.225:8601"   # ← 对端外网入口
 python3 -m xusi token new admin --role admin
 ```
 
-## 2. 单边注册就能工作（推荐拓扑）
+## 2. 双边注册拓扑（推荐，`fd97652` 之后）
 
-本机已经把对端 (`YktX3tUdGjs`) 写进 `etc/peers.toml`，握手 30ms 通。**强烈建议对端不要把本机也写进 `etc/peers.toml`**——理由见 §4。
+本机已经把对端 (`YktX3tUdGjs`) 写进 `etc/peers.toml`。**建议对端也把本机写进 `etc/peers.toml`**——`fd97652` 修了双边注册的 fan-in 回环问题。
 
 ```bash
 # 本机侧已生效的 peer 名册
@@ -63,17 +67,23 @@ cat etc/peers.toml
 # url = "http://82.157.131.225:8601"
 # name = "VM-16-14-ubuntu"
 
-# 对端不需要加 peer，除非有特殊理由
+# 对端建议同步：
+# [[peers]]
+# id = "61FyM_3Lazg"
+# url = "http://81.70.43.157:8601"
+# name = "VM-8-12-ubuntu"
 ```
 
-## 3. 单边注册后的实际能力
+双边注册后两个节点互见：每个 `/api/agents` 显示「本地 + 对方 local」共一层（不再递归 peers-of-peers）。
 
-本机 admin 调 `GET /api/agents` 会 fan-in 对端的 4 个 agent（带 `_via: "YktX3tUdGjs"` 标记），每个 agent 的读端点（status / capabilities / services / observe / tokens / backups）通过 `forward_to_peer` 透传 JWT 到对端验证后返回。
+## 3. 双边注册后的实际能力
+
+本机 admin 调 `GET /api/agents` 会 fan-in 对端的 4 个 agent（带 `_via: "YktX3tUdGjs"` 标记），对端同理能看到本机 agent。每个 agent 的读端点（status / capabilities / services / observe / tokens / backups）通过 `forward_to_peer` 透传 JWT 到对端验证后返回。
 
 验证命令：
 
 ```bash
-JWT='<本机 admin JWT>'
+JWT='<admin JWT>'
 curl -s -H "Authorization: Bearer $JWT" http://127.0.0.1:8601/api/agents | python3 -m json.tool
 # 应该看到 _via: "YktX3tUdGjs" 的 4 行
 
@@ -81,15 +91,11 @@ curl -s -H "Authorization: Bearer $JWT" http://127.0.0.1:8601/api/cluster | pyth
 # self + peers[] 各一
 ```
 
-## 4. ⚠ 双边注册会触发 fan-in 回环（不要做）
+## 4. `local_only` 标志——双边注册能 work 的关键
 
-### 现象
+### 历史问题（`e98bc10` 原始版本）
 
-- `fetch_json` 默认 5s 超时（`xusi/xproxy.py`）
-- 对端 4 个 agent × 每次 `/api/agents` 内部 fan-out（journal 健康检查 / 状态轮询）会撑到 5s 以上
-- 双边注册时：本机 fan-in 对端 → 对端 fan-in 本机 → 形成对称回环，每个 `/api/agents` 内部都在打对方
-
-实测（双边注册状态）：
+`/api/agents` 在集群模式下默认 fan-in 所有 peer。双边注册时：
 
 ```
 api_agents_list -> _one(YktX3tUdGjs)
@@ -99,19 +105,47 @@ api_agents_list -> _one(YktX3tUdGjs)
       -> 5s 后本机侧 ReadTimeout
     -> PeerUnreachable
   -> _one except 分支返回 []
-api_agents_list 返回 []
 ```
 
-`api_agents_list` 把 `PeerUnreachable` / `PeerHttpError` 都吞掉（设计意图：单 peer 挂掉不让 list 整体 502），**所以 UI 上看到的是「本地 + 对端」共 0 agent**，但日志（`journalctl --user -u xusi -n 100`）能看到两边互相密集打 `/api/agents`。
+`fetch_json` 默认 5s 超时（`xusi/xproxy.py`），peer 4 个 agent + journal 健康检查会让单次 fan-in 撑爆 5s。对称回环下每次请求都超时，`/api/agents` 返回 `[]`，但 journal 里能看到两边互相密集打 `/api/agents`。
 
-### 解决方向（任一）
+### 修法（`fd97652`）
 
-- **A. 单边注册（推荐，当前已生效）**：本机加对端、对端不加本机。代价：对端 `/api/agents` 看不到本机身份（但本机 0 agent，没东西可看）
-- **B. 调高 `fetch_json` 超时**：`xproxy.fetch_json` 默认 5s 改成 30s+，让 fan-in 有时间穿透。问题：双边注册仍然有 N×N 放大，长尾延迟可观
-- **C. 加本地 list 缓存**：`/api/agents` 结果在 N 秒内复用，避免每次请求穿透到 peer。Phase 2 v2 候选
-- **D. fan-in 时跳过自身的 peer id**：当前 `api_agents_list` 已经做了 `p['id'] != self_id` 过滤，但**本机 id 不在 peer 名册时**过滤不了对端 fan-in 回来的本机（双向注册时对端 fan-in 包含本机 id，但**对端的 fan-in 列表里不应该有本机**，因为本机 id 不会在对端 `etc/peers.toml` 的 `[[peers]]` 里——除非对方把本机也加进去了）
+`api_agents_list` 加 `local_only: bool = False` query 参数；fan-in 中继时给 peer 传 `?local_only=1`，peer 端 handler 见此标志**只返回本地 agent、不二次 fan-out**。loop 在第一层就停。
 
-**结论**：A 是 v1 唯一干净解。如果对端非要双向注册，至少需要 B + 砍掉回环路径。
+行为矩阵：
+
+| 调用方 | URL | 行为 |
+|---|---|---|
+| 客户端（WebUI / curl） | `GET /api/agents` | 默认 fan-in：`local + direct peers' local` |
+| fan-in 中继（内部） | `GET /api/agents?local_only=1` | 只 local，不再 fan-out |
+| 客户端（debug / 单机视角） | `GET /api/agents?local_only=1` | 只 local |
+
+### 验证 `local_only` 工作正常
+
+```bash
+# 客户端视角：本机 0 agent + 对端 4 agent = 4
+curl -s -H "Authorization: Bearer $JWT" http://127.0.0.1:8601/api/agents | jq length
+# → 4
+
+# 强制只看本地：本机 0 agent
+curl -s -H "Authorization: Bearer $JWT" 'http://127.0.0.1:8601/api/agents?local_only=1' | jq length
+# → 0
+
+# 确认 fan-in 不再回环——journal 里 peer 打来的请求 URL 必须带 ?local_only=1
+journalctl --user -u xusi --since "1 min ago" | grep '/api/agents'
+# 应只看到：xxx.xxx.xxx.xxx:port - "GET /api/agents?local_only=1 HTTP/1.1" 200 OK
+# 不应看到裸 "/api/agents"（peer 之间互打必须带 local_only=1）
+```
+
+### 部署要求
+
+**双边都必须升级到 `fd97652` 或之后**——任一方是老版本（裸 `/api/agents`）就会触发回环。验证版本：
+
+```bash
+curl -s http://<对端>:8601/api/health | jq .version
+# 当前是 "1.2.0"；具体 commit 通过 git log 核对
+```
 
 ## 5. Phase 2 v1 范围限定（写路径未做）
 
@@ -158,9 +192,23 @@ curl -s -H "Authorization: Bearer $JWT" http://<对端>:8601/api/whoami
 ### 看 fan-in 是否回环
 
 ```bash
-journalctl --user -u xusi --since "5 min ago" -f | grep "/api/agents"
-# 单边注册：每秒 0–1 条（健康检查 / WebUI 轮询）
-# 双边回环：每秒 10+ 条（双向 fan-in 互打）
+journalctl --user -u xusi --since "1 min ago" | grep '/api/agents'
+# 正常（fd97652 之后）：所有 peer 打来的请求都带 ?local_only=1，无回环
+# 回环（老版本双边注册）：每秒 10+ 条裸 "/api/agents" 互打 → 5s 超时
+```
+
+### 验证 `local_only` 行为
+
+```bash
+JWT='<admin JWT>'
+# 客户端视角：本地 + 全部 peer 的 local（本机 0 + 对端 4 = 4）
+curl -s -H "Authorization: Bearer $JWT" http://127.0.0.1:8601/api/agents | jq length
+
+# 强制只看 local（本机 0 agent）
+curl -s -H "Authorization: Bearer $JWT" 'http://127.0.0.1:8601/api/agents?local_only=1' | jq length
+
+# peer 端 handler 也支持——对端也能用这个参数「只返自己」
+curl -s -H "Authorization: Bearer $JWT" 'http://82.157.131.225:8601/api/agents?local_only=1' | jq length
 ```
 
 ### 清探活缓存（调试用）
@@ -176,13 +224,19 @@ peers.clear_probe_cache()
 
 - [ ] 1. 核对 `[cluster].secret` 与本机一致
 - [ ] 2. 设 `[node].public_url = "http://82.157.131.225:8601"`（外网入口）
-- [ ] 3. `systemctl --user restart xusi.service`
-- [ ] 4. `python3 -m xusi token new admin --role admin`（重新签 JWT token）
-- [ ] 5. 验证握手：`curl http://81.70.43.157:8601/api/peer/id`（应当从本机拿到 `61FyM_3Lazg`，url 是本机外网入口）
-- [ ] 6. 验证跨节点 verify：用本机新签的 JWT 调对端 `/api/whoami`
-- [ ] 7. **不要**在本机 `etc/peers.toml` 加本机（避免双边 fan-in 回环）
-- [ ] 8. 建议 secret 轮换：`openssl rand -hex 32`，双方替换；轮换后重签所有 token
+- [ ] 3. **确认对端已升级到 `fd97652` 或之后**——`curl http://81.70.43.157:8601/api/health` 看 version / `git log -1` 看 commit
+- [ ] 4. `systemctl --user restart xusi.service`
+- [ ] 5. `python3 -m xusi token new admin --role admin`（重新签 JWT token）
+- [ ] 6. 验证握手：`curl http://81.70.43.157:8601/api/peer/id`（应当从本机拿到 `61FyM_3Lazg`，url 是本机外网入口）
+- [ ] 7. 验证跨节点 verify：用本机新签的 JWT 调对端 `/api/whoami`
+- [ ] 8. **双边注册**：在本机 `etc/peers.toml` 加 `[[peers]] id="61FyM_3Lazg" url="http://81.70.43.157:8601"`；本机已经写好了对端
+- [ ] 9. 验证 fan-in：`GET /api/agents` 应看到对端 4 个 agent（带 `_via="YktX3tUdGjs"`）；`?local_only=1` 只返本地
+- [ ] 10. 建议 secret 轮换：`openssl rand -hex 32`，双方替换；轮换后重签所有 token
 
 ---
 
-**维护者备注**：上面 §1.1 的 secret 已在会话中明文出现，按泄露处理——完成对接后请双方同步替换。
+**维护者备注**：
+
+- §1.1 的 secret 已在两次会话中明文出现，按泄露处理——完成对接后请双方用 §7 第 10 步轮换
+- 文档 §2/§4 在 `fd97652` 之前曾以「单边注册推荐」为基线；之后改为「双边注册推荐」。后续 commit 若引入 list 缓存 / 写路径 / 自动发现等，需要再更新本文件 §0/§4/§5
+- 本文档 188 行（`3c6e14d` 提交时的版本）+ §4 重写 + §3/§6/§7 同步更新 = 当前总 ~240 行
