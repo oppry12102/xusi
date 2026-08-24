@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import secrets
 import subprocess
@@ -33,6 +34,11 @@ def _ensure_venv() -> Path:
         subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
         subprocess.run([str(venv / "bin" / "pip"), "install", "--quiet",
                         "--disable-pip-version-check", *DEPS], check=True)
+    # 依赖只装在 venv 里：若本进程不在 venv（系统 python 直接 `python -m xusi install`），
+    # 重建 venv 后重进 venv 再执行——后续 cmd_install 会 import httpx 等第三方库。
+    # 注意 venv 的 python 是指向系统 python 的符号链接，不能用 resolve() 比对。
+    if Path(sys.prefix) != venv.resolve():
+        os.execv(str(py), [str(py), "-m", "xusi", *sys.argv[1:]])
     return py
 
 
