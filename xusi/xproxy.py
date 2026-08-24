@@ -127,10 +127,15 @@ def _fanout_locate(agent_id: str, rec: dict | None = None) -> dict | None:
 
 
 def _peer_has_agent(peer: dict, agent_id: str, headers: dict) -> bool:
-    """同步探——查 peer 的 agent 列表里有没有目标 id。不关心返回内容，只要 hit。"""
+    """同步探——查 peer 的 agent 列表里有没有目标 id。不关心返回内容，只要 hit。
+
+    必须用 ?local_only=1：peer 端 handler 见此标志只返本地，不再 fan-in 它自己的
+    peers。否则双边注册时我们探 peer → peer fan-in 我们 → 我们 fan-in peer →
+    5s 超时挂掉，locality 误判"peer 没这个 agent"。"""
     try:
         with httpx.Client(timeout=httpx.Timeout(5.0, connect=3.0)) as c:
-            r = c.get(f"{peer['url'].rstrip('/')}/api/agents", headers=headers)
+            r = c.get(f"{peer['url'].rstrip('/')}/api/agents?local_only=1",
+                      headers=headers)
         if r.status_code != 200:
             return False
         rows = r.json()
