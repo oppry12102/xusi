@@ -719,19 +719,20 @@ async def px(request: Request, agent_id: str, sub_path: str = "") -> Response:
     自己 inject agent token 再转给本地 agent 的 127.0.0.1。HTML 中的相对
     路径 `/v1/*` 由 peer 在 HTML 重写时改成 `/px/{id}/v1/*`——浏览器仍在
     本机页面里继续触发 `/px/...`，再被本机转发到 peer（递归）。"""
+    target = xproxy.resolve(agent_id, rec=_rec_of(request))
+    if target is None:
+        raise HTTPException(404, f"agent 不存在: {agent_id}")
+    if target.kind == "local":
+        # 本机：先看 agent 是不是 local——local 才允许观察台 token 走 `_svc_px_auth` 的
+        # 备用路径（Bearer = 该 agent 的观察台 token，没 mtoken 时也能进）。
+        _svc_px_auth(request, target.agent)
+        return await proxy.prefix_proxy(request, agent_id, sub_path)
+    # 远端：只能验管理面 token（peer 端的 agent tokens.json 不在本机）
     rec = _rec_of(request)
     if rec is None:
         raise HTTPException(401, "missing or invalid manager token")
-    target = xproxy.resolve(agent_id, rec=rec)
-    if target is None:
-        raise HTTPException(404, f"agent 不存在: {agent_id}")
     if not authtok.can_access(rec, agent_id):
         raise HTTPException(403, f"token 无权访问 agent {agent_id}")
-    if target.kind == "local":
-        _svc_px_auth(request, target.agent)
-        return await proxy.prefix_proxy(request, agent_id, sub_path)
-    # 远端：直接转发到 peer；peer 端 prefix_proxy 会自己 inject agent token。
-    # mtoken/Authorization 已在上方 can_access 验过 → peer 重验同密钥的 JWT 通过。
     return await xproxy.forward_to_peer(target.peer, request,
                                         request.url.path, rec=rec)
 
