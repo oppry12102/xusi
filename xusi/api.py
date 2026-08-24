@@ -366,11 +366,16 @@ def api_ports(count: int = 10, _rec: dict = Depends(require_auth)) -> dict:
 # ── agent 管理 ───────────────────────────────────────────────────────
 
 @app.get("/api/agents")
-async def api_agents_list(rec: dict = Depends(require_auth)) -> list[dict]:
+async def api_agents_list(rec: dict = Depends(require_auth),
+                          local_only: bool = False) -> list[dict]:
     """agent 一览：本地 + 集群模式下 fan-in peer（每行 _via=<peer-id>）。
-    单 peer 挂了不影响其他 / 本地——降级展示即可。"""
+    单 peer 挂了不影响其他 / 本地——降级展示即可。
+
+    local_only=true 用于 fan-in 中继：只返回本地注册的 agent，不再二次 fan-out。
+    关键意义：防止双边注册时的 fan-in 回环。每个节点的"集群视图"是 local +
+    direct peers 的 local，不再递归 peers-of-peers。"""
     rows = list(agentops.list_status())
-    if peers.is_cluster() and authtok.is_admin(rec):
+    if not local_only and peers.is_cluster() and authtok.is_admin(rec):
         # 排除自己——peer 列表来自共享 etc/peers.toml，集群模式下自己的 id
         # 也可能在里头（多机器各自 git pull 同一份 toml）；fan-in 到自己 = 自递归。
         me_id = node.info()["id"]
@@ -379,7 +384,10 @@ async def api_agents_list(rec: dict = Depends(require_auth)) -> list[dict]:
             import asyncio
             async def _one(p: dict) -> list[dict]:
                 try:
-                    r = await xproxy.fetch_json(p, "/api/agents", rec, timeout=5)
+                    # 给 peer 传 local_only=1：peer 也只返回自己的 local，
+                    # 不再 fan-in 它自己的 peers——这是双边注册能 work 的关键。
+                    r = await xproxy.fetch_json(p, "/api/agents?local_only=1",
+                                                rec, timeout=5)
                     for row in r:
                         if isinstance(row, dict):
                             row["_via"] = p["id"]
