@@ -3,14 +3,21 @@
 根目录 = 本包的上级目录（目录即管理面，与 xuseek 的自锚定同构）。
 etc/xusi.toml 缺失时用内置默认值起服务（首次 install 前也能 doctor）。
 
-重要的去耦：node_id 不再写到 toml（避免跨机器 git pull 共享同一 id 导致重号；
-Phase 1 的 IUyWwGI3 撞车就是这么来的）。节点身份从 /etc/machine-id 派生，
-想要自定义可设环境变量 XUSI_NODE_ID 覆盖。
+重要的去耦：node_id 写在 etc/node.id（单行文件、gitignored、600），
+不在 toml 里——避免跨机器 git pull 共享同一 id。
+etc/node.id 缺失时（首次 install 或新机器 git pull 后第一次 serve）
+由 load_config 自动生成一个 URL-safe 8 字节的 id 写盘。
+要临时覆盖可设环境变量 XUSI_NODE_ID。
+
+为什么不读 /etc/machine-id：VM / 容器克隆会把 machine-id 一起复制，
+Phase 1.2 时两台克隆 xusi 共享 fd410411419d 就是这个原因。/etc/machine-id
+只反映"系统视角的机器"，与"xusi 节点身份"是两件事——克隆 / 镜像场景下
+前者不可靠，后者必须本地生成。
 """
 from __future__ import annotations
 
-import hashlib
 import os
+import secrets
 import socket
 import tomllib
 from dataclasses import dataclass, field
@@ -46,6 +53,10 @@ class XusiConfig:
     cluster_secret: str = ""     # [cluster].secret 留空 = 单节点模式（今天的行为）；
                                  # 设值 = 同密钥的所有 xusi 互信，token 用 HS256-JWT 跨节点通用。
                                  # 本字段的用途仅是签发/校验；不要写到 /api/* 响应里。
+    node_id: str = ""           # 节点身份 = etc/node.id 的内容（首次 serve 自动生成，
+                                 # URL-safe 8 字节；gitignored、600；不可改——改它会失去
+                                 # 与历史 token / 备份 / peer 名册的关联性）。
+                                 # 临时覆盖：环境变量 XUSI_NODE_ID。
     node_role: str = "worker"   # [node].role：worker | backup | portal；
                                  # 改它要重启语义；agent 启停路径依赖本字段。
     node_public_url: str = ""   # [node].public_url 显式覆盖（推荐）——peer 名册要拿这个；
@@ -74,6 +85,8 @@ class XusiConfig:
     def docs_dir(self) -> Path: return self.root / "docs"
     @property
     def node_file(self) -> Path: return self.etc_dir / "node.json"
+    @property
+    def node_id_file(self) -> Path: return self.etc_dir / "node.id"
     @property
     def peers_file(self) -> Path: return self.etc_dir / "peers.toml"
 
@@ -105,37 +118,6 @@ class XusiConfig:
                   self.versions_dir, self.backup_dir, self.webui_dir):
             d.mkdir(parents=True, exist_ok=True)
 
-    @property
-    def node_id(self) -> str:
-        """节点身份——三级优先级：
-
-        ① 环境变量 XUSI_NODE_ID（最高，专用于测试 / CI / 临时改名）
-        ② /etc/machine-id 前 12 字符（systemd 自动生成的机器 ID，
-           每台机器首次启动时生成，跨机器天然分离、跨重启稳定——这是正路）
-        ③ sha256(socket.gethostname()) 前 12 字符（无 machine-id 的环境兜底）
-
-        注意：我们 **故意不** 从 etc/xusi.toml 读 id——etc/xusi.toml 是
-        跨机器共享的配置文件，Phase 1 时把 id 写进去会导致 'git pull 拿走过期
-        id 然后两台机器撞号'。要自定义请用环境变量。
-        """
-        env = os.environ.get("XUSI_NODE_ID")
-        if env:
-            return env
-        return _derive_node_id()
-
-
-def _derive_node_id() -> str:
-    """机器身份——从 /etc/machine-id 或 hostname 哈希派生。"""
-    p = Path("/etc/machine-id")
-    if p.exists():
-        try:
-            mid = p.read_text().strip()
-            if mid:
-                return mid[:12]
-        except OSError:
-            pass
-    return hashlib.sha256(socket.gethostname().encode("utf-8")).hexdigest()[:12]
-
 
 def load_config() -> XusiConfig:
     raw = _load_toml(ROOT / "etc" / "xusi.toml")
@@ -158,12 +140,50 @@ def load_config() -> XusiConfig:
         cfg.display_timezone = str(mgr["display_timezone"])
     if "secret" in cluster:
         cfg.cluster_secret = str(cluster["secret"])
+    # 旧约定：[node].id 直接写在 toml 里——被 Phase 1.2 起废弃（多机器 git pull
+    # 会撞号）。这里 **故意不读** 这个键；写过的也是无害的孤儿键，迟早被清理。
     if "role" in node:
         cfg.node_role = str(node["role"])
     if "public_url" in node:
         cfg.node_public_url = str(node["public_url"])
     cfg.ensure_dirs()
+    # 节点身份：etc/node.id 本地单行文件（gitignored、600）。
+    # 优先 XUSI_NODE_ID 环境变量（测试 / CI / 临时改名），否则读文件，
+    # 文件不存在则生成 URL-safe 8 字节写盘（首次 install / 新机器 git pull
+    # 后第一次 serve 自动落入）。
+    cfg.node_id = _resolve_node_id(cfg.node_id_file)
     return cfg
+
+
+def _resolve_node_id(node_id_file: Path) -> str:
+    """读 etc/node.id；空则生成写盘。三级优先：
+
+    ① XUSI_NODE_ID 环境变量（最高——测试 / CI / 临时改名场景用）
+    ② etc/node.id 的内容（持久化本机身份；首次 install 自动生成）
+    ③ 自动生成 URL-safe 8 字节写盘（首次 serve 走这条）
+
+    为什么不用 /etc/machine-id：VM / 容器克隆会把 machine-id 一起复制，
+    两台克隆 xusi 会撞同一 id（Phase 1.2 的 fd410411419d 案例）。"""
+    env = os.environ.get("XUSI_NODE_ID")
+    if env:
+        return env.strip()
+    try:
+        existing = node_id_file.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    # 生成：URL-safe 8 字节 ≈ 11 字符，无 padding、无歧义字符
+    new_id = secrets.token_urlsafe(8)
+    node_id_file.parent.mkdir(parents=True, exist_ok=True)
+    node_id_file.write_text(new_id + "\n", encoding="utf-8")
+    try:
+        node_id_file.chmod(0o600)
+    except OSError:
+        pass
+    return new_id
 
 
 def _detect_outbound_ip() -> str | None:

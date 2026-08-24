@@ -1,11 +1,12 @@
 """节点身份：name 走 etc/node.json（可改，UI 改）；
-id 由 cfg.node_id 派生（基于 /etc/machine-id，自动分离跨机器）；
-role 走 etc/xusi.toml（不可改 / 改 role 重启）。
+id 走 etc/node.id（不可改——本机持久身份；改它会失去与历史 token /
+   备份 / peer 名册的关联性）；role 走 etc/xusi.toml（改 role 重启）。
 
 去耦合的不变式：
   - node.json 只存 name（连同 updated_at）
-  - id 由 cfg 内部派生——本模块不持有；调方按需取 cfg.node_id
-  - 任何 toml / node.json 改动不在本模块发生（写回走 __main__）
+  - node.id 是单行 url-safe id，gitignored、600，由 load_config 首次启动时生成
+  - id / role 永远以 cfg.node_id / cfg.node_role 为准；本模块不镜像
+  - 任何 toml / node.json / node.id 改动不在本模块发生（写回走 __main__ / load_config）
 """
 from __future__ import annotations
 
