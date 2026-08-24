@@ -36,6 +36,15 @@ class XusiConfig:
     versions_dir: Path = ROOT / "versions"  # 版本仓库：管理员投放 xuseek-v2-<版本号>.zip
     display_timezone: str = "Asia/Shanghai"
 
+    # —— 集群身份（Phase1：仅 config 字段；2026-08-24 起的互联基础）——
+    cluster_secret: str = ""     # [cluster].secret 留空 = 单节点模式（今天的行为）；
+                                 # 设值 = 同密钥的所有 xusi 互信，token 用 HS256-JWT 跨节点通用。
+                                 # 本字段的用途仅是签发/校验；不要写到 /api/* 响应里。
+    node_id: str = ""           # [node].id 安装自动生成（URL-safe 6字节）；
+                                 # 启动后任何 peer 在 peer 名册里靠它识别节点。
+    node_role: str = "worker"   # [node].role：worker | backup | portal；
+                                 # 改它要重启语义；agent 启停路径依赖本字段。
+
     # —— 派生路径 ——
     @property
     def etc_dir(self) -> Path: return self.root / "etc"
@@ -57,12 +66,26 @@ class XusiConfig:
     def webui_dir(self) -> Path: return self.root / "xusi" / "webui"
     @property
     def docs_dir(self) -> Path: return self.root / "docs"
+    @property
+    def node_file(self) -> Path: return self.etc_dir / "node.json"
+    @property
+    def peers_file(self) -> Path: return self.etc_dir / "peers.toml"
 
     def instance_home(self, agent_id: str) -> Path:
         return self.instances_dir / agent_id
 
     def unit_name(self, agent_id: str) -> str:
         return f"xusi-a-{agent_id}"
+
+    @property
+    def public_url(self) -> str:
+        """本节点的对外访问地址（peer 列表相互引用的形态）。
+        来自 server.host/port：host 为 0.0.0.0 时降级为 'localhost'（配置外露 URL 不能
+        拿通配 host）。Phase1 仅用于 /api/peer/id 自报与对等名册快照。"""
+        host = self.host
+        if host in ("0.0.0.0", "", "::"):
+            host = "localhost"
+        return f"http://{host}:{self.port}"
 
     def ensure_dirs(self) -> None:
         for d in (self.etc_dir, self.instances_dir, self.trash_dir,
@@ -75,6 +98,8 @@ def load_config() -> XusiConfig:
     cfg = XusiConfig(root=ROOT)
     srv = raw.get("server", {})
     mgr = raw.get("manager", {})
+    cluster = raw.get("cluster", {})
+    node = raw.get("node", {})
     if "host" in srv: cfg.host = str(srv["host"])
     if "port" in srv: cfg.port = int(srv["port"])
     lo, hi = mgr.get("port_range", [cfg.port_lo, cfg.port_hi])
@@ -87,6 +112,12 @@ def load_config() -> XusiConfig:
         cfg.source_repo = str(mgr["source_repo"])
     if "display_timezone" in mgr:
         cfg.display_timezone = str(mgr["display_timezone"])
+    if "secret" in cluster:
+        cfg.cluster_secret = str(cluster["secret"])
+    if "id" in node:
+        cfg.node_id = str(node["id"])
+    if "role" in node:
+        cfg.node_role = str(node["role"])
     cfg.ensure_dirs()
     return cfg
 

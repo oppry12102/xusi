@@ -26,6 +26,17 @@
   button.pri:hover{opacity:.9;color:#fff}
   button.danger:hover{border-color:var(--err);color:var(--err)}
   button:disabled{opacity:.45;cursor:not-allowed}
+  /* 节点徽章 + peer 切换器（顶栏） */
+  #nodebar{display:flex;align-items:center;gap:8px;margin-left:14px}
+  #btn-node{display:flex;align-items:center;gap:7px;padding:5px 11px;font-weight:600;
+            background:#fff;color:var(--ink);border-radius:8px}
+  #btn-node:hover{border-color:var(--acc);color:var(--acc)}
+  #btn-node .arr{color:var(--sub);font-size:11px}
+  #btn-node .role{font-size:11px;padding:1px 7px;border-radius:99px;background:#f0f2f7;
+                 color:var(--sub);font-weight:650;text-transform:lowercase}
+  #btn-node .role.worker{background:#e3f4ea;color:var(--ok)}
+  #btn-node .role.backup{background:#fdf3e1;color:var(--warn)}
+  #btn-node .role.portal{background:#eaf0fb;color:var(--acc)}
   main{max-width:1180px;margin:20px auto;padding:0 22px}
   .bar{display:flex;align-items:center;gap:10px;margin:0 0 14px}
   .bar .hint{color:var(--sub);font-size:12.5px}
@@ -184,10 +195,54 @@
 <body>
 <header>
   <h1>墟司 <small>xuseek 智能体管理面 · <span id="ver"></span></small></h1>
+  <div id="nodebar">
+    <button id="btn-node" title="本节点信息 / 切换 / 改名">
+      <span id="node-name">…</span>
+      <span class="role" id="node-role">…</span>
+      <span class="arr">▾</span>
+    </button>
+  </div>
   <div id="hstate" class="hint" style="color:var(--sub);font-size:12.5px"></div>
   <button id="btn-logout" hidden>退出</button>
   <button id="btn-new" class="pri">＋ 新建 agent</button>
 </header>
+
+<!-- 节点切换 / 改名 / 关于 -->
+<dialog id="dlg-node">
+  <div class="dlg-h">节点 <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">当前节点身份、peer 切换、改名</span>
+    <button onclick="document.getElementById('dlg-node').close()" style="margin-left:auto">✕</button></div>
+  <div class="dlg-b">
+    <div style="border:1px solid var(--line);border-radius:10px;padding:11px 13px">
+      <div style="font-weight:650;margin-bottom:6px">当前 · <span id="dnode-name"></span>
+        <span class="role" id="dnode-role" style="margin-left:6px"></span></div>
+      <div class="kv" style="font-size:12px">
+        <b>id</b><span class="mono" id="dnode-id"></span>
+        <b>version</b><span class="mono" id="dnode-ver"></span>
+        <b>url</b><span class="mono" id="dnode-url"></span>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:9px" id="dnode-actions"></div>
+    </div>
+    <div>
+      <div style="font-weight:650;margin:6px 0 6px">其他节点 <span style="color:var(--sub);font-weight:400;font-size:12px">（peer 名册，待 Phase 2）</span></div>
+      <div id="dnode-peers" style="border:1px dashed var(--line);border-radius:10px;padding:18px;color:var(--sub);font-size:12.5px;text-align:center">
+        尚未配置对等节点。<br>
+        <span style="font-size:11.5px">在 etc/peers.toml 里加 [[peers]] 条目后这里会出现其它 xusi 的入口。</span>
+      </div>
+    </div>
+  </div>
+  <div class="dlg-f"><button onclick="document.getElementById('dlg-node').close()">关闭</button></div>
+</dialog>
+
+<!-- 改名（admin only） -->
+<dialog id="dlg-rename">
+  <div class="dlg-h">改本节点显示名 <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">仅 UI 展示；id / role 不改</span>
+    <button onclick="document.getElementById('dlg-rename').close()" style="margin-left:auto">✕</button></div>
+  <div class="dlg-b">
+    <div><label>新名字</label><input type="text" id="rename-input" maxlength="64"></div>
+    <div class="err" id="rename-err" hidden></div>
+  </div>
+  <div class="dlg-f"><button onclick="document.getElementById('dlg-rename').close()">取消</button><button class="pri" id="rename-go">保存</button></div>
+</dialog>
 
 <main>
   <div class="bar">
@@ -374,6 +429,12 @@ let agentsCache = [];   // 看板最近一次的 agent 列表（卡片上的大�
 
 $("#tip-url").textContent = `http://${location.hostname || "<IP>"}:${location.port}/?mtoken=<token>`;
 $("#ver").textContent = "";
+// 节点徽章：先拉（无论是否登录都要显示"这是哪台机器"）
+loadNode();
+document.getElementById("btn-node").onclick = openNodeDialog;
+document.getElementById("rename-go").onclick = doRename;
+document.getElementById("rename-input").addEventListener("keydown",
+  e => { if (e.key === "Enter") doRename(); });
 
 async function api(path, opts = {}) {
   const r = await fetch(path, {...opts, headers: {
@@ -388,7 +449,7 @@ async function api(path, opts = {}) {
 }
 
 function setLogin(msg) {
-  me = null; $("#login-tip").hidden = false; $("#cards").innerHTML = "";
+  me = null; meAdmin = false; $("#login-tip").hidden = false; $("#cards").innerHTML = "";
   $("#summary").textContent = msg ? "⚠ " + msg : "";
   $("#hstate").textContent = "未认证";
   $("#btn-logout").hidden = true;
@@ -408,6 +469,61 @@ function logout() {
   location.reload();
 }
 
+/* ── 节点徽章 / 切换 / 改名 ─────────────────────────────── */
+let nodeInfo = null;     // /api/peer/id 缓存
+let meAdmin = false;     // 缓存：从 me.role 派生（未登录为 false）
+
+async function loadNode() {
+  // 无鉴权也能拿——便于登录前就显示这是哪台机器
+  try {
+    const r = await fetch("/api/peer/id");
+    nodeInfo = await r.json();
+  } catch (e) {
+    nodeInfo = {name: "(未连接)", role: "?", id: "?", version: "?", url: location.origin};
+  }
+  $("#node-name").textContent = nodeInfo.name || "?";
+  const r = $("#node-role");
+  r.textContent = nodeInfo.role || "?";
+  r.className = "role " + (nodeInfo.role || "");
+  // 同步 dialog 内容（如果开着）
+  ["dnode-name", "dnode-id", "dnode-ver", "dnode-url", "dnode-role"].forEach(() => {});
+  $("#dnode-name").textContent = nodeInfo.name || "?";
+  $("#dnode-id").textContent = nodeInfo.id || "?";
+  $("#dnode-ver").textContent = nodeInfo.version || "?";
+  $("#dnode-url").textContent = nodeInfo.url || "?";
+  $("#dnode-role").textContent = nodeInfo.role || "?";
+  $("#dnode-role").className = "role " + (nodeInfo.role || "");
+}
+
+function openNodeDialog() {
+  const acts = $("#dnode-actions");
+  acts.innerHTML = "";
+  if (meAdmin && tok) {
+    const b = document.createElement("button");
+    b.textContent = "改名…";
+    b.onclick = () => { document.getElementById("dlg-node").close(); openRenameDialog(); };
+    acts.appendChild(b);
+  }
+  document.getElementById("dlg-node").showModal();
+}
+
+async function openRenameDialog() {
+  $("#rename-input").value = nodeInfo?.name || "";
+  $("#rename-err").hidden = true;
+  document.getElementById("dlg-rename").showModal();
+  setTimeout(() => $("#rename-input").focus(), 30);
+}
+
+async function doRename() {
+  const name = $("#rename-input").value.trim();
+  if (!name) { $("#rename-err").textContent = "名字不能为空"; $("#rename-err").hidden = false; return; }
+  try {
+    await api("/api/node", {method: "PATCH", body: JSON.stringify({name})});
+    document.getElementById("dlg-rename").close();
+    await loadNode();
+  } catch (e) { $("#rename-err").textContent = String(e.message || e); $("#rename-err").hidden = false; }
+}
+
 const fmtT = s => s ? new Date(s.replace("Z", "") + "Z").toLocaleString("zh-CN", {hour12: false}) : "-";
 const fmtDur = s => { if (!s) return "-"; const d = new Date(s); const ms = Date.now() - d.getTime();
   if (ms < 0 || isNaN(ms)) return "-"; const m = Math.floor(ms / 60000);
@@ -422,6 +538,7 @@ async function refresh(first = false) {
       fetch("/api/health").then(r => r.json()),
       api("/api/whoami"), api("/api/agents")]);
     me = who;
+    meAdmin = (who.role === "admin");
     $("#ver").textContent = "v" + h.version;
     $("#hstate").textContent = `${who.label}（${who.role === "admin" ? "管理员" : "用户"}）· ${list.length} 个 agent`;
     $("#btn-logout").hidden = false;

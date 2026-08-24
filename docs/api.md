@@ -347,6 +347,94 @@ curl -s -H "Authorization: Bearer $T" http://SERVER:8601/api/agents/{id}/service
 
 ---
 
+## 7b. 集群互联：节点身份 · 跨节点 SSO
+
+xusi 实例之间的互联：**每节点仍然是完整自治的 xusi**，互联只是再加几条对等 URL。
+没有 master、没有中心 DB；每个 worker / backup / portal 节点跑同一份代码、持有自己的
+注册表，差别只在 `[node].role` 与 `etc/peers.toml` 里的对等名册。
+
+### 节点身份
+
+每个 xusi 在 etc/xusi.toml 里有一份 `[node]`：
+
+```toml
+[node]
+id   = "auto-or-set-on-install"   # 安装时自动生成（secrets.token_urlsafe(6)）
+role = "worker"                    # worker | backup | portal
+```
+
+`role` 不同节点行为：
+| role | 本地 agent | 写操作 | 用途 |
+|---|---|---|---|
+| worker（默认） | 允许 | 增删改 agent | 跑业务的真实节点 |
+| backup | 禁止 | 只接 backup.* | 镜像其他 worker 的备份 |
+| portal | 禁止 | 全部转发 | 纯 UI 聚合 / 对外面向 |
+
+**仅 worker 节点可以注册 agent**。backup / portal 角色 `POST /api/agents` / `POST /api/restore`
+直接 400（架构层拦住，不是权限拦截）。
+
+`id` 字段由 `python -m xusi install` 自动生成并写回 toml（保形追加，不重写文件、不动注释）。
+手动改也行（id 是机器身份，改完请同步更新对端 peer 名册）。
+
+### 节点显示名（可改）
+
+每节点另有一个 `etc/node.json`，只存 `name`（默认是 socket.gethostname）：
+
+```http
+PATCH /api/node
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+
+{"name": "北京·主服务器 · 创新药集群"}
+```
+
+UI 顶栏点节点名即可改名（admin only）。id / role 不让改（API 里也不让覆盖）。
+
+### 自报（peer 之间无鉴权也能拿到）
+
+```http
+GET /api/peer/id
+→ 200
+{"id":"abc123","name":"北京·主服务器","role":"worker",
+ "version":"1.2.0","url":"http://10.0.0.1:8601"}
+```
+
+不鉴权——peer 之间在建立信任之前就要先拿到对方自报。仅返回公开字段，**永不返回 secret / token**。
+
+### 跨节点 SSO：`[cluster].secret`
+
+```toml
+[cluster]
+# 留空 = 单节点模式（今天的行为，无任何变化）
+# 设值 = 同密钥的所有 xusi 互信 token（任一节点签发、所有节点通用）
+secret = "IxY7...32字节以上随机..."
+```
+
+机制：`authtok.new_token()` 检测 `cfg.cluster_secret`：
+- **留空** → 同今天一样随机 `secrets.token_urlsafe(32)`，明文存 etc/tokens.json，等值比较。
+- **已设** → 签发 HS256-JWT（载荷 `{label, role, agents, iat, jti, kpr:"xusi"}`），同密钥的所有
+  xusi 都能验。`verify()` 先验 JWT；失败回退明文等值（覆盖 secret 由空转非空那一刻的遗留 token）。
+
+**撤销跨节点 token** 的简明语义：同密钥信任所有 token，撤销靠两件事——
+① 各节点在自己的 tokens.json 里前缀移除（仅本节点签发的）；② 万一要全集群失效，所有
+节点同时改 `[cluster].secret` 让旧的 token 全部失效。这是分布式 token 联邦的典型妥协。
+
+切到 WebUI 上：跨 xusi 切换 = 在浏览器里跳转 `peer.url + '/?mtoken=' + currentToken`。
+同密钥就直接登入；非同密钥落回对方自己登录页。
+
+### 集群视图
+
+```http
+GET /api/cluster
+Authorization: Bearer <any-token>
+→ 200
+{"self": {...}, "peers": []}
+```
+
+`peers[]` 来自 Phase 2 的 `etc/peers.toml`；Phase 1 始终为空。
+
+---
+
 ## 8. 管理面 token 的签发（服务器本地 CLI）
 
 ```bash

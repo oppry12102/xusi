@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, agentops, authtok, backup, brains, capabilities, ports, proxy, registry, services, versions
+from . import __version__, agentops, authtok, backup, brains, capabilities, node, ports, proxy, registry, services, versions
 from .config import get_config
 from .systemdctl import SystemdError
 
@@ -57,6 +57,13 @@ async def _capability_error(_req: Request, exc: capabilities.CapabilityError):
 
 @app.exception_handler(backup.BackupError)
 async def _backup_error(_req: Request, exc: backup.BackupError):
+    return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
+                    status_code=400, media_type="application/json")
+
+
+@app.exception_handler(ValueError)
+async def _value_error(_req: Request, exc: ValueError):
+    """node.set_name 等用户入参校验抛 ValueError，转 400 而非 500。"""
     return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
                     status_code=400, media_type="application/json")
 
@@ -166,6 +173,11 @@ class RestoreReq(BaseModel):
                                            "自动写'从备份克隆于 YYYY-MM-DD'")
 
 
+class PatchNodeReq(BaseModel):
+    """改名（仅 name 可改；id/role 走 toml，API 改不了）。"""
+    name: str = Field(min_length=1, max_length=64, description="新显示名")
+
+
 # ── 元信息 ───────────────────────────────────────────────────────────
 
 def _health() -> dict:
@@ -182,6 +194,30 @@ def api_health() -> dict:
 @app.get("/api/whoami")
 def api_whoami(rec: dict = Depends(require_auth)) -> dict:
     return {"label": rec["label"], "role": rec["role"], "agents": rec["agents"]}
+
+
+# ── 节点身份（peer 自报 / 改名 / 集群视图）────────────────
+# 注意：/api/peer/id **不鉴权**——peer 之间在建立信任之前就要先拿到对方自报；
+# 仅返回公开字段（id/name/role/version/url），从不返回 secret/cluster_secret/tokens。
+
+@app.get("/api/peer/id")
+def api_peer_id() -> dict:
+    """本节点自报（peer 之间 + WebUI 顶栏皆用）。"""
+    return node.info()
+
+
+@app.patch("/api/node")
+def api_node_patch(req: PatchNodeReq, _rec: dict = Depends(require_admin)) -> dict:
+    """改名。id/role 不让改（id 是机器身份；role 改完要重启，且本来也不该在一行 API 里改）。"""
+    node.set_name(req.name)
+    return node.info()
+
+
+@app.get("/api/cluster")
+def api_cluster(_rec: dict = Depends(require_auth)) -> dict:
+    """集群视图（Phase 1 仅 self；Phase 2 加 peers[] + reachability 探测）。
+    前端顶栏的「切换节点下拉」直接用本接口的数据。"""
+    return {"self": node.info(), "peers": []}
 
 
 @app.get("/api/brains")

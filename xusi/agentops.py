@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from . import brains, ports, registry, services, systemdctl, versions
+from . import brains, node, ports, registry, services, systemdctl, versions
 from .config import get_config
 
 
@@ -250,6 +250,13 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     mission = (mission or "").strip()
     if not mission:
         raise AgentError("mission 不能为空")
+    # 角色守门：仅 worker 节点可注册 agent；backup/portal 在此直接拒（架构层拦住，
+    # 不是权限问题——这两个角色根本不需要本地 agent）。
+    if not node.can_register_agents():
+        raise AgentError(
+            f"当前节点 role={cfg.node_role} 不允许注册 agent（仅 worker 角色可；"
+            f"backup/portal 节点专用于备份与门户聚合）"
+        )
     pool = {b["name"]: b for b in brains.pool_summary()}
     unknown = [b for b in brain_list if b not in pool]
     if unknown:

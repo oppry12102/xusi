@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import secrets
 import subprocess
 import sys
 import zipfile
@@ -55,6 +56,55 @@ WantedBy=default.target
 """
 
 
+def _ensure_node_id() -> None:
+    """安装时若 etc/xusi.toml 没设 [node].id，自动生成 6 字节 url-safe 写回。
+    用文本保形（不重写整个文件、保留注释）：缺 [node] 段则追加；缺 id 行则插入。"""
+    cfg = get_config()
+    if cfg.node_id:
+        return
+    new_id = secrets.token_urlsafe(6)
+    toml = cfg.root / "etc" / "xusi.toml"
+    text = toml.read_text(encoding="utf-8") if toml.exists() else ""
+    lines = text.splitlines(keepends=True)
+    # 找 [node] 段
+    node_idx = None
+    for i, ln in enumerate(lines):
+        if ln.strip() == "[node]":
+            node_idx = i
+            break
+    if node_idx is None:
+        # 追加整段
+        if lines and not lines[-1].endswith("\n"):
+            lines.append("\n")
+        lines.append("\n[node]\n")
+        lines.append(f'id = "{new_id}"\n')
+    else:
+        # 在 [node] 段内找 `id =` 行；没找到则在段末之后插入
+        in_node = False
+        insert_at = None
+        for i, ln in enumerate(lines):
+            s = ln.strip()
+            if s == "[node]":
+                in_node = True
+                continue
+            if in_node:
+                if s.startswith("[") and s.endswith("]"):   # 进入下一段
+                    insert_at = i
+                    break
+                if s.startswith("id"):
+                    # 已经有 id 行（即使空也当作已设）——不动
+                    return
+        if insert_at is None:
+            insert_at = len(lines)
+        lines.insert(insert_at, f'id = "{new_id}"\n')
+    toml.write_text("".join(lines), encoding="utf-8")
+    # cfg 缓存要清掉——get_config 是 module global
+    from . import config as _cfg_mod
+    _cfg_mod._CONFIG = None
+    _cfg_mod.load_config()
+    print(f"==> 节点身份：自动生成 id = {new_id}（写入 etc/xusi.toml [node].id；想换名手改）")
+
+
 def cmd_install(args) -> int:
     py = _ensure_venv()
     # xuseek-v2 源码事实源 = versions/ 里的 zip 包。新约定：缺省从 versions 取最新
@@ -62,6 +112,8 @@ def cmd_install(args) -> int:
     # 才回落到 source_dir（缺失时自动从 GitHub 拉取）。
     from . import agentops, versions as _versions
     cfg = get_config()
+    _ensure_node_id()
+    cfg = get_config()  # reload after id 写入
     vs = _versions.list_versions()
     if vs:
         print(f"==> 版本仓库就位：{cfg.versions_dir}（{len(vs)} 个版本包："

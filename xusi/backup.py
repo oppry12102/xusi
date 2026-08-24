@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from . import __version__, agentops, brains, ports, registry, systemdctl, versions
+from . import __version__, agentops, brains, node, ports, registry, systemdctl, versions
 from .config import get_config
 
 
@@ -364,6 +364,12 @@ def restore(backup_path: Path, *, new_id: str | None = None,
     brains / note 若非 None，覆盖备份 meta 里的同名字段（克隆对话框用：大脑不是
     备份项目，备注自动写"从备份克隆于 …"）。
     """
+    # 同 create_agent：restore 也会写入本地注册表 → 仅 worker 节点可做。
+    if not node.can_register_agents():
+        raise BackupError(
+            f"当前节点 role={get_config().node_role} 不允许本地恢复 agent"
+            f"（仅 worker 角色可；backup/portal 节点专用于备份与门户聚合）"
+        )
     # 局部别名：参数 `brains` 与模块同名会遮蔽导入；池校验用模块
     from . import brains as _brains_mod
     meta = _read_meta_from_tar(backup_path)

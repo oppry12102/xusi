@@ -28,3 +28,6 @@ versions_dir = "/home/ubuntu/work/xusi/versions"
 port_range = [8602, 8699]
 # 给用户展示用的时区
 display_timezone = "Asia/Shanghai"
+
+[node]
+id = "IUyWwGI3"
