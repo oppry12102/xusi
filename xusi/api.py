@@ -714,27 +714,57 @@ async def px(request: Request, agent_id: str, sub_path: str = "") -> Response:
     ② 该 agent 自己的观察台 token——让 agent 自带观测台页面在新标签页里
        （拿不到管理面 token 的上下文）发出的 Bearer 请求也能通行。
 
-    远端 agent（集群模式 + 在 peer 上）：鉴权只走管理面 token 分支——
-    本机没有 peer 的 agent tokens.json，不能验观察台 token；改由 peer 端
-    自己 inject agent token 再转给本地 agent 的 127.0.0.1。HTML 中的相对
-    路径 `/v1/*` 由 peer 在 HTML 重写时改成 `/px/{id}/v1/*`——浏览器仍在
-    本机页面里继续触发 `/px/...`，再被本机转发到 peer（递归）。"""
+    远端 agent（集群模式 + 在 peer 上）：本机无法验观察台 token
+    （peer 的 agent tokens.json 不在本机），改由 peer 端自己 inject agent token
+    再转给本地 agent 的 127.0.0.1。HTML 中的相对路径 `/v1/*` 由 peer 在 HTML 重写时
+    改成 `/px/{id}/v1/*`——浏览器仍在 dev 页面里继续触发 `/px/...`，再被 dev 转发到 peer
+    （递归）。观察台面板 JS 的 fetch 只带 `Authorization: Bearer <该 agent 的观察台 token>`
+    ——这种 token 我们本地 verify 一定返 None，必须整段转给 peer 让它验（peer 有自己的
+    agent tokens.json 命中）。"""
     target = xproxy.resolve(agent_id, rec=_rec_of(request))
     if target is None:
         raise HTTPException(404, f"agent 不存在: {agent_id}")
     if target.kind == "local":
-        # 本机：先看 agent 是不是 local——local 才允许观察台 token 走 `_svc_px_auth` 的
-        # 备用路径（Bearer = 该 agent 的观察台 token，没 mtoken 时也能进）。
+        # 本机：观察台 token 走 `_svc_px_auth` 的备用路径（Bearer = 观察台 token 也行）
         _svc_px_auth(request, target.agent)
         return await proxy.prefix_proxy(request, agent_id, sub_path)
-    # 远端：只能验管理面 token（peer 端的 agent tokens.json 不在本机）
-    rec = _rec_of(request)
-    if rec is None:
-        raise HTTPException(401, "missing or invalid manager token")
-    if not authtok.can_access(rec, agent_id):
-        raise HTTPException(403, f"token 无权访问 agent {agent_id}")
-    return await xproxy.forward_to_peer(target.peer, request,
-                                        request.url.path, rec=rec)
+    # 远端：caller 的 Authorization / mtoken 原样透传给 peer，peer 自己验——不重打包，
+    # 不然 _bearer_headers 会把任意 PLAIN token 都包装成「user 可访问当前 URL agent」JWT，
+    # peer 一查 agents 就放过——把别的 agent 的观察台 token 借给本机用等于提权。
+    return await _forward_passthrough(target.peer, request, request.url.path)
+
+
+async def _forward_passthrough(peer: dict, request: Request, target_path: str) -> Response:
+    """远端 /px/{id}/... 的专用转发：caller 的 Authorization / mtoken 原样转给 peer，
+    不经 _bearer_headers 重打包。peer 端 _svc_px_auth 自己验 token 与 URL agent 的归属。
+
+    与 xproxy.forward_to_peer 的区别：forward_to_peer 走 _bearer_headers 重新构造
+    Authorization——观察台 token 不应被包装。"""
+    import httpx
+    from fastapi.responses import StreamingResponse
+    from starlette.background import BackgroundTask
+    from . import proxy as _proxy
+    url = f"{peer['url'].rstrip('/')}{target_path}"
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _proxy._HOP_HEADERS}
+    # query 整段透传：peer 端 require_auth / _svc_px_auth 自己读 mtoken + token，
+    # 本机别预先剥 mtoken（剥了 peer 就拿不到 caller 的管理面 token，401）。
+    params = dict(request.query_params)
+    body = await request.body()
+    try:
+        cli = _proxy.client()
+        req = cli.build_request(request.method, url, params=params or None,
+                                headers=headers, content=body,
+                                timeout=httpx.Timeout(30.0, connect=5.0))
+        resp = await cli.send(req, stream=True)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"peer {peer['id']} 不可达：{type(e).__name__}: {e}") from e
+    out_headers = [(k, v) for k, v in resp.headers.multi_items()
+                   if k.lower() not in _proxy._DROP_RESP_HEADERS]
+    heads, extra = _proxy._split_headers(out_headers)
+    out = StreamingResponse(resp.aiter_raw(), status_code=resp.status_code,
+                            headers=heads, background=BackgroundTask(resp.aclose))
+    out.raw_headers.extend(extra)
+    return out
 
 
 def _rec_of(request: Request) -> dict | None:
