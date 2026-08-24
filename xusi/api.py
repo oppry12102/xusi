@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, agentops, authtok, brains, capabilities, ports, proxy, registry, services, versions
+from . import __version__, agentops, authtok, backup, brains, capabilities, ports, proxy, registry, services, versions
 from .config import get_config
 from .systemdctl import SystemdError
 
@@ -51,6 +51,12 @@ async def _version_error(_req: Request, exc: versions.VersionError):
 
 @app.exception_handler(capabilities.CapabilityError)
 async def _capability_error(_req: Request, exc: capabilities.CapabilityError):
+    return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
+                    status_code=400, media_type="application/json")
+
+
+@app.exception_handler(backup.BackupError)
+async def _backup_error(_req: Request, exc: backup.BackupError):
     return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
                     status_code=400, media_type="application/json")
 
@@ -143,6 +149,23 @@ class TokenNewReq(BaseModel):
     label: str = ""
 
 
+class BackupReq(BaseModel):
+    reason: str = Field("manual", description="备份原因（manual/pre-modify/...）；写进 meta")
+
+
+class RestoreReq(BaseModel):
+    from_path: str | None = Field(None, description="备份 tar.gz 本机路径（CLI 用）")
+    key: str | None = Field(None, description="备份 key（WebUI 用：从 LocalBackend 取，免下载）")
+    new_id: str | None = Field(None, description="恢复后用新 id（避免冲突）")
+    port: int | None = Field(None, description="恢复后端口（默认自动分配）")
+    host: str = Field("127.0.0.1", description="监听 host")
+    overwrite: bool = Field(False, description="覆盖同名已存在 agent")
+    brains: list[str] | None = Field(None, description="覆盖备份 meta.brains；克隆对话框用，"
+                                                  "让用户从 xusi 大脑池显式选，而不是沿用 meta")
+    note: str | None = Field(None, description="覆盖备份 meta.note；克隆对话框用，"
+                                           "自动写'从备份克隆于 YYYY-MM-DD'")
+
+
 # ── 元信息 ───────────────────────────────────────────────────────────
 
 def _health() -> dict:
@@ -169,10 +192,12 @@ def api_brains(_rec: dict = Depends(require_auth)) -> list[dict]:
 @app.get("/api/versions")
 def api_versions(_rec: dict = Depends(require_auth)) -> dict:
     """xuseek-v2 版本仓库清单（zip 由管理员投放于 versions/，约定见 docs/versions.md）。
-    创建 agent 的 source_version 缺省 = 清单最新版（每 agent 私有副本）；'main' = 共享
-    主源码（default_ready 标示其是否本地就绪）。"""
+    创建 agent 的 source_version 缺省 = 清单最新版（每 agent 私有副本）。
+    'main' = 共享主源码（过渡期字段，新约定不再推荐），其就绪与否见 main_ready。
+    default_ready = 版本仓库是否非空（实际默认源 = 仓库最新版）。"""
     return {"repo_dir": str(get_config().versions_dir),
-            "default_ready": (get_config().source_dir / "xuseek.sh").exists(),
+            "default_ready": bool(versions.list_versions()),
+            "main_ready": (get_config().source_dir / "xuseek.sh").exists(),
             "versions": versions.list_versions()}
 
 
@@ -278,6 +303,74 @@ for _what in ("status", "events", "sessions", "messages", "outbox", "logs"):
 @app.post("/api/agents/{agent_id}/mail")
 def api_agent_mail(req: MailReq, pair: tuple = Depends(require_agent)) -> dict:
     return agentops.mail(pair[0]["id"], req.text)
+
+
+# ── 备份 / 恢复 ───────────────────────────────────────────────────────
+
+@app.post("/api/agents/{agent_id}/backup", status_code=201)
+def api_agent_backup(req: "BackupReq", pair: tuple = Depends(require_agent),
+                     _rec: dict = Depends(require_admin)) -> dict:
+    """备份到 backend（默认 LocalBackend：etc/backups/）。前置：sleeping + grace。"""
+    return backup.snapshot(pair[0]["id"], reason=req.reason)
+
+
+@app.get("/api/agents/{agent_id}/backups")
+def api_agent_backups_list(with_meta: bool = False,
+                            pair: tuple = Depends(require_agent)) -> list[dict]:
+    if with_meta:
+        return backup.list_with_meta(agent_id=pair[0]["id"])
+    return backup.list_backups(agent_id=pair[0]["id"])
+
+
+@app.get("/api/backups")
+def api_backups_all(with_meta: bool = False,
+                     _rec: dict = Depends(require_admin)) -> list[dict]:
+    """跨 agent 的全量备份清单（仅 admin）。WebUI 「从备份克隆」走这里。"""
+    if with_meta:
+        return backup.list_with_meta()
+    return backup.list_backups()
+
+
+@app.get("/api/backups/{key}")
+def api_backup_get(key: str, _rec: dict = Depends(require_auth)) -> dict:
+    """备份元数据 + 透传包内 meta（不下载包体）。"""
+    be = backup.LocalBackend()
+    rows = [r for r in be.list() if r["key"] == key]
+    if not rows:
+        raise HTTPException(404, f"备份不存在：{key}")
+    # 读包内 meta
+    import tarfile, json as _json, tempfile
+    p = be._path(key)
+    with tarfile.open(p, "r:gz") as tar:
+        for m in tar.getmembers():
+            if m.name == "meta.json":
+                f = tar.extractfile(m)
+                meta = _json.loads(f.read().decode("utf-8"))
+                break
+        else:
+            meta = {}
+    return {**rows[0], "meta": meta}
+
+
+@app.delete("/api/backups/{key}")
+def api_backup_delete(key: str, _rec: dict = Depends(require_admin)) -> dict:
+    backup.delete_backup(key)
+    return {"deleted": key}
+
+
+@app.post("/api/restore", status_code=201)
+def api_restore(req: "RestoreReq", _rec: dict = Depends(require_admin)) -> dict:
+    """从备份包恢复。req.key（WebUI）或 req.from_path（CLI）二选一。"""
+    from pathlib import Path
+    if req.key:
+        bp = backup.path_of_key(req.key)
+    elif req.from_path:
+        bp = Path(req.from_path).expanduser().resolve()
+    else:
+        raise HTTPException(400, "需要 key 或 from_path 之一")
+    return backup.restore(
+        bp, new_id=req.new_id, port=req.port, host=req.host,
+        overwrite=req.overwrite, brains=req.brains, note=req.note)
 
 
 # ── agent 观察台 token ───────────────────────────────────────────────

@@ -52,6 +52,8 @@ class XusiConfig:
     @property
     def audit_file(self) -> Path: return self.etc_dir / "audit.jsonl"
     @property
+    def backup_dir(self) -> Path: return self.root / "etc" / "backups"
+    @property
     def webui_dir(self) -> Path: return self.root / "xusi" / "webui"
     @property
     def docs_dir(self) -> Path: return self.root / "docs"
@@ -64,7 +66,7 @@ class XusiConfig:
 
     def ensure_dirs(self) -> None:
         for d in (self.etc_dir, self.instances_dir, self.trash_dir,
-                  self.versions_dir, self.webui_dir):
+                  self.versions_dir, self.backup_dir, self.webui_dir):
             d.mkdir(parents=True, exist_ok=True)
 
 

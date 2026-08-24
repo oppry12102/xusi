@@ -19,3 +19,4 @@ versions/
 __pycache__/
 *.pyc
 *.tmp
+etc/backups/

@@ -9,12 +9,21 @@ host = "0.0.0.0"
 port = 8601
 
 [manager]
-# xuseek-v2 源码：自管于本目录下（不入 git；缺失时自动从 source_repo 拉取）
-source_dir = "/home/htao/work/xusi/xuseek-v2"
-source_repo = "https://github.com/oppry12102/xuseek-v2"
-# 版本仓库：管理员投放 xuseek-v2-<版本号>.zip（见 docs/versions.md；整目录不入 git）；
-# 创建 agent 时按版本选用，源码解压为实例私有副本，与上面的共享主源码互不影响
-# versions_dir = "/home/htao/work/xusi/versions"
+# ── 新约定（2026-08-24）：只有 versions/ 是 xuseek-v2 源码的事实源 ──
+# 共享主源码（source_dir）已废弃——新建 agent 一律从 versions/ 选版本，解压到
+# instances/<id>/xuseek-v2/ 作实例私有副本，实例间互不影响、可单独迁移。
+# 管理员投放版本包：把 git tag 出的 zip（如 xuseek-v2-v2.5.2.zip）放进 versions/。
+#   cd /path/to/xuseek-v2 && git checkout v2.5.2
+#   git archive --format=zip -o /path/to/xusi/versions/xuseek-v2-v2.5.2.zip HEAD
+# versions/ 整目录不入 git——zip 里是私有源码（见 docs/versions.md）。
+versions_dir = "/home/ubuntu/work/xusi/versions"
+
+# 共享主源码 source_dir / source_repo 已废弃，留作过渡期兼容说明（当前置空）：
+#  - 仅现存 agent 与显式 source_version="main"（或仓库为空时的缺省回落）会用
+#  - 新建 agent 不再走共享主源码
+# source_dir = "/home/ubuntu/work/xusi/xuseek-v2"
+# source_repo = "https://github.com/oppry12102/xuseek-v2"
+
 # agent 端口分配段（8601 归管理面，agent 从 8602 起）
 port_range = [8602, 8699]
 # 给用户展示用的时区

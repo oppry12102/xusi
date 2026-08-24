@@ -57,10 +57,18 @@ WantedBy=default.target
 
 def cmd_install(args) -> int:
     py = _ensure_venv()
-    # xuseek-v2 源码：自管于本目录下，缺失时从 GitHub 拉取（etc/xusi.toml source_repo）
-    from . import agentops
-    src = agentops.ensure_source()
-    print(f"==> xuseek-v2 源码就位：{src}")
+    # xuseek-v2 源码事实源 = versions/ 里的 zip 包。新约定：缺省从 versions 取最新
+    # 版本解压到实例私有副本，共享主源码 source_dir 已废弃；只有 versions 为空时
+    # 才回落到 source_dir（缺失时自动从 GitHub 拉取）。
+    from . import agentops, versions as _versions
+    cfg = get_config()
+    vs = _versions.list_versions()
+    if vs:
+        print(f"==> 版本仓库就位：{cfg.versions_dir}（{len(vs)} 个版本包："
+              + "、".join(v['version'] for v in vs) + "）——新建 agent 将取最新版作实例私有副本")
+    else:
+        src = agentops.ensure_source()
+        print(f"==> 版本仓库为空，xuseek-v2 共享主源码就位：{src}（过渡期兼容）")
     # 密钥池起手：etc/brains.toml 不存在时从模板复制（空 key，600）——clone 后的第一步引导
     cfg = get_config()
     if not cfg.brains_file.exists():
@@ -175,7 +183,7 @@ def _zip_pack_names(zp: Path) -> list[tuple[str, str]]:
 
 
 def cmd_doctor(_args) -> int:
-    from . import brains, ports, systemdctl
+    from . import brains, ports, systemdctl, versions
     cfg = get_config()
     ok = True
 
@@ -188,13 +196,22 @@ def cmd_doctor(_args) -> int:
     print(f"墟司 doctor（v{__version__}，root={ROOT}）")
     check("systemd 用户会话", subprocess.run(
         ["systemctl", "--user", "is-system-running"], capture_output=True).returncode in (0, 1))
-    src_ok = (cfg.source_dir / "xuseek.sh").exists()
-    check("xuseek-v2 源码（自管）", src_ok,
-          f"{cfg.source_dir}" + ("" if src_ok else f"（缺失；创建 agent 时自动从 {cfg.source_repo} 拉取）"))
-    check("xuseek 源码 venv 可用", (cfg.source_dir / ".venv" / "bin" / "python").exists()
-          or not src_ok, "首次 spawn 时由 xuseek.sh 自动构建")
-    from . import versions
+    # 源码事实源 = versions/ 里的 zip（缺省建 agent 自动取最新版作实例私有副本）；
+    # source_dir 是过渡期兼容字段（仅现存 agent / 显式 "main" 用），不在 = OK
     vs = versions.list_versions()
+    src_ok = (cfg.source_dir / "xuseek.sh").exists()
+    if vs:
+        # 新约定：versions/ 是事实源，source_dir 缺失属正常（已废弃）
+        print(f"  [INFO] 共享主源码 source_dir（过渡期字段）{cfg.source_dir}："
+              + ("就位" if src_ok else "未就位（已废弃——新建 agent 走 versions/）"))
+        check("xuseek 源码 venv 可用", True,
+              "venv 在每个 agent 实例的 xuseek-v2/.venv 首次启动时由 xuseek.sh 自建")
+    else:
+        # 老约定：versions 空时 source_dir 仍是唯一来源
+        check("xuseek-v2 源码（自管）", src_ok,
+              f"{cfg.source_dir}" + ("" if src_ok else f"（缺失；创建 agent 时自动从 {cfg.source_repo} 拉取）"))
+        check("xuseek 源码 venv 可用", (cfg.source_dir / ".venv" / "bin" / "python").exists()
+              or not src_ok, "首次 spawn 时由 xuseek.sh 自动构建")
     print(f"  [INFO] 版本仓库 {cfg.versions_dir}：{len(vs)} 个版本包"
           + (f"（{'、'.join(v['version'] for v in vs)}）" if vs else "（空——新建 agent 走共享主源码）"))
     # 各版本 zip 的能力包资产校验（投放校验：manifest 存在才算数；只读 manifest 名，
@@ -242,6 +259,70 @@ def cmd_doctor(_args) -> int:
     return 0 if ok else 1
 
 
+# ── backup / backups / restore ────────────────────────────────────────
+
+def cmd_backup(args) -> int:
+    """备份一个或全部 sleeping 的 agent；产物落到 etc/backups/。"""
+    from . import backup
+    if args.all:
+        from . import registry
+        from . import agentops as _aops
+        n_ok = n_skip = 0
+        for a in registry.list_agents():
+            try:
+                info = backup.snapshot(a["id"], reason=args.reason)
+                print(f"  ✓ {a['id']:28} {info['size_bytes']:>8} B  {info['key']}")
+                n_ok += 1
+            except backup.BackupError as e:
+                print(f"  · {a['id']:28} 跳过：{e}", file=sys.stderr)
+                n_skip += 1
+        print(f"==> 完成 {n_ok} 个，{n_skip} 个跳过")
+        return 0
+    if not args.agent_id:
+        print("error: 需要 agent-id 或 --all", file=sys.stderr)
+        return 2
+    info = backup.snapshot(args.agent_id, reason=args.reason)
+    print(f"  agent  : {info['meta']['agent_id']}")
+    print(f"  key    : {info['key']}")
+    print(f"  size   : {info['size_bytes']} B")
+    print(f"  reason : {info['meta']['snapshot_reason']}")
+    print(f"  at     : {info['meta']['snapshot_at']}")
+    return 0
+
+
+def cmd_backups(args) -> int:
+    """列出某 agent（缺省全部）的备份包。"""
+    from . import backup
+    rows = backup.list_backups(agent_id=args.agent_id)
+    if not rows:
+        print("(没有备份)" if args.agent_id else "(没有备份——先 `xusi backup <id>`)")
+        return 0
+    for r in rows:
+        print(f"  {r['mtime']}  {r['size_bytes']:>10} B  {r['key']}")
+    return 0
+
+
+def cmd_restore(args) -> int:
+    """从备份包恢复 agent 到新 home；可改名 / 换端口。"""
+    from . import backup
+    bp = Path(args.from_path).expanduser().resolve()
+    if not bp.is_file():
+        print(f"error: 备份文件不存在：{bp}", file=sys.stderr)
+        return 2
+    out = backup.restore(
+        bp,
+        new_id=args.new_id,
+        port=args.port,
+        host=args.host,
+        overwrite=args.overwrite,
+    )
+    print(f"  restored id     : {out['id']}")
+    print(f"  port            : {out['port']}")
+    print(f"  home            : {out['home']}")
+    print(f"  restored_from   : {out['restored_from']}")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="xusi", description="墟司 —— xuseek 智能体管理面")
     p.add_argument("--version", action="version", version=f"xusi {__version__}")
@@ -270,6 +351,24 @@ def main() -> int:
     tr = ts.add_parser("revoke", help="按前缀撤销")
     tr.add_argument("prefix")
     tr.set_defaults(fn=cmd_token)
+
+    bp_ = sub.add_parser("backup", help="备份 agent 的 data + workspace（仅 sleeping 可）")
+    bp_.add_argument("agent_id", nargs="?", default="")
+    bp_.add_argument("--all", action="store_true", help="备份所有 sleeping 的 agent")
+    bp_.add_argument("--reason", default="manual", help="备份原因（manual/pre-modify/...）")
+    bp_.set_defaults(fn=cmd_backup)
+
+    bl_ = sub.add_parser("backups", help="列出备份包")
+    bl_.add_argument("agent_id", nargs="?", default="", help="可选 agent-id 过滤")
+    bl_.set_defaults(fn=cmd_backups)
+
+    rs_ = sub.add_parser("restore", help="从备份包恢复 agent（可跨主机）")
+    rs_.add_argument("--from", dest="from_path", required=True, help="备份 tar.gz 路径")
+    rs_.add_argument("--new-id", default=None, help="恢复后用新 id（避免冲突）")
+    rs_.add_argument("--port", type=int, default=None, help="恢复后端口（默认自动分配）")
+    rs_.add_argument("--host", default="127.0.0.1", help="监听 host")
+    rs_.add_argument("--overwrite", action="store_true", help="覆盖同名已存在 agent")
+    rs_.set_defaults(fn=cmd_restore)
 
     args = p.parse_args()
     return args.fn(args)
