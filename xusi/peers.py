@@ -46,10 +46,13 @@ def _load() -> dict:
         return {"peers": []}
     try:
         with f.open("rb") as fh:
-            return tomllib.load(fh)
+            data = tomllib.load(fh)
     except Exception as e:
         print(f"警告：{f} 解析失败（{e}），按空名册起服务")
         return {"peers": []}
+    # tomllib.load 对 0 字节 / 全注释文件返回 {}——补默认键
+    data.setdefault("peers", [])
+    return data
 
 
 def _save(data: dict) -> None:
