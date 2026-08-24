@@ -20,7 +20,7 @@ from typing import Any, Literal
 import httpx
 from fastapi import HTTPException, Request, Response
 
-from . import peers, proxy, registry
+from . import authtok, peers, proxy, registry
 
 # 复用 proxy 的资源
 _client_factory = proxy.client
@@ -193,7 +193,8 @@ async def forward_to_peer(peer: dict, request: Request,
     """把 FastAPI Request 原样转发到 peer 的同 path，返回 peer 的响应。
 
     行为：
-    - JWT 透传（cluster trust）：用 caller 的 token 替换 Authorization
+    - 鉴权头自治：caller 的 token 是 JWT → 透传；是 PLAIN（明文 legacy）→
+      当场用 cluster_secret 签短期 JWT 给 peer（用户 PLAIN 也能跨集群透明工作）。
     - 查询串保留（除 mtoken）
     - body / method 全透传
     - 响应除 hop 头外原样回传（流式，避免把 peer 的响应体整包缓冲）
@@ -201,7 +202,8 @@ async def forward_to_peer(peer: dict, request: Request,
     - peer 4xx/5xx → 透传同码同 body"""
     url = f"{peer['url'].rstrip('/')}{target_path}"
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
-    headers["authorization"] = f"Bearer {_token_of(rec)}"
+    # 鉴权头：JWT 透传 / PLAIN 自动包装（与 _bearer_headers 同形）
+    headers.update(_bearer_headers(rec))
     params = {k: v for k, v in request.query_params.items() if k != "mtoken"}
     body = await request.body()
     try:
@@ -227,9 +229,19 @@ async def forward_to_peer(peer: dict, request: Request,
 
 
 def _bearer_headers(rec: dict) -> dict:
-    """把 caller 的 token 还原成 Authorization 头。"""
+    """把 caller 的 token 还原成 Authorization 头。
+
+    PLAIN → 当场签短期 JWT 给 peer（peer 端 tokens.json 里没有 caller PLAIN）；
+    JWT 透传（cluster trust，peer 用同密钥重验）。"""
     tok = _token_of(rec)
-    return {"authorization": f"Bearer {tok}"} if tok else {}
+    if not tok:
+        return {}
+    if tok.count(".") == 2:
+        return {"authorization": f"Bearer {tok}"}
+    wrapped = authtok.sign_jwt_for(rec)
+    if wrapped:
+        return {"authorization": f"Bearer {wrapped}"}
+    return {"authorization": f"Bearer {tok}"}
 
 
 def _token_of(rec: dict) -> str:

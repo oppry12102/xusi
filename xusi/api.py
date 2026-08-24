@@ -190,6 +190,17 @@ class TokenNewReq(BaseModel):
     label: str = ""
 
 
+class TokenMgrNewReq(BaseModel):
+    """管理面 token 签发（仅 admin 可调）。
+
+    rotate=True 时：先 revoke 同 role 的所有 JWT，再签发新的——用户层面始终只
+    看见一把 active token；旧的被换掉就立刻作废。PLAIN 不被 rotate 触碰。"""
+    label: str = ""
+    role: str = Field("user", description="admin 或 user")
+    agents: list[str] | None = Field(None, description="user 范围（admin 无需）")
+    rotate: bool = Field(False, description="（仅 cluster）签发前先 revoke 同 role 的所有 JWT")
+
+
 class BackupReq(BaseModel):
     reason: str = Field("manual", description="备份原因（manual/pre-modify/...）；写进 meta")
 
@@ -591,6 +602,66 @@ def api_restore(req: "RestoreReq", _rec: dict = Depends(require_admin)) -> dict:
     return backup.restore(
         bp, new_id=req.new_id, port=req.port, host=req.host,
         overwrite=req.overwrite, brains=req.brains, note=req.note)
+
+
+# ── 管理面 token（admin / user；可视 / 签发 / 撤销）─────────────────────
+
+@app.get("/api/tokens")
+def api_tokens_list(_rec: dict = Depends(require_admin)) -> list[dict]:
+    """列出管理面 token。仅 admin——含其他 admin 的 token 原文。
+
+    cluster 模式下 PLAIN（明文 legacy）只在本机通；为了视觉一致，在 JWT 项后挂
+    [cluster]、在 PLAIN 项后挂 [legacy]，方便一眼分辨。"""
+    cluster_on = bool(get_config().cluster_secret)
+    rows = []
+    for t in authtok.list_tokens():
+        is_jwt = t["token"].count(".") == 2
+        if cluster_on and is_jwt:
+            kind = "cluster"
+        elif cluster_on:
+            kind = "legacy"   # PLAIN 在 cluster 模式仅本地兼容，跨集群不走
+        else:
+            kind = "local"
+        rows.append({
+            "token": t["token"],
+            "label": t["label"],
+            "role": t["role"],
+            "agents": t["agents"],
+            "created_at": t["created_at"],
+            "kind": kind,
+        })
+    return rows
+
+
+@app.post("/api/tokens", status_code=201)
+def api_tokens_new(req: TokenMgrNewReq,
+                   _rec: dict = Depends(require_admin)) -> dict:
+    """签发新的管理面 token。仅 admin 可调——admin / user 都得 admin 来签。"""
+    if req.role not in ("admin", "user"):
+        raise HTTPException(400, "role 须为 admin 或 user")
+    try:
+        rec = authtok.new_token(req.label, role=req.role,
+                                agents=req.agents, rotate=req.rotate)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {
+        "token": rec["token"],
+        "label": rec["label"],
+        "role": rec["role"],
+        "agents": rec["agents"],
+        "created_at": rec["created_at"],
+        "rotated": req.rotate,
+    }
+
+
+@app.delete("/api/tokens/{prefix}")
+def api_tokens_revoke(prefix: str,
+                      _rec: dict = Depends(require_admin)) -> dict:
+    """按前缀撤销管理面 token。仅 admin 可调。"""
+    if len(prefix) < 8:
+        raise HTTPException(400, "请提供至少 8 位 token 前缀")
+    n = authtok.revoke_token(prefix)
+    return {"revoked": n, "prefix": prefix}
 
 
 # ── agent 观察台 token ───────────────────────────────────────────────

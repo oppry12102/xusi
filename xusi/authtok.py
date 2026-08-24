@@ -96,7 +96,15 @@ def list_tokens() -> list[dict]:
     return list(_load()["tokens"])
 
 
-def new_token(label: str = "", role: str = "user", agents: list[str] | None = None) -> dict:
+def new_token(label: str = "", role: str = "user",
+              agents: list[str] | None = None,
+              rotate: bool = False) -> dict:
+    """签发管理面 token。
+
+    rotate=True（仅 cluster 模式）：先 revoke 同 role 的所有现有 token，再签发新的。
+    设计意图：用户层面始终只看见一把 active token；旧的被换掉就立刻作废，
+    避免「这把该用哪把」的混淆。PLA-form（明文 legacy）token 不被 rotate 触碰——
+    它本来在 cluster 模式就不被使用，仅作本地向后兼容保留。"""
     if role not in ("admin", "user"):
         raise ValueError("role 须为 admin 或 user")
     cfg = get_config()
@@ -129,6 +137,13 @@ def new_token(label: str = "", role: str = "user", agents: list[str] | None = No
             "created_at": now,
         }
     data = _load()
+    if rotate and _cluster_on():
+        # 仅 revoke JWT 形态的同 role token（PLAIN 不动——它 cluster 模式本地通，
+        # 留给向后兼容老脚本；rotate 时一并清掉也对，但保留更稳妥）
+        data["tokens"] = [
+            t for t in data["tokens"]
+            if not (t["role"] == role and t["token"].count(".") == 2)
+        ]
     data["tokens"].append(rec)
     _save(data)
     return rec
@@ -142,6 +157,33 @@ def revoke_token(prefix: str) -> int:
     data["tokens"] = [t for t in data["tokens"] if not t["token"].startswith(prefix)]
     _save(data)
     return before - len(data["tokens"])
+
+
+def sign_jwt_for(rec: dict, *, ttl_seconds: int = 300) -> str | None:
+    """当场签短期 JWT，用于 forward_to_peer 给 peer 验签。
+
+    用途：caller 的 token 是 PLAIN（明文 legacy，单节点签的），peer 那边 tokens.json
+    里查不到——自动从 rec 提取 claims 当场签 JWT 给 peer；caller 是 JWT 时透传不重签。
+
+    rec：verify() 返回的 rec（含 label/role/agents/iat）。
+    ttl_seconds：默认 5 分钟足够 cover 一次跨节点请求往返。
+    返回 None 表示 caller 已是 JWT（透传更稳）或集群模式未开。"""
+    if not _cluster_on():
+        return None
+    tok = (rec.get("token") or "").strip()
+    if tok.count(".") == 2:
+        # 已是 JWT——透传由 forward_to_peer 直接发，不重签
+        return None
+    cfg = get_config()
+    payload = {
+        "label": rec.get("label") or "",
+        "role": rec.get("role") or "user",
+        "agents": rec.get("agents") or [],
+        "iat": rec.get("created_at") or registry.now_iso(),
+        "jti": secrets.token_urlsafe(8),
+        "kpr": "xusi",
+    }
+    return _jwt_sign(payload, cfg.cluster_secret)
 
 
 def verify(token: str) -> dict | None:

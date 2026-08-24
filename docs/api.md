@@ -507,9 +507,28 @@ cd /home/htao/work/xusi
 .venv/bin/python -m xusi token new <label>                          # user（默认无范围）
 .venv/bin/python -m xusi token new alice --role user --agents astronomy-7f3k,weather-9k2d
 .venv/bin/python -m xusi token new boss --role admin                # 管理员
-.venv/bin/python -m xusi token list                                 # 含完整 token
+.venv/bin/python -m xusi token new boss --role admin --rotate       # 同 role 旧 JWT 全部作废，留 1 把新的（仅 cluster 模式生效）
+.venv/bin/python -m xusi token list                                 # 含完整 token；cluster 模式下 JWT 标 [cluster]，明文 legacy 标 [legacy]
 .venv/bin/python -m xusi token revoke <token前缀≥8位>
 ```
+
+**两种形态（cluster 模式自动选其一）**：
+
+| 形态 | 形态特征 | 跨集群 | 说明 |
+|---|---|---|---|
+| **JWT**（默认） | `xxx.yyy.zzz` 三段 | ✓ | 同 `[cluster].secret` 的所有节点互信；推荐 |
+| **PLAIN** | 无点的随机串 | ✗（仅本机） | 单节点遗留形态，cluster 模式仅供本地向后兼容 |
+
+`token list` 在 cluster 模式下会自动在每行末尾标 `[cluster]` / `[legacy]`，方便一眼分辨。
+
+**`--rotate` 的语义**：签发新 JWT 前先把同 role 的旧 JWT 全部撤销（PLAIN 不动——它在 cluster 模式本来就不参与跨集群通信）。意图是用户层面始终只看见一把 active token，避免「这把该用哪把」的混淆。
+
+**对应 HTTP API**（仅 admin）：
+- `GET /api/tokens` —— 列出（含 `kind` 字段：`local`/`cluster`/`legacy`）
+- `POST /api/tokens` —— 签发（body: `{label, role, agents, rotate}`）
+- `DELETE /api/tokens/{prefix≥8位}` —— 撤销
+
+**跨集群的 PLAIN 透明处理**：如果你手头只有一把 PLAIN legacy token，`fetch_json` 和 `forward_to_peer` 都会**当场签短期 JWT**（默认 5 分钟 TTL）发给 peer —— 你无需重签即可访问对端 agent 的读端点。caller 是 JWT 时则透传不重签。
 
 ---
 
