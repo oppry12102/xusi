@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import time
 
 from . import registry
 from .config import get_config
@@ -48,8 +49,13 @@ def _jwt_sign(payload: dict, secret: str) -> str:
 
 
 def _jwt_verify(token: str, secret: str) -> dict | None:
-    """HS256 校验。返回载荷；失败（坏格式/签名错/解密错）返 None。
-    当前不强制 exp——本机集群信任语义里 token 直至 revoke，集群侧撤销用 secret 轮换。"""
+    """HS256 校验。返回载荷；失败（坏格式/签名错/exp 过期）返 None。
+
+    exp 字段是**可选**的——只在签发时显式设了才生效：
+    - sign_jwt_for 给 forward_to_peer 用，签短期 JWT（默认 5 分钟）→ 带 exp，
+      过期后 peer 端 verify 自动拒绝，避免长生命周期临时凭证被滥用。
+    - new_token 给用户用的长生命周期 token 不带 exp——直至 revoke 或 secret 轮换。
+    """
     parts = token.split(".")
     if len(parts) != 3:
         return None
@@ -65,6 +71,13 @@ def _jwt_verify(token: str, secret: str) -> dict | None:
         return None
     if not isinstance(payload, dict):
         return None
+    exp = payload.get("exp")
+    if exp is not None:
+        try:
+            if int(time.time()) > int(exp):
+                return None   # 过期——签发方设了 ttl，过期即作废
+        except (ValueError, TypeError):
+            return None   # exp 字段格式坏，等同无效 token
     return payload
 
 
@@ -104,11 +117,20 @@ def new_token(label: str = "", role: str = "user",
     rotate=True（仅 cluster 模式）：先 revoke 同 role 的所有现有 token，再签发新的。
     设计意图：用户层面始终只看见一把 active token；旧的被换掉就立刻作废，
     避免「这把该用哪把」的混淆。PLA-form（明文 legacy）token 不被 rotate 触碰——
-    它本来在 cluster 模式就不被使用，仅作本地向后兼容保留。"""
+    它本来在 cluster 模式就不被使用，仅作本地向后兼容保留。
+
+    rotate=True 时默认 label 加 unix 时间戳后缀（admin-r1724567890），多次 rotate
+    后 list 里每把都能一眼区分；非 rotate 时仍按位置计数（admin-1/admin-2/...）。"""
     if role not in ("admin", "user"):
         raise ValueError("role 须为 admin 或 user")
     cfg = get_config()
     now = registry.now_iso()
+    if rotate and not label:
+        display_label = f"{role}-r{int(time.time())}"
+    elif label:
+        display_label = label
+    else:
+        display_label = f"{role}-{len(list_tokens()) + 1}"
     if _cluster_on():
         # JWT：载荷是事实源；tokens.json 里 token 字段直接存 JWT，list/revoke 不变
         payload = {
@@ -120,7 +142,6 @@ def new_token(label: str = "", role: str = "user",
             "kpr": "xusi",
         }
         token = _jwt_sign(payload, cfg.cluster_secret)
-        display_label = label or f"{role}-{len(list_tokens()) + 1}"
         rec = {
             "token": token,
             "label": display_label,
@@ -131,7 +152,7 @@ def new_token(label: str = "", role: str = "user",
     else:
         rec = {
             "token": secrets.token_urlsafe(32),
-            "label": label or f"{role}-{len(list_tokens()) + 1}",
+            "label": display_label,
             "role": role,
             "agents": ["*"] if role == "admin" else (agents or []),
             "created_at": now,
@@ -166,7 +187,8 @@ def sign_jwt_for(rec: dict, *, ttl_seconds: int = 300) -> str | None:
     里查不到——自动从 rec 提取 claims 当场签 JWT 给 peer；caller 是 JWT 时透传不重签。
 
     rec：verify() 返回的 rec（含 label/role/agents/iat）。
-    ttl_seconds：默认 5 分钟足够 cover 一次跨节点请求往返。
+    ttl_seconds：默认 5 分钟足够 cover 一次跨节点请求往返——payload 里写 exp，
+    peer 端 _jwt_verify 会检查，过期自动拒绝。
     返回 None 表示 caller 已是 JWT（透传更稳）或集群模式未开。"""
     if not _cluster_on():
         return None
@@ -180,6 +202,7 @@ def sign_jwt_for(rec: dict, *, ttl_seconds: int = 300) -> str | None:
         "role": rec.get("role") or "user",
         "agents": rec.get("agents") or [],
         "iat": rec.get("created_at") or registry.now_iso(),
+        "exp": int(time.time()) + ttl_seconds,
         "jti": secrets.token_urlsafe(8),
         "kpr": "xusi",
     }
