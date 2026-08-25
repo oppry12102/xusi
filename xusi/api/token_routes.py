@@ -21,8 +21,7 @@ def api_tokens_list(_rec: dict = Depends(require_admin)) -> list[dict]:
     `kind` 标记 token 形态：
     - `plain`：xusi 统一签发的 PLAIN（用户应持有的形态，跨集群也通——转发时
        xusi 内部自动包成短期 JWT 给 peer）；
-    - `jwt`：历史 cluster 自动签发的 JWT 残留（xusi 内部事务，不再签发），
-       仍可 verify 通过；UI 不暴露签发/撤销入口，让管理员知道那不是用户 token。"""
+    - `jwt`：历史上遗留 JWT 的形态标记，当前不会再签发（见 authtok.py）。"""
     rows = []
     for t in authtok.list_tokens():
         is_jwt = authtok.is_jwt(t["token"])

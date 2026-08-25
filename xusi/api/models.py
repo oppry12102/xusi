@@ -39,12 +39,12 @@ class TokenNewReq(BaseModel):
 class TokenMgrNewReq(BaseModel):
     """管理面 token 签发（仅 admin 可调）。
 
-    rotate=True 时：先 revoke 同 role 的所有 JWT，再签发新的——用户层面始终只
-    看见一把 active token；旧的被换掉就立刻作废。PLAIN 不被 rotate 触碰。"""
+    rotate=True 时：先 revoke 同 role 的所有 PLAIN，再签发新的——用户层面始终只
+    看见一把 active token；旧的被换掉就立刻作废。"""
     label: str = ""
     role: str = Field("user", description="admin 或 user")
     agents: list[str] | None = Field(None, description="user 范围（admin 无需）")
-    rotate: bool = Field(False, description="（仅 cluster）签发前先 revoke 同 role 的所有 JWT")
+    rotate: bool = Field(False, description="签发前先 revoke 同 role 的所有 PLAIN")
 
 
 class BackupReq(BaseModel):
