@@ -7,7 +7,8 @@ etc/peers.toml
 etc/node.id
 # 四家 LLM 的 api_key（用 brains.toml.example 起手）
 etc/brains.toml
-# 管理面 token（admin/user）
+# 管理面 token（admin/user）——明文 PLAIN + 历史残留 JWT
+# 丢了只能重新签，调用方（WebUI / curl / voidhub）需同步替换
 etc/tokens.json
 # 注册表（含各 agent 的观察台 token）
 etc/agents.json
