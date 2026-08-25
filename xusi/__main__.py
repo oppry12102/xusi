@@ -153,7 +153,7 @@ def cmd_token(args) -> int:
                                 agents=[a.strip() for a in args.agents.split(",")] if args.agents else None,
                                 rotate=args.rotate)
         print(rec["token"])
-        rotate_note = "（rotate：同 role 旧 JWT 已废）" if args.rotate else ""
+        rotate_note = "（rotate：同 role 旧 PLAIN 已废）" if args.rotate else ""
         print(f"# label: {rec['label']}  role: {rec['role']}  agents: {rec['agents']}{rotate_note}",
               file=sys.stderr)
     elif args.cmd == "list":
@@ -161,14 +161,9 @@ def cmd_token(args) -> int:
         if not rows:
             print("(尚无管理面 token)")
             return 0
-        cluster_on = bool(get_config().cluster_secret)
         for t in rows:
             is_jwt = t["token"].count(".") == 2
-            tag = ""
-            if cluster_on and not is_jwt:
-                tag = "  [legacy]"   # PLAIN 在 cluster 模式仅本地兼容，跨集群不走
-            elif cluster_on and is_jwt:
-                tag = "  [cluster]"
+            tag = "  [jwt, 历史残留]" if is_jwt else ""
             print(f"{t['created_at']}  {t['label']:20}  {t['role']:6}  "
                   f"agents={','.join(t['agents'])}  {t['token']}{tag}")
     elif args.cmd == "revoke":
@@ -434,7 +429,7 @@ def main() -> int:
     tn.add_argument("--role", choices=["admin", "user"], default="user")
     tn.add_argument("--agents", default=None, help="user 范围：逗号分隔 agent-id（admin 无需）")
     tn.add_argument("--rotate", action="store_true",
-                    help="（仅 cluster）签发前先 revoke 同 role 的所有 JWT——避免多把 active 混淆")
+                    help="签发前先 revoke 同 role 的所有 PLAIN——用户层始终只看见一把 active")
     tn.set_defaults(fn=cmd_token)
     tl = ts.add_parser("list", help="列出")
     tl.set_defaults(fn=cmd_token)

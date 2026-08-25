@@ -610,25 +610,21 @@ def api_restore(req: "RestoreReq", _rec: dict = Depends(require_admin)) -> dict:
 def api_tokens_list(_rec: dict = Depends(require_admin)) -> list[dict]:
     """列出管理面 token。仅 admin——含其他 admin 的 token 原文。
 
-    cluster 模式下 PLAIN（明文 legacy）只在本机通；为了视觉一致，在 JWT 项后挂
-    [cluster]、在 PLAIN 项后挂 [legacy]，方便一眼分辨。"""
-    cluster_on = bool(get_config().cluster_secret)
+    `kind` 标记 token 形态：
+    - `plain`：xusi 统一签发的 PLAIN（用户应持有的形态，跨集群也通——转发时
+       xusi 内部自动包成短期 JWT 给 peer）；
+    - `jwt`：历史 cluster 自动签发的 JWT 残留（xusi 内部事务，不再签发），
+       仍可 verify 通过；UI 不暴露签发/撤销入口，让管理员知道那不是用户 token。"""
     rows = []
     for t in authtok.list_tokens():
         is_jwt = t["token"].count(".") == 2
-        if cluster_on and is_jwt:
-            kind = "cluster"
-        elif cluster_on:
-            kind = "legacy"   # PLAIN 在 cluster 模式仅本地兼容，跨集群不走
-        else:
-            kind = "local"
         rows.append({
             "token": t["token"],
             "label": t["label"],
             "role": t["role"],
             "agents": t["agents"],
             "created_at": t["created_at"],
-            "kind": kind,
+            "kind": "jwt" if is_jwt else "plain",
         })
     return rows
 

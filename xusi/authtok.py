@@ -4,17 +4,17 @@
 - admin：全权（管理全部 agent、签发 token、删除等）；
 - user：只能访问 agents 范围内的 agent（观察/投信/经代理访问）。
 
-签发形态（按 cfg.cluster_secret 是否设置自动切换）：
-- 单节点（secret 留空，默认）：token = secrets.token_urlsafe(32)，明文存 tokens.json，
-  校验走等值比较（防时序侧信道）。完全无新行为，老 token 文件兼容。
-- 集群（[cluster].secret 已设）：token = HS256-JWT，载荷 {label, role, agents, iat,
-  jti, kpr}；同密钥的所有 xusi 互信（任一节点签发，所有节点通用），跨节点 SSO。
-  校验先 JWT（带 kpr=xusi 标记，跨节点收到的 JWT 也能验）；失败回退到明文等值
-  （覆盖 secret 由空转非空那一刻的遗留 token）。
+签发形态：**统一 PLAIN**（secrets.token_urlsafe(32)，明文存 tokens.json）。
+用户层面始终只看见一把短小易记的 PLAIN token——不管单节点还是集群模式。
 
-不管哪种形态，tokens.json 始终存 {token, label, role, agents, created_at}——
-JWT 模式下 token 字段直接是 JWT 字符串本身；list/revoke 不变。
-"""
+JWT 是 xusi **内部事务**，不暴露给用户：
+- 跨节点转发时由 `sign_jwt_for(rec)` 现场把 caller 的 PLAIN 包装成短期 JWT
+  （默认 5 分钟），peer 端用同密钥验签后再按 JWT 的 agents 列表 enforce 作用域。
+  这样用户持 PLAIN 也能透明跨集群——他不感知 JWT 存在。
+- 集群开启期间 tokens.json 里可能残留老 JWT（来自此前版本的 cluster 自动签发），
+  verify 仍接受（JWT 路径优先 + kpr=xusi 标记），但新签发永远走 PLAIN。
+
+tokens.json schema：{token, label, role, agents, created_at}，list/revoke 不变。"""
 from __future__ import annotations
 
 import base64
@@ -112,12 +112,13 @@ def list_tokens() -> list[dict]:
 def new_token(label: str = "", role: str = "user",
               agents: list[str] | None = None,
               rotate: bool = False) -> dict:
-    """签发管理面 token。
+    """签发管理面 token——统一 PLAIN 形态（secrets.token_urlsafe(32)）。
 
-    rotate=True（仅 cluster 模式）：先 revoke 同 role 的所有现有 token，再签发新的。
-    设计意图：用户层面始终只看见一把 active token；旧的被换掉就立刻作废，
-    避免「这把该用哪把」的混淆。PLA-form（明文 legacy）token 不被 rotate 触碰——
-    它本来在 cluster 模式就不被使用，仅作本地向后兼容保留。
+    用户层面始终只看见一把短小易记的 PLAIN；JWT 是 xusi 内部事务，不暴露。
+
+    rotate=True：先 revoke 同 role 的所有 PLAIN，再签发新的——用户层「一把 active」
+    永远是最近签的。tokens.json 里可能残留的旧 JWT（历史 cluster 模式自动签发，
+    用户当前不应再持有）不在 rotate 范围——xusi 内部事务，rotate 不动它。
 
     rotate=True 时默认 label 加 unix 时间戳后缀（admin-r1724567890），多次 rotate
     后 list 里每把都能一眼区分；非 rotate 时仍按位置计数（admin-1/admin-2/...）。"""
@@ -131,39 +132,20 @@ def new_token(label: str = "", role: str = "user",
         display_label = label
     else:
         display_label = f"{role}-{len(list_tokens()) + 1}"
-    if _cluster_on():
-        # JWT：载荷是事实源；tokens.json 里 token 字段直接存 JWT，list/revoke 不变
-        payload = {
-            "label": label or "",
-            "role": role,
-            "agents": ["*"] if role == "admin" else (agents or []),
-            "iat": now,
-            "jti": secrets.token_urlsafe(8),
-            "kpr": "xusi",
-        }
-        token = _jwt_sign(payload, cfg.cluster_secret)
-        rec = {
-            "token": token,
-            "label": display_label,
-            "role": role,
-            "agents": payload["agents"],
-            "created_at": now,
-        }
-    else:
-        rec = {
-            "token": secrets.token_urlsafe(32),
-            "label": display_label,
-            "role": role,
-            "agents": ["*"] if role == "admin" else (agents or []),
-            "created_at": now,
-        }
+    token = secrets.token_urlsafe(32)
+    rec = {
+        "token": token,
+        "label": display_label,
+        "role": role,
+        "agents": ["*"] if role == "admin" else (agents or []),
+        "created_at": now,
+    }
     data = _load()
-    if rotate and _cluster_on():
-        # 仅 revoke JWT 形态的同 role token（PLAIN 不动——它 cluster 模式本地通，
-        # 留给向后兼容老脚本；rotate 时一并清掉也对，但保留更稳妥）
+    if rotate:
+        # 仅 revoke PLAIN 形态的同 role token（JWT 是 xusi 内部事务，不动）
         data["tokens"] = [
             t for t in data["tokens"]
-            if not (t["role"] == role and t["token"].count(".") == 2)
+            if not (t["role"] == role and t["token"].count(".") != 2)
         ]
     data["tokens"].append(rec)
     _save(data)
@@ -181,15 +163,15 @@ def revoke_token(prefix: str) -> int:
 
 
 def sign_jwt_for(rec: dict, *, ttl_seconds: int = 300) -> str | None:
-    """当场签短期 JWT，用于 forward_to_peer 给 peer 验签。
+    """当场签短期 JWT，**仅 xusi 内部使用**（跨节点转发时给 peer 验签）。
 
-    用途：caller 的 token 是 PLAIN（明文 legacy，单节点签的），peer 那边 tokens.json
-    里查不到——自动从 rec 提取 claims 当场签 JWT 给 peer；caller 是 JWT 时透传不重签。
+    用途：caller 的 token 是 PLAIN，peer 那边 tokens.json 里查不到——自动从 rec 提
+    取 claims 当场签 JWT 给 peer。caller 已是 JWT 时透传不重签（保留签发者署名）。
 
     rec：verify() 返回的 rec（含 label/role/agents/iat）。
     ttl_seconds：默认 5 分钟足够 cover 一次跨节点请求往返——payload 里写 exp，
     peer 端 _jwt_verify 会检查，过期自动拒绝。
-    返回 None 表示 caller 已是 JWT（透传更稳）或集群模式未开。"""
+    返回 None：集群模式未开（无法签 JWT）或 caller 已是 JWT。"""
     if not _cluster_on():
         return None
     tok = (rec.get("token") or "").strip()
@@ -212,19 +194,18 @@ def sign_jwt_for(rec: dict, *, ttl_seconds: int = 300) -> str | None:
 def verify(token: str) -> dict | None:
     """校验 token，返回 {token, label, role, agents, created_at} 或 None。
 
-    集群（cluster_secret 非空）模式下按"输入形态"分流——这是 secret 轮换正确的关键：
-    - 输入是 JWT（dot 数 == 2）：**只走 JWT 路径**。失败直接返 None。
-      这样 secret v1 签发的旧 JWT 在 secret 轮换到 v2 后必然签名不匹配 → 拒绝；
-      同时也不让"明文回退"去命中 tokens.json 里旧 JWT 的同名字符串绕过轮换。
-    - 输入非 JWT（无 / 少 dot 的旧明文 token）：走明文回退，覆盖"先发 token 后开
-      [cluster].secret"那一刻的遗留 token；过渡期内既有人仍可继续用。
-    - 输入 JWT 但不属于本集群（kpr != 'xusi'）：等同签名错，返 None。
+    校验路径：
+    1. JWT（dot 数 == 2）：用 cluster_secret 验签 + 检查 exp + kpr=xusi。
+       tokens.json 里可能残留老 cluster-mode 自动签发的 JWT，verify 仍接受——
+       保证 secret 轮换之外的升级不影响用户体验。
+    2. PLAIN（任何 dot 数 < 2 的输入）：tokens.json 里等值比较（防时序侧信道）。
 
-    单节点模式：只看明文（今天的行为，零变化）。"""
+    集群（cluster_secret 非空）模式下 JWT 输入**只走 JWT 路径**——失败直接 None，
+    不让明文回退去命中 tokens.json 里旧 JWT 的同名字符串绕过 secret 轮换。"""
     if not token:
         return None
-    if _cluster_on():
-        if token.count(".") == 2:
+    if token.count(".") == 2:
+        if _cluster_on():
             payload = _jwt_verify(token, get_config().cluster_secret)
             if payload and payload.get("kpr") == "xusi":
                 return {
@@ -235,7 +216,8 @@ def verify(token: str) -> dict | None:
                     "created_at": payload.get("iat") or "",
                 }
             return None
-        # 落到这里：非 JWT 输入 + 集群模式 → 走明文回退（只覆盖过渡期遗留 plaintext）
+        # 集群未开：JWT 输入视为无效（没密钥验签）
+        return None
     for t in _load()["tokens"]:
         if hmac.compare_digest(t["token"], token):
             return t
