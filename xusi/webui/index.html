@@ -110,7 +110,7 @@
   .tabs{display:flex;gap:2px;margin:0 0 12px;border-bottom:1px solid var(--line)}
   .tabs button{border:none;border-radius:8px 8px 0 0;padding:8px 14px;color:var(--sub);background:transparent}
   .tabs button.on{color:var(--acc);box-shadow:inset 0 -2px var(--acc);background:transparent}
-  /* 一键引导新节点对话框 */
+  /* 集群 peer 名册 / 添加对话框 */
   .install-cmd{font-family:var(--mono);font-size:12px;background:#0f1320;color:#c9e7ff;
                padding:10px 12px;border-radius:7px;word-break:break-all;line-height:1.55;
                user-select:all;max-height:90px;overflow:auto;border:1px solid #1f2640}
@@ -264,57 +264,25 @@
   <div class="dlg-f"><button onclick="document.getElementById('dlg-node').close()">关闭</button></div>
 </dialog>
 
-<!-- 添加对等节点：admin only。两 tab：「一键引导新 xusi」+「已有 xusi 加为 peer」 -->
+<!-- 添加对等节点：admin only。先把对端 [cluster].secret 与本节点同步一致，再注册到本机名册。 -->
 <dialog id="dlg-peer-add">
-  <div class="dlg-h">添加对等节点 <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">把新/已有 xusi 加入集群</span>
+  <div class="dlg-h">添加对等节点 <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">把已有 xusi 加为 peer</span>
     <button onclick="closePeerAdd()" style="margin-left:auto">✕</button></div>
   <div class="dlg-b">
-    <div class="tabs">
-      <button id="pa-tab1-btn" class="on" data-tab="invite">一键引导新 xusi</button>
-      <button id="pa-tab2-btn" data-tab="existing">已有 xusi 加为 peer</button>
+    <p class="hint" style="color:var(--sub);font-size:12.5px;margin:0 0 10px">
+      peer 已装好且 <code class="mono">[cluster].secret</code> 与本节点一致——填它的 URL 与可选名字，立即注册到本节点名册。
+      新节点引导走 CLI：
+      <code class="mono">xusi init --cluster-secret &lt;本节点的 secret&gt;</code> → 装好服务 → 双向 <code class="mono">xusi peer add</code>。
+    </p>
+    <div><label>peer URL（管理面入口，如 http://10.0.16.15:8601）</label>
+      <input type="text" id="pa-exist-url" placeholder="http://…"></div>
+    <div><label>显示名（可空，用 peer 自报）</label>
+      <input type="text" id="pa-exist-name" maxlength="64"></div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="pri" id="pa-exist-go">注册并探活</button>
     </div>
-
-    <!-- Tab 1: 一键引导 -->
-    <div id="pa-tab-invite">
-      <p class="hint" style="color:var(--sub);font-size:12.5px;margin:0 0 10px">
-        填新节点名 → 生成一行命令 → SSH 到新机器粘上 → 完事。脚本会自动：克隆 xusi、
-        写入 <code class="mono">cluster.secret</code>（与本节点一致）、装 systemd、启服务、
-        把本节点加入对方的 peer 名册、把自己加入本节点的 peer 名册。
-      </p>
-      <div><label>新节点名（写到 [node].name 与 peer.name，<b>可空</b>，留空 peer 自报）</label>
-        <input type="text" id="pa-invite-name" placeholder="如 vm-16-15" maxlength="64"></div>
-      <div style="display:flex;gap:8px;margin-top:10px">
-        <button class="pri" id="pa-invite-go">生成一行命令</button>
-        <span id="pa-invite-spin" hidden><span class="spin"></span>等待新节点加入（最多 60s）…</span>
-      </div>
-      <div id="pa-invite-result" hidden style="margin-top:12px">
-        <div style="font-weight:650;margin-bottom:5px">在新机器上跑这一行：</div>
-        <div class="install-cmd" id="pa-invite-cmd"></div>
-        <div style="display:flex;gap:8px;margin-top:8px">
-          <button onclick="copyInstallCmd()">复制命令</button>
-          <span id="pa-invite-copied" hidden style="color:var(--ok);font-size:12px;align-self:center">✓ 已复制</span>
-          <span style="color:var(--sub);font-size:11.5px;margin-left:auto">命令 5 分钟内有效</span>
-        </div>
-        <div id="pa-invite-poll" style="margin-top:10px;color:var(--sub);font-size:12px"></div>
-      </div>
-      <div class="err" id="pa-invite-err" hidden></div>
-    </div>
-
-    <!-- Tab 2: 已有 xusi 加为 peer -->
-    <div id="pa-tab-existing" hidden>
-      <p class="hint" style="color:var(--sub);font-size:12.5px;margin:0 0 10px">
-        peer 已跑起来（自己装的或别处引导的）。填它的 URL 与可选名字，立即注册到本节点名册。
-      </p>
-      <div><label>peer URL（管理面入口，如 http://10.0.16.15:8601）</label>
-        <input type="text" id="pa-exist-url" placeholder="http://…"></div>
-      <div><label>显示名（可空，用 peer 自报）</label>
-        <input type="text" id="pa-exist-name" maxlength="64"></div>
-      <div style="display:flex;gap:8px;margin-top:10px">
-        <button class="pri" id="pa-exist-go">注册并探活</button>
-      </div>
-      <div id="pa-exist-result" hidden style="margin-top:12px;font-size:13px"></div>
-      <div class="err" id="pa-exist-err" hidden></div>
-    </div>
+    <div id="pa-exist-result" hidden style="margin-top:12px;font-size:13px"></div>
+    <div class="err" id="pa-exist-err" hidden></div>
   </div>
   <div class="dlg-f"><button onclick="closePeerAdd()">关闭</button></div>
 </dialog>
@@ -344,7 +312,9 @@
       <input id="tip-tok" type="text" placeholder="管理面 token" spellcheck="false" style="font-family:var(--mono);font-size:12px">
       <button id="tip-login" class="pri">认证</button>
     </div>
-    <p style="margin-top:14px">管理面 token 由管理员在服务器上签发：<code class="mono">python -m xusi token new &lt;label&gt;</code></p>
+    <p style="margin-top:14px">管理面 token = <code class="mono">etc/xusi.toml</code> 的 <code class="mono">[cluster].secret</code>。
+      集群互通（两端同 secret = 同集群），本节点可用 <code class="mono">xusi status</code> 查看；
+      新 xusi 加入集群：<code class="mono">xusi init --cluster-secret &lt;值&gt;</code> 后双向 <code class="mono">xusi peer add</code>。</p>
   </div>
   <div id="cards"></div>
 </main>
@@ -634,7 +604,7 @@ function renderPeerList(peers) {
       <span class="dot ${dot}" title="${p.ok ? "可达" : "不可达"}"></span>
       <b>${name}</b>
       <span class="mono">${idShort}</span>
-      <a class="open" href="${esc(p.url)}" target="_blank" rel="noopener">打开</a>
+      <a class="open" href="/api/peers/${idShort}/open" target="_blank" rel="noopener">打开</a>
       <span class="peer-latency">${tail}</span>
       ${delBtn}
     </div>`;
@@ -657,86 +627,14 @@ function openNodeDialog() {
 }
 
 // ── 添加对等节点对话框（admin only）────────────────
-let _peerPollTimer = null;
-let _peerPollDeadline = 0;
-
 function openPeerAddDialog() {
   document.getElementById("dlg-node").close();
-  switchPeerAddTab("invite");
   document.getElementById("dlg-peer-add").showModal();
 }
 function closePeerAdd() {
-  if (_peerPollTimer) { clearInterval(_peerPollTimer); _peerPollTimer = null; }
   document.getElementById("dlg-peer-add").close();
 }
-function switchPeerAddTab(tab) {
-  $("#pa-tab1-btn").classList.toggle("on", tab === "invite");
-  $("#pa-tab2-btn").classList.toggle("on", tab === "existing");
-  $("#pa-tab-invite").hidden = tab !== "invite";
-  $("#pa-tab-existing").hidden = tab !== "existing";
-  $("#pa-invite-err").hidden = true;
-  $("#pa-exist-err").hidden = true;
-}
-$("#pa-tab1-btn").onclick = () => switchPeerAddTab("invite");
-$("#pa-tab2-btn").onclick = () => switchPeerAddTab("existing");
 
-// Tab 1: 一键引导 ──────────────────────────────────────
-async function doIssueInvitation() {
-  $("#pa-invite-err").hidden = true;
-  $("#pa-invite-go").disabled = true;
-  try {
-    const name = $("#pa-invite-name").value.trim();
-    const r = await api("/api/peers/invitations",
-      {method: "POST", body: JSON.stringify({name})});
-    $("#pa-invite-cmd").textContent = r.install_cmd;
-    $("#pa-invite-result").hidden = false;
-    $("#pa-invite-poll").innerHTML = '<span class="spin"></span>等待新节点出现在名册…';
-    $("#pa-invite-spin").hidden = false;
-    // 轮询 /api/peers，直到出现 name 匹配（60s 内），或新 id（无 name 时）
-    const wantName = name;
-    _peerPollDeadline = Date.now() + 60000;
-    if (_peerPollTimer) clearInterval(_peerPollTimer);
-    _peerPollTimer = setInterval(() => pollForNewPeer(wantName), 2000);
-  } catch (e) { $("#pa-invite-err").textContent = e.message; $("#pa-invite-err").hidden = false; }
-  finally { $("#pa-invite-go").disabled = false; }
-}
-
-async function pollForNewPeer(wantName) {
-  if (Date.now() > _peerPollDeadline) {
-    $("#pa-invite-poll").innerHTML = '<span style="color:var(--warn)">⏱ 60s 内未检测到新节点——脚本可能还在跑，或出了错。</span>';
-    clearInterval(_peerPollTimer); _peerPollTimer = null;
-    $("#pa-invite-spin").hidden = true;
-    return;
-  }
-  try {
-    const list = await api("/api/peers");
-    const peers = list.peers || [];
-    const found = peers.find(p => (wantName && p.name === wantName)
-      || (!wantName && p.info && Date.now() - (p._seen || 0) < 30000));
-    if (found) {
-      $("#pa-invite-poll").innerHTML =
-        `<span style="color:var(--ok)">✓ 已加入</span> <b>${esc(found.name || found.id)}</b>（${esc(found.url)}）`;
-      $("#pa-invite-spin").hidden = true;
-      clearInterval(_peerPollTimer); _peerPollTimer = null;
-      // 顺手刷新节点对话框的名册
-      loadNode().then(() => {
-        if (document.getElementById("dlg-node").open === false) {
-          document.getElementById("dlg-node").showModal();
-        }
-      });
-    }
-  } catch (e) { /* 继续轮询 */ }
-}
-
-function copyInstallCmd() {
-  const txt = $("#pa-invite-cmd").textContent;
-  navigator.clipboard.writeText(txt).then(() => {
-    $("#pa-invite-copied").hidden = false;
-    setTimeout(() => $("#pa-invite-copied").hidden = true, 2000);
-  }).catch(() => { /* 复制失败：用户可手动选中 */ });
-}
-
-$("#pa-invite-go").onclick = doIssueInvitation;
 $("#pa-exist-go").onclick = doAddExisting;
 
 // Tab 2: 已有 xusi 加为 peer（补回 commit b71a618 漏掉的定义——见
