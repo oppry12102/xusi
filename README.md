@@ -9,7 +9,7 @@
 管理面作为 systemd 用户服务常驻（`xusi.service`，开机自启）：
 
 ```bash
-python3 -m xusi install      # 建 venv → 安装并启动 systemd 服务 → 打印 admin token
+python3 -m xusi install      # 建 venv → 写 etc/xusi.toml → 启 systemd 服务 → 打印 admin token
 systemctl --user status xusi # 管理面状态
 python3 -m xusi status       # agent 一览
 python3 -m xusi doctor       # 环境自检
@@ -22,6 +22,42 @@ python3 -m xusi doctor       # 环境自检
 给外部用户/App 的接入方式见 [`docs/api.md`](docs/api.md)（也在线提供：`GET /api/docs.md`）。
 小型实验任务的现成 mission 见 [`docs/mission-examples.md`](docs/mission-examples.md)。
 
+## 单凭证设计
+
+**整个管理面只有一种凭证：`[cluster].secret`**（`etc/xusi.toml` 里）。任何
+`cluster_secret` 持有人都是 admin —— 路由只做存在性校验，不做 scope 校验。
+
+集群内所有 xusi 配同一个 `cluster_secret` 即互相视为同一集群：
+
+- 本机拿 secret → 任何 agent 的读/写、PATCH/DELETE/lifecycle 全通
+- 远端 agent → 同一 secret 在 peer 端 `verify()` 也通过 → 自动通配
+
+**没有 JWT、没有 invitation、没有 `tokens.json`**。从老版本升上来的 `tokens.json`
+会在首次启动时被一次性迁移：把第一条 PLAIN admin token 接管成 `cluster_secret`，
+然后把 `tokens.json` 改名 `.migrated.YYYY-MM-DD-HHMMSS`；同一台机器上任何持有
+该老 token 的客户端自动升级为 admin。**跨节点升级必须一刀切** —— 老 token 在
+新节点上不再被认可。
+
+新建 xusi：`python3 -m xusi init --secret <secret>` 把已有集群的 secret 同步进
+`etc/xusi.toml` 即可加入。
+
+## 集群 / peer 名册
+
+集群是**信任的全对称网络**，不区分谁是 hub / 谁是 worker。每个 xusi 都能：
+- 完整看到自己的所有 agent
+- fan-in peer 名册里其它 xusi 的 agent（peer 名册在 `etc/peers.toml`，两边可
+  不一样 —— fan-in 仅在双向注册的范围内求并，不递归 peers-of-peers）
+- 通过浏览器「节点对话框 → 打开」直接跳到 peer 的 UI（mtoken 在新 tab 自动
+  续上，peer 端 `?mtoken=` 鉴权通过即登录）
+
+加 peer：
+
+```bash
+xusi peer add http://<peer>:8601
+```
+
+—— 双方 `cluster_secret` 一致就自动互信。
+
 ## 架构
 
 ```
@@ -33,7 +69,8 @@ python3 -m xusi doctor       # 环境自检
                     │  墟司 xusi（xusi.service, Restart=always）             │
                     │  /api/* 管理 · /px/{id}/* 前缀反代 · /v1 /ui token路由 │
                     │  注册表 etc/agents.json · 密钥池 etc/brains.toml       │
-                    │  审计 etc/audit.jsonl · 管理面 token etc/tokens.json   │
+                    │  cluster_secret etc/xusi.toml [cluster].secret         │
+                    │  peer 名册 etc/peers.toml                              │
                     └──────┬──────────────────┬──────────────────┬──────────┘
                      systemd-run 单元   只读 HTTP GET       文件（config/
                      Restart=always     127.0.0.1:<port>    mailbox/token）
@@ -54,20 +91,22 @@ python3 -m xusi doctor       # 环境自检
 ```
 xusi/
 ├── xusi/                管理面源码（Python 3.12，stdlib + fastapi/uvicorn/httpx）
-│   ├── api.py           全部路由（含反代两种路由）
+│   ├── api/             路由（agent_routes / peer_routes / proxy_routes / ...）
 │   ├── agentops.py      agent 全生命周期（唯一实现三条通道的地方）
 │   ├── systemdctl.py    systemd 用户单元封装
 │   ├── registry.py      注册表（参数唯一事实源）etc/agents.json
 │   ├── brains.py        密钥池 → 渲染 agent config.toml
 │   ├── ports.py         端口三重检验（注册表∪内核监听∪bind试探）
-│   ├── authtok.py       管理面 token（统一 admin）
-│   ├── proxy.py         反代核心（前缀路由 + token 路由 + HTML 重写）
+│   ├── authtok.py       管理面凭证（verify(cluster_secret) → rec）
+│   ├── proxy.py         本地/远端调度（resolve + forward_to_peer + /px 反代）
+│   ├── peers.py         peer 名册 + 探活
+│   ├── backup.py        本地备份（远端走 forward）
 │   └── webui/           单文件管理页
 ├── etc/
-│   ├── xusi.toml        监听/端口段/源码路径
+│   ├── xusi.toml        监听/端口段/源码路径 + [cluster].secret（admin token）
 │   ├── brains.toml      主密钥池（管理员维护；600，模板见 brains.toml.example）
 │   ├── agents.json      注册表（agent 档案 + 期望态 + token 记录）
-│   ├── tokens.json      管理面 token（600）
+│   ├── peers.toml       peer 名册（[[peers]]，两边各管自己的）
 │   └── audit.jsonl      管理操作审计
 ├── instances/<id>/      每个 agent 一个 home（config.toml, data/, workspace/；
 │                        选了版本的 agent 还有私有源码副本 xuseek-v2/）
@@ -94,11 +133,13 @@ xusi/
 - **删除**：必须先显式停止（运行/暂停态拒绝删除，防误删）→ 注册表除名 →
   目录移入 `instances/.trash/`（遗留数据由管理员自行 rm）。
 - **暴露面**：默认一切外部访问经 8601 反代；`expose=true` 才让 agent 直接监听 `0.0.0.0:<port>`。
+- **cluster_secret 轮换**：改了 `etc/xusi.toml` 的 `[cluster].secret` → `systemctl --user restart xusi`。
+  跨集群轮换要同步改所有节点 + 让所有浏览器重新登一次。
 
 ## 与三个系统的关系
 
 - **xuseek-v2**：agent 的源码与运行时（`--home` 挂接 `instances/<id>`，目录即自主体）。
 - **观墟台 voidhub**（`~/work/voidhub`）：App 无需改动——host=服务器IP、port=8601、
   token=agent 观察台 token（token 路由自动定向到对应 agent）。
-- **管理面 token 与 agent token 的分工**：前者认证"谁能用管理面/哪些 agent"，
-  后者是 agent 观察台的访问凭证（经 `GET /api/agents/{id}/tokens` 发给认证过的用户）。
+- **管理面 token 与 agent token 的分工**：管理面凭证就是 `cluster_secret`（全员 admin、
+  跨节点通配）；agent 观察台 token（每 agent 独立签发）只用来认证 agent 自己的 `/v1/* /ui/*`。
