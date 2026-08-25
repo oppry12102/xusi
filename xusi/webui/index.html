@@ -698,7 +698,7 @@ async function refresh(first = false) {
     me = who;
     meAdmin = (who.role === "admin");
     $("#ver").textContent = "v" + h.version;
-    $("#hstate").textContent = `${who.label}（管理员）· ${list.length} 个 agent`;
+    $("#hstate").textContent = `管理员 · ${list.length} 个 agent`;
     $("#btn-logout").hidden = false;
     $("#login-tip").hidden = true;
     agentsCache = list;
