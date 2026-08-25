@@ -28,8 +28,10 @@ def api_health() -> dict:
 
 
 @router.get("/api/whoami")
-def api_whoami(rec: dict = Depends(require_auth)) -> dict:
-    return {"label": rec["label"], "role": rec["role"], "agents": rec["agents"]}
+def api_whoami(_rec: dict = Depends(require_auth)) -> dict:
+    """唯一的角色：admin。rec 形如 {"token": <cluster_secret>}——只用来
+    表示「鉴权通过」，对外 shape 保持最小。"""
+    return {"role": "admin"}
 
 
 # ── 节点身份（peer 自报 / 改名 / 集群视图）────────────────
