@@ -33,16 +33,8 @@ class MailReq(BaseModel):
 
 
 class TokenNewReq(BaseModel):
+    """agent 观察台 token 签发（管理面 token 走 [cluster].secret，没有独立模型）。"""
     label: str = ""
-
-
-class TokenMgrNewReq(BaseModel):
-    """管理面 admin token 签发（仅 admin 可调——现在所有 token 都是 admin）。
-
-    rotate=True 时：先 revoke 既有的所有 PLAIN，再签发新的——用户层面始终只
-    看见一把 active token；旧的被换掉就立刻作废。"""
-    label: str = ""
-    rotate: bool = Field(False, description="签发前先 revoke 既有所有 PLAIN")
 
 
 class BackupReq(BaseModel):
@@ -68,17 +60,9 @@ class PatchNodeReq(BaseModel):
 
 
 class AddPeerReq(BaseModel):
-    """注册一个 peer；server 会立即探活 {peer.url}/api/peer/id 拿 id。"""
+    """注册一个 peer；server 会立即探活 {peer.url}/api/peer/id 拿 id。
+
+    集群互信前提：双方 [cluster].secret 一致——admin 自己负责把这个值同步到
+    两端的 etc/xusi.toml，再来加 peer。"""
     url: str = Field(min_length=1, description="peer 管理面 url（如 http://10.0.16.15:8601）")
     name: str = Field("", description="显示名（缺省用 peer 自报）")
-
-
-class IssueInvitationReq(BaseModel):
-    """签发一行引导脚本用的邀请 token（Phase 2 v1.1）。"""
-    name: str = Field("", description="建议的新节点名（写入 [node].name 与 peer.name）")
-
-
-class RedeemInvitationReq(BaseModel):
-    """新机器装好后回调：消费 token + 注册到 issuer 的 peer 名册。"""
-    token: str = Field(min_length=1, description="issue 时返回的 JWT（再次传入以确保只有持 token 者能 redeem）")
-    url: str = Field(min_length=1, description="新机器自己的公开 URL（须 issuer 端可访问）")

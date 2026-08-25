@@ -9,12 +9,11 @@
   /             WebUI；/docs Swagger；/api/docs.md 中文文档
 
 子模块：
-- auth.py       鉴权依赖（require_auth/admin/agent/agent_or_remote + _rec_of）
+- auth.py       鉴权依赖（require_auth/admin/agent/agent_or_remote）
 - models.py     Pydantic 请求/响应模型
 - meta_routes.py    /api/health, /api/whoami, /api/peer/id, /api/node, /api/cluster, /api/brains, /api/versions, /api/ports, /, /api/docs.md
 - peer_routes.py    /api/peers/*
-- token_routes.py   /api/tokens/*, /api/agents/{id}/tokens/*
-- agent_routes.py   /api/agents/* CRUD + 生命周期 + 观察 + 投信 + capabilities + services
+- agent_routes.py   /api/agents/* CRUD + 生命周期 + 观察 + 投信 + capabilities + services + 观察台 token
 - backup_routes.py  /api/agents/{id}/backup, /api/agents/{id}/backups, /api/backups/*, /api/restore
 - proxy_routes.py   /px, /svc, /v1, /ui + 远端 /px 专用转发辅助
 """
@@ -30,7 +29,6 @@ from .. import __version__, agentops, backup, capabilities, peers, proxy, versio
 from ..systemdctl import SystemdError
 from .meta_routes import router as meta_router
 from .peer_routes import router as peer_router
-from .token_routes import router as token_router
 from .agent_routes import router as agent_router
 from .backup_routes import router as backup_router
 from .proxy_routes import router as proxy_router
@@ -105,6 +103,10 @@ async def _peer_refused(_req: Request, exc: peers.PeerRefused):
 
 @app.on_event("startup")
 async def _startup() -> None:
+    # 一次性迁移：旧 etc/tokens.json → [cluster].secret
+    from .. import _bootstrap_migrate
+    _bootstrap_migrate.run()
+
     def _run() -> None:
         time.sleep(1.0)   # 等自身监听就绪后再拉齐
         try:
@@ -125,7 +127,6 @@ async def _shutdown() -> None:
 
 app.include_router(meta_router)
 app.include_router(peer_router)
-app.include_router(token_router)
 app.include_router(agent_router)
 app.include_router(backup_router)
 app.include_router(proxy_router)
