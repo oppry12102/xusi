@@ -11,8 +11,6 @@ JWT 是 xusi **内部事务**，不暴露给用户：
 - 跨节点转发时由 `sign_jwt_for(rec)` 现场把 caller 的 PLAIN 包装成短期 JWT
   （默认 5 分钟），peer 端用同密钥验签后再按 JWT 的 agents 列表 enforce 作用域。
   这样用户持 PLAIN 也能透明跨集群——他不感知 JWT 存在。
-- 集群开启期间 tokens.json 里可能残留老 JWT（来自此前版本的 cluster 自动签发），
-  verify 仍接受（JWT 路径优先 + kpr=xusi 标记），但新签发永远走 PLAIN。
 
 tokens.json schema：{token, label, role, agents, created_at}，list/revoke 不变。"""
 from __future__ import annotations
@@ -117,8 +115,7 @@ def new_token(label: str = "", role: str = "user",
     用户层面始终只看见一把短小易记的 PLAIN；JWT 是 xusi 内部事务，不暴露。
 
     rotate=True：先 revoke 同 role 的所有 PLAIN，再签发新的——用户层「一把 active」
-    永远是最近签的。tokens.json 里可能残留的旧 JWT（历史 cluster 模式自动签发，
-    用户当前不应再持有）不在 rotate 范围——xusi 内部事务，rotate 不动它。
+    永远是最近签的。
 
     rotate=True 时默认 label 加 unix 时间戳后缀（admin-r1724567890），多次 rotate
     后 list 里每把都能一眼区分；非 rotate 时仍按位置计数（admin-1/admin-2/...）。"""
@@ -160,24 +157,6 @@ def revoke_token(prefix: str) -> int:
     data["tokens"] = [t for t in data["tokens"] if not t["token"].startswith(prefix)]
     _save(data)
     return before - len(data["tokens"])
-
-
-def prune_legacy_jwt() -> int:
-    """清掉 tokens.json 里的 JWT 残留——新约定下用户层只该看见 PLAIN。
-
-    历史 cluster 自动签发的 JWT 是 xusi 内部事务（跨节点转发时现场由 PLAIN 包
-    装，不再预先签发），保留在文件里只会让 list 输出带 [jwt, 历史残留] 标迷惑
-    用户。secret 轮换后它们也已自然失效（_jwt_verify 签名错返 None），没清理
-    也无害，但清掉更干净。
-
-    返回被清掉的条数。"""
-    data = _load()
-    before = len(data["tokens"])
-    data["tokens"] = [t for t in data["tokens"] if t["token"].count(".") != 2]
-    n = before - len(data["tokens"])
-    if n:
-        _save(data)
-    return n
 
 
 def sign_jwt_for(rec: dict, *, ttl_seconds: int = 300) -> str | None:

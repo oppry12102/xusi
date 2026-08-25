@@ -99,13 +99,6 @@ async def _startup() -> None:
                 print(f"[xusi] reconcile: {report}")
         except Exception as e:
             print(f"[xusi] reconcile 失败：{e}")
-        # 清掉 tokens.json 里的老 JWT 残留（新约定：用户层只该看见 PLAIN）
-        try:
-            n = authtok.prune_legacy_jwt()
-            if n:
-                print(f"[xusi] 清理 {n} 个历史 JWT token（用户层不再签发 JWT）")
-        except Exception as e:
-            print(f"[xusi] JWT 清理失败：{e}")
     threading.Thread(target=_run, daemon=True, name="xusi-reconcile").start()
 
 
