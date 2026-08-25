@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import agentops, backup, proxy
+from .. import backup, proxy
 from .auth import require_admin, require_agent, require_agent_or_remote
 from .models import BackupReq, RestoreReq
 
