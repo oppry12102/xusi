@@ -12,11 +12,11 @@ from .models import TokenMgrNewReq, TokenNewReq
 router = APIRouter()
 
 
-# ── 管理面 token（admin / user；可视 / 签发 / 撤销）─────────────────────
+# ── 管理面 token（统一 admin；可视 / 签发 / 撤销）─────────────────────
 
 @router.get("/api/tokens")
 def api_tokens_list(_rec: dict = Depends(require_admin)) -> list[dict]:
-    """列出管理面 token。仅 admin——含其他 admin 的 token 原文。
+    """列出管理面 token。所有 token 都是 admin——含 token 原文。
 
     `kind` 标记 token 形态：
     - `plain`：xusi 统一签发的 PLAIN（用户应持有的形态，跨集群也通——转发时
@@ -39,12 +39,9 @@ def api_tokens_list(_rec: dict = Depends(require_admin)) -> list[dict]:
 @router.post("/api/tokens", status_code=201)
 def api_tokens_new(req: TokenMgrNewReq,
                    _rec: dict = Depends(require_admin)) -> dict:
-    """签发新的管理面 token。仅 admin 可调——admin / user 都得 admin 来签。"""
-    if req.role not in ("admin", "user"):
-        raise HTTPException(400, "role 须为 admin 或 user")
+    """签发新的管理面 admin token。"""
     try:
-        rec = authtok.new_token(req.label, role=req.role,
-                                agents=req.agents, rotate=req.rotate)
+        rec = authtok.new_token(req.label, rotate=req.rotate)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {

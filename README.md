@@ -60,7 +60,7 @@ xusi/
 │   ├── registry.py      注册表（参数唯一事实源）etc/agents.json
 │   ├── brains.py        密钥池 → 渲染 agent config.toml
 │   ├── ports.py         端口三重检验（注册表∪内核监听∪bind试探）
-│   ├── authtok.py       管理面 token（admin / user 带 agent 范围）
+│   ├── authtok.py       管理面 token（统一 admin）
 │   ├── proxy.py         反代核心（前缀路由 + token 路由 + HTML 重写）
 │   └── webui/           单文件管理页
 ├── etc/

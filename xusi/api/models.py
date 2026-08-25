@@ -37,14 +37,12 @@ class TokenNewReq(BaseModel):
 
 
 class TokenMgrNewReq(BaseModel):
-    """管理面 token 签发（仅 admin 可调）。
+    """管理面 admin token 签发（仅 admin 可调——现在所有 token 都是 admin）。
 
-    rotate=True 时：先 revoke 同 role 的所有 PLAIN，再签发新的——用户层面始终只
+    rotate=True 时：先 revoke 既有的所有 PLAIN，再签发新的——用户层面始终只
     看见一把 active token；旧的被换掉就立刻作废。"""
     label: str = ""
-    role: str = Field("user", description="admin 或 user")
-    agents: list[str] | None = Field(None, description="user 范围（admin 无需）")
-    rotate: bool = Field(False, description="签发前先 revoke 同 role 的所有 PLAIN")
+    rotate: bool = Field(False, description="签发前先 revoke 既有所有 PLAIN")
 
 
 class BackupReq(BaseModel):

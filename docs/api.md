@@ -17,9 +17,9 @@
 | **管理面 token** | 调用 `/api/*`、`/px/{id}/*` | `Authorization: Bearer <token>` 或 `?mtoken=<token>`（浏览器用，会进访问日志，勿外发） | 管理员在服务器签发（见 §8） |
 | **agent 观察台 token** | 访问某个 agent 的观察台（`/v1/*`、`/ui/*`） | `Authorization: Bearer <token>` 或 `?token=<token>` | `GET /api/agents/{id}/tokens`（经管理面认证后获取） |
 
-管理面 token 两种角色：
-- **admin**：全权（创建/删除/改参/启停/签发 token）；
-- **user**：仅能访问 `agents` 范围内的 agent（观察、投信、经 `/px` 访问、取该 agent 的 token）。
+管理面 token **统一为 admin**：全权（创建/删除/改参/启停/签发 token）。
+
+历史背景：本系统曾区分 admin / user 两种 role（user 限制 agents 范围）。系统只供管理员使用后已统一签 admin；存量的 `role="user"` token 启动时静默升 admin，行为不变。
 
 未带 token / token 无效：
 
@@ -28,11 +28,7 @@ HTTP/1.1 401 Unauthorized
 {"detail": "missing or invalid manager token"}
 ```
 
-无权访问该 agent（user 越范围、user 调管理操作）：
-
-```http
-HTTP/1.1 403 Forbidden
-```
+管理面 token 通过后一律放行——不再有 403 Forbidden（用户场景已删除）。
 
 ---
 
@@ -185,7 +181,7 @@ curl -s $B "http://SERVER:8601/api/agents/{id}/logs?limit=200"     # 进程日�
 `agent_status.daemon.state`（`running_session` 呼吸中 / `sleeping` 休眠 / `parked` 驻留 / `stopped`）、
 `agent_status.daemon.mailbox_pending`（待收信）、`process.auto_restarts`（掉线自动拉起次数）。
 
-### 投信（影响大脑的唯一通道，user 可用）
+### 投信（影响大脑的唯一通道，admin 调用）
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $T" -H "Content-Type: application/json" \
@@ -195,7 +191,7 @@ curl -s -X POST -H "Authorization: Bearer $T" -H "Content-Type: application/json
 
 ---
 
-## 6. agent 观察台 token（admin 签发；user 可取授权范围内的）
+## 6. agent 观察台 token（admin 签发）
 
 ```bash
 # 列出（含完整 token——可直接交给"经管理面认证的用户"）
@@ -267,8 +263,8 @@ curl -s -N -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/api/v
 curl -s  -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/docs  # 原生 Swagger 页（已做路径重写）
 ```
 
-- **鉴权同 `/px`（二选一）**：管理面 token（admin 或该 agent 范围的 user），或该 agent 的
-  观察台 token——voidhub App 等只持观察台 token 的客户端直接可用；
+- **鉴权同 `/px`（二选一）**：管理面 token，或该 agent 的观察台 token——
+  voidhub App 等只持观察台 token 的客户端直接可用；
 - **token 注入不变式**：客户端的 `Authorization` 一律不透传——清单声明了 `token_file`
   则管理面服务端读取并替换注入（每次请求实时读，agent 轮换 token 自动跟随），
   没声明则删除。**客户端的 token 绝不会到达 agent 自建服务**；
@@ -287,7 +283,7 @@ curl -s  -H "Authorization: Bearer $T" http://SERVER:8601/svc/{id}/{svc}/docs  #
 
 | 问题 | 答案 |
 |---|---|
-| 凭 token 能查有哪些 agent 吗？ | **agent 观察台 token → `GET /svc`** 返回该 token 所属 agent 的档案与服务清单（App 用它确认 token 归属）。要**枚举全部 agent** 需管理面 token（`GET /api/agents` 或 `GET /svc`，user 限范围）——观察台 token 只属于一个 agent，这是刻意的权限边界 |
+| 凭 token 能查有哪些 agent 吗？ | **agent 观察台 token → `GET /svc`** 返回该 token 所属 agent 的档案与服务清单（App 用它确认 token 归属）。要**枚举全部 agent** 需管理面 token（`GET /api/agents` 或 `GET /svc`）——观察台 token 只属于一个 agent，这是刻意的权限边界 |
 | 能查管理面的接口文档吗？ | 能，且无需 token：`GET /api/docs.md`（本文档）；Swagger `GET /docs` |
 | 能拿到 agent 服务的 API 文档吗？ | 能：`GET /svc` 返回每个服务的 `openapi`（管理面动态解析出的**实际可用路径**，null=无自描述）；再按该路径取 spec。无自描述的服务（如自写 HTTP 服务）路径需问 agent 或看其 workspace |
 
@@ -301,7 +297,7 @@ curl -s -H "Authorization: Bearer $AGENT_TOKEN" http://SERVER:8601/svc
 #       "base_path":"","openapi":"/openapi.json","auth":true,"auto":false,
 #       "token_source":"manifest","openapi_source":"manifest"}]}]}
 
-# 凭管理面 token → admin 返回全部 agent，user 返回范围内 agent
+# 凭管理面 token → 返回全部 agent
 curl -s -H "Authorization: Bearer $T" http://SERVER:8601/svc
 ```
 
@@ -504,11 +500,9 @@ WebUI 顶栏的节点对话框「其他节点」区显示 peer 列表（绿/红�
 
 ```bash
 cd /home/htao/work/xusi
-.venv/bin/python -m xusi token new <label>                          # user（默认无范围）
-.venv/bin/python -m xusi token new alice --role user --agents astronomy-7f3k,weather-9k2d
-.venv/bin/python -m xusi token new boss --role admin                # 管理员
-.venv/bin/python -m xusi token new boss --role admin --rotate       # 同 role 旧 JWT 全部作废，留 1 把新的（仅 cluster 模式生效）
-.venv/bin/python -m xusi token list                                 # 含完整 token；cluster 模式下 JWT 标 [cluster]，明文 legacy 标 [legacy]
+.venv/bin/python -m xusi token new <label>                       # 签发（默认 admin）
+.venv/bin/python -m xusi token new boss --rotate                  # 旧 PLAIN 全部作废，留 1 把新的
+.venv/bin/python -m xusi token list                               # 含完整 token；cluster 模式下 JWT 标 [cluster]，明文 legacy 标 [legacy]
 .venv/bin/python -m xusi token revoke <token前缀≥8位>
 ```
 
@@ -538,7 +532,7 @@ cd /home/htao/work/xusi
 |---|---|
 | 400 | 业务校验失败（mission 为空、端口不可用、密钥池缺大脑、agent 未运行时暂停/观察等），`detail` 有中文说明 |
 | 401 | 缺 token / token 无效 |
-| 403 | user 越权（管理操作或范围外 agent） |
+| 403 | （历史场景：user 越权——已删除；管理面 token 始终放行） |
 | 404 | agent / 资源不存在 |
 | 502 | 反代目标不可达（agent 已停止或暂停——暂停中属正常） |
 

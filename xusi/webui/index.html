@@ -341,11 +341,10 @@
        （认证一次后记住本浏览器，地址栏参数自动清除）</p>
     <p style="margin-bottom:6px">或在此粘贴管理面 token：</p>
     <div style="display:flex;gap:8px;max-width:380px;margin:0 auto">
-      <input id="tip-tok" type="text" placeholder="管理面 token（admin 或 user）" spellcheck="false" style="font-family:var(--mono);font-size:12px">
+      <input id="tip-tok" type="text" placeholder="管理面 token" spellcheck="false" style="font-family:var(--mono);font-size:12px">
       <button id="tip-login" class="pri">认证</button>
     </div>
-    <p style="margin-top:14px">admin token 用于管理；user token 仅能访问授权范围内的 agent。<br>
-       token 由管理员在服务器上签发：<code class="mono">python -m xusi token new &lt;label&gt; --role user --agents &lt;id&gt;</code></p>
+    <p style="margin-top:14px">管理面 token 由管理员在服务器上签发：<code class="mono">python -m xusi token new &lt;label&gt;</code></p>
   </div>
   <div id="cards"></div>
 </main>
@@ -801,7 +800,7 @@ async function refresh(first = false) {
     me = who;
     meAdmin = (who.role === "admin");
     $("#ver").textContent = "v" + h.version;
-    $("#hstate").textContent = `${who.label}（${who.role === "admin" ? "管理员" : "用户"}）· ${list.length} 个 agent`;
+    $("#hstate").textContent = `${who.label}（管理员）· ${list.length} 个 agent`;
     $("#btn-logout").hidden = false;
     $("#login-tip").hidden = true;
     agentsCache = list;

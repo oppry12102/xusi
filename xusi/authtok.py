@@ -1,18 +1,18 @@
-"""管理面 token：etc/tokens.json —— 谁能调用管理 API、能看到哪些 agent。
+"""管理面 token：etc/tokens.json —— 谁可以调用管理 API。
 
-两种角色：
-- admin：全权（管理全部 agent、签发 token、删除等）；
-- user：只能访问 agents 范围内的 agent（观察/投信/经代理访问）。
-
-签发形态：**统一 PLAIN**（secrets.token_urlsafe(32)，明文存 tokens.json）。
-用户层面始终只看见一把短小易记的 PLAIN token——不管单节点还是集群模式。
-
-JWT 是 xusi **内部事务**，不暴露给用户：
+本系统只供管理员使用，不对外服务——管理面 token **统一为 admin**：
+- `?mtoken=` 或 `Authorization: Bearer` 传入；
+- 签发形态：**PLAIN**（secrets.token_urlsafe(32)，明文存 tokens.json）；
 - 跨节点转发时由 `sign_jwt_for(rec)` 现场把 caller 的 PLAIN 包装成短期 JWT
-  （默认 5 分钟），peer 端用同密钥验签后再按 JWT 的 agents 列表 enforce 作用域。
-  这样用户持 PLAIN 也能透明跨集群——他不感知 JWT 存在。
+  （默认 5 分钟），peer 端用同密钥验签后再 enforce 作用域（admin 通配 '*'）。
 
-tokens.json schema：{token, label, role, agents, created_at}，list/revoke 不变。"""
+历史背景：`role` 字段曾在 schema 里区分 admin / user，user 限制 agents 范围。
+当前系统统一只签 admin；启动时 `_load()` 把存量的 `role="user"` 记录静默升 admin
+（agents 列表保留但已无意义——admin 通配）。`is_admin()` / `can_access()` 已删除，
+caller 不再做角色/范围检查（所有 token 都是 admin）。
+
+tokens.json schema：{token, label, role, agents, created_at}，role 字段保留以便
+list 接口展示，但新签发的 role 永远是 "admin"。"""
 from __future__ import annotations
 
 import base64
@@ -86,7 +86,7 @@ def _cluster_on() -> bool:
 def is_jwt(token: str) -> bool:
     """判断 token 是否为 JWT 形态（xxx.yyy.zzz）。仅供内部区分用——不验签。
 
-    新约定下用户层只签 PLAIN，但 tokens.json 里可能仍有老 cluster 模式自动签
+    用户层只签 PLAIN，但 tokens.json 里可能仍有老 cluster 模式自动签
     的 JWT 残留、且 sign_jwt_for 会给 peer 现场包装 JWT——这两条路径都需要识别。
     """
     return token.count(".") == 2
@@ -103,6 +103,35 @@ def _load() -> dict:
     return {"tokens": []}
 
 
+def _migrate(data: dict) -> dict:
+    """启动时静默迁移：role=user → role=admin（agents 列表保留但无意义——admin 通配）。
+
+    系统当前只签 admin，但旧的 tokens.json 可能还留着 user 记录（CLI 兼容路径
+    也已删，避免再签新的）。一次性迁完让 list 接口显示一致，revoke 也无需特判。
+    """
+    changed = False
+    for t in data.get("tokens", []):
+        if isinstance(t, dict) and t.get("role") == "user":
+            t["role"] = "admin"
+            agents = t.get("agents") or []
+            if agents != ["*"]:
+                t["agents"] = ["*"]
+                changed = True
+            changed = True
+    if changed:
+        try:
+            f = get_config().tokens_file
+            f.parent.mkdir(parents=True, exist_ok=True)
+            tmp = f.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+            tmp.replace(f)
+            f.chmod(0o600)
+        except Exception:
+            pass   # 迁移写回失败不致命——下次启动再试
+    return data
+
+
 def _save(data: dict) -> None:
     f = get_config().tokens_file
     f.parent.mkdir(parents=True, exist_ok=True)
@@ -113,45 +142,39 @@ def _save(data: dict) -> None:
 
 
 def list_tokens() -> list[dict]:
-    return list(_load()["tokens"])
+    return list(_migrate(_load())["tokens"])
 
 
-def new_token(label: str = "", role: str = "user",
-              agents: list[str] | None = None,
-              rotate: bool = False) -> dict:
-    """签发管理面 token——统一 PLAIN 形态（secrets.token_urlsafe(32)）。
+def new_token(label: str = "", rotate: bool = False) -> dict:
+    """签发管理面 admin token——统一 PLAIN 形态（secrets.token_urlsafe(32)）。
 
-    用户层面始终只看见一把短小易记的 PLAIN；JWT 是 xusi 内部事务，不暴露。
-
-    rotate=True：先 revoke 同 role 的所有 PLAIN，再签发新的——用户层「一把 active」
+    rotate=True：先 revoke 既有 PLAIN，再签发新的——用户层「一把 active」
     永远是最近签的。
 
     rotate=True 时默认 label 加 unix 时间戳后缀（admin-r1724567890），多次 rotate
     后 list 里每把都能一眼区分；非 rotate 时仍按位置计数（admin-1/admin-2/...）。"""
-    if role not in ("admin", "user"):
-        raise ValueError("role 须为 admin 或 user")
     cfg = get_config()
     now = registry.now_iso()
     if rotate and not label:
-        display_label = f"{role}-r{int(time.time())}"
+        display_label = f"admin-r{int(time.time())}"
     elif label:
         display_label = label
     else:
-        display_label = f"{role}-{len(list_tokens()) + 1}"
+        display_label = f"admin-{len(list_tokens()) + 1}"
     token = secrets.token_urlsafe(32)
     rec = {
         "token": token,
         "label": display_label,
-        "role": role,
-        "agents": ["*"] if role == "admin" else (agents or []),
+        "role": "admin",
+        "agents": ["*"],
         "created_at": now,
     }
-    data = _load()
+    data = _migrate(_load())
     if rotate:
-        # 仅 revoke PLAIN 形态的同 role token（JWT 是 xusi 内部事务，不动）
+        # 仅 revoke PLAIN 形态的 token（JWT 是 xusi 内部事务，不动）
         data["tokens"] = [
             t for t in data["tokens"]
-            if not (t["role"] == role and not is_jwt(t["token"]))
+            if not (t.get("role") == "admin" and not is_jwt(t["token"]))
         ]
     data["tokens"].append(rec)
     _save(data)
@@ -161,7 +184,7 @@ def new_token(label: str = "", role: str = "user",
 def revoke_token(prefix: str) -> int:
     if len(prefix) < 8:
         raise ValueError("请提供至少 8 位 token 前缀")
-    data = _load()
+    data = _migrate(_load())
     before = len(data["tokens"])
     data["tokens"] = [t for t in data["tokens"] if not t["token"].startswith(prefix)]
     _save(data)
@@ -174,7 +197,7 @@ def sign_jwt_for(rec: dict, *, ttl_seconds: int = 300) -> str | None:
     用途：caller 的 token 是 PLAIN，peer 那边 tokens.json 里查不到——自动从 rec 提
     取 claims 当场签 JWT 给 peer。caller 已是 JWT 时透传不重签（保留签发者署名）。
 
-    rec：verify() 返回的 rec（含 label/role/agents/iat）。
+    rec：verify() 返回的 rec（含 label/agents/iat）。
     ttl_seconds：默认 5 分钟足够 cover 一次跨节点请求往返——payload 里写 exp，
     peer 端 _jwt_verify 会检查，过期自动拒绝。
     返回 None：集群模式未开（无法签 JWT）或 caller 已是 JWT。"""
@@ -187,8 +210,8 @@ def sign_jwt_for(rec: dict, *, ttl_seconds: int = 300) -> str | None:
     cfg = get_config()
     payload = {
         "label": rec.get("label") or "",
-        "role": rec.get("role") or "user",
-        "agents": rec.get("agents") or [],
+        "role": "admin",
+        "agents": ["*"],
         "iat": rec.get("created_at") or registry.now_iso(),
         "exp": int(time.time()) + ttl_seconds,
         "jti": secrets.token_urlsafe(8),
@@ -217,8 +240,8 @@ def verify(token: str) -> dict | None:
                 return {
                     "token": token,
                     "label": payload.get("label") or "",
-                    "role": payload.get("role") or "user",
-                    "agents": payload.get("agents") or [],
+                    "role": "admin",
+                    "agents": ["*"],
                     "created_at": payload.get("iat") or "",
                 }
             return None
@@ -228,15 +251,3 @@ def verify(token: str) -> dict | None:
         if hmac.compare_digest(t["token"], token):
             return t
     return None
-
-
-def is_admin(rec: dict) -> bool:
-    return rec.get("role") == "admin"
-
-
-def can_access(rec: dict, agent_id: str) -> bool:
-    """admin 或范围含该 agent（'*' 通配）。"""
-    if is_admin(rec):
-        return True
-    scopes = rec.get("agents") or []
-    return "*" in scopes or agent_id in scopes

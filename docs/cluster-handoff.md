@@ -29,7 +29,7 @@ secret = "eDO_pDQKHHnSaaNWlK41t3wc3QLgZb2e6IZvsytqfyM"
 
 - 这是**对称密钥**——任何持有它的节点都能签发任意 admin token（HS256 是对称的）
 - 上面的值已在两次会话中明文出现，等同泄露。建议在双方都验证通过后**用 `openssl rand -hex 32` 重新生成**并同步替换
-- secret 改了之后：**本机现存的所有 token 立即失效**（Phase 1.1 的按输入形态分流就是为了让 secret 轮换正确）。需要重新 `python3 -m xusi token new admin --role admin`
+- secret 改了之后：**本机现存的所有 token 立即失效**（Phase 1.1 的按输入形态分流就是为了让 secret 轮换正确）。需要重新 `python3 -m xusi token new admin`
 
 ### 1.2 `[node].public_url` 必须填外网入口
 
@@ -52,7 +52,7 @@ public_url = "http://82.157.131.225:8601"   # ← 对端外网入口
 重签：
 
 ```bash
-python3 -m xusi token new admin --role admin
+python3 -m xusi token new admin
 ```
 
 ## 2. 双边注册拓扑（推荐，`fd97652` 之后）
@@ -190,7 +190,7 @@ curl -s http://<对端>:8601/api/peer/id
 ### 验证 JWT 跨节点 verify
 
 ```bash
-JWT=$(python3 -m xusi token new admin --role admin | head -1)
+JWT=$(python3 -m xusi token new admin | head -1)
 # 上面只输出 token 这一行
 curl -s -H "Authorization: Bearer $JWT" http://<对端>:8601/api/whoami
 # 期望：{"label": "admin", "role": "admin", "agents": ["*"]}
@@ -234,7 +234,7 @@ peers.clear_probe_cache()
 - [ ] 2. 设 `[node].public_url = "http://82.157.131.225:8601"`（外网入口）
 - [ ] 3. **确认对端已升级到 `fd97652` 或之后**——`curl http://81.70.43.157:8601/api/health` 看 version / `git log -1` 看 commit
 - [ ] 4. `systemctl --user restart xusi.service`
-- [ ] 5. `python3 -m xusi token new admin --role admin`（重新签 JWT token）
+- [ ] 5. `python3 -m xusi token new admin`（重新签 JWT token）
 - [ ] 6. 验证握手：`curl http://81.70.43.157:8601/api/peer/id`（应当从本机拿到 `61FyM_3Lazg`，url 是本机外网入口）
 - [ ] 7. 验证跨节点 verify：用本机新签的 JWT 调对端 `/api/whoami`
 - [ ] 8. **双边注册**：在本机 `etc/peers.toml` 加 `[[peers]] id="61FyM_3Lazg" url="http://81.70.43.157:8601"`；本机已经写好了对端

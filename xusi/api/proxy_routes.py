@@ -18,7 +18,7 @@ router = APIRouter()
 
 def _svc_px_auth(request: Request, agent: dict) -> None:
     """/px 与 /svc 共用鉴权（二选一）：
-    ① 管理面 token（admin 或该 agent 范围的 user）；
+    ① 管理面 token（admin——所有 token 都是 admin，无需范围检查）；
     ② 该 agent 自己的观察台 token（让 agent 自带页面/仅持观察台 token 的
        外部客户端如 voidhub App 也能通行）。"""
     tok = request.query_params.get("mtoken")
@@ -27,9 +27,8 @@ def _svc_px_auth(request: Request, agent: dict) -> None:
         tok = auth[7:].strip() or tok
     rec = authtok.verify(tok) if tok else None
     if rec:
-        if not authtok.can_access(rec, agent["id"]):
-            raise HTTPException(403, f"token 无权访问 agent {agent['id']}")
-    elif not tok or tok not in agentops.read_agent_tokens(agent):
+        return   # 管理面 token 通过——admin 通配所有 agent
+    if not tok or tok not in agentops.read_agent_tokens(agent):
         raise HTTPException(401, "missing or invalid token（管理面 token 或该 agent 的观察台 token）")
 
 
@@ -37,7 +36,7 @@ def _svc_px_auth(request: Request, agent: dict) -> None:
                   methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 async def px(request: Request, agent_id: str, sub_path: str = "") -> Response:
     """前缀反代。鉴权二选一（见 _svc_px_auth）：
-    ① 管理面 token（admin 或该 agent 范围的 user）——转发时自动注入 agent token；
+    ① 管理面 token——转发时自动注入 agent token；
     ② 该 agent 自己的观察台 token——让 agent 自带观测台页面在新标签页里
        （拿不到管理面 token 的上下文）发出的 Bearer 请求也能通行。
 
@@ -113,7 +112,7 @@ async def _forward_passthrough(peer: dict, request: Request, target_path: str,
 def svc_discover(request: Request, probe: bool = False) -> dict:
     """服务发现：凭 token 找到服务入口，无需预知 agent-id / 服务名
     （App 形态只有 IP+端口+token，正是这个入口的受众）。
-    agent 观察台 token → 仅该 agent；管理面 token → admin 全部 / user 范围内。
+    agent 观察台 token → 仅该 agent；管理面 token → 全部 agent（admin 通配）。
     条目脱敏（不含 token_file 路径）。"""
     tok = request.query_params.get("mtoken")
     auth = request.headers.get("authorization", "")
@@ -140,9 +139,7 @@ def svc_discover(request: Request, probe: bool = False) -> dict:
             return {"agents": [_entry(found[0])]}
         rec = authtok.verify(tok)
         if rec:
-            agents = [a for a in registry.list_agents()
-                      if authtok.can_access(rec, a["id"])]
-            return {"agents": [_entry(a) for a in agents]}
+            return {"agents": [_entry(a) for a in registry.list_agents()]}
     raise HTTPException(401, "missing or invalid token（管理面 token 或 agent 观察台 token）")
 
 

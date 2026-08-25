@@ -3,7 +3,7 @@
     python -m xusi serve                 # 前台跑管理面（调试用；常驻走 install）
     python -m xusi install               # 建 venv → 装 systemd 用户服务 → 启动
     python -m xusi uninstall             # 停止并移除管理面服务（不动 agent 数据）
-    python -m xusi token new/list/revoke # 管理面 token（admin / user）
+    python -m xusi token new/list/revoke # 管理面 token
     python -m xusi status                # 全部 agent 一览
     python -m xusi doctor                # 环境自检
 """
@@ -112,7 +112,7 @@ def cmd_install(args) -> int:
 
     # 首个 admin token（仅此处打印一次；etc/tokens.json 可随时读回）
     if not authtok.list_tokens():
-        rec = authtok.new_token("admin", role="admin")
+        rec = authtok.new_token("admin")
         print("\n════════════════════════════════════════════════════")
         print(f"  管理面 admin token（仅显示一次，请保存）：\n")
         print(f"    {rec['token']}\n")
@@ -149,11 +149,9 @@ def cmd_serve(args) -> int:
 
 def cmd_token(args) -> int:
     if args.cmd == "new":
-        rec = authtok.new_token(args.label, role=args.role,
-                                agents=[a.strip() for a in args.agents.split(",")] if args.agents else None,
-                                rotate=args.rotate)
+        rec = authtok.new_token(args.label, rotate=args.rotate)
         print(rec["token"])
-        rotate_note = "（rotate：同 role 旧 PLAIN 已废）" if args.rotate else ""
+        rotate_note = "（rotate：旧 PLAIN 已废）" if args.rotate else ""
         print(f"# label: {rec['label']}  role: {rec['role']}  agents: {rec['agents']}{rotate_note}",
               file=sys.stderr)
     elif args.cmd == "list":
@@ -419,10 +417,8 @@ def main() -> int:
     ts = t.add_subparsers(dest="cmd", required=True)
     tn = ts.add_parser("new", help="签发（仅显示一次）")
     tn.add_argument("label", nargs="?", default="")
-    tn.add_argument("--role", choices=["admin", "user"], default="user")
-    tn.add_argument("--agents", default=None, help="user 范围：逗号分隔 agent-id（admin 无需）")
     tn.add_argument("--rotate", action="store_true",
-                    help="签发前先 revoke 同 role 的所有 PLAIN——用户层始终只看见一把 active")
+                    help="签发前先 revoke 既有所有 PLAIN——用户层始终只看见一把 active")
     tn.set_defaults(fn=cmd_token)
     tl = ts.add_parser("list", help="列出")
     tl.set_defaults(fn=cmd_token)

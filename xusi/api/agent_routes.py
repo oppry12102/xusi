@@ -11,7 +11,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import agentops, authtok, capabilities, node, peers, proxy, services
+from .. import agentops, capabilities, node, peers, proxy, services
 from .auth import require_admin, require_agent, require_agent_or_remote, require_auth
 from .models import CreateAgentReq, MailReq, PatchAgentReq
 
@@ -28,9 +28,11 @@ async def api_agents_list(rec: dict = Depends(require_auth),
 
     local_only=true 用于 fan-in 中继：只返回本地注册的 agent，不再二次 fan-out。
     关键意义：防止双边注册时的 fan-in 回环。每个节点的"集群视图"是 local +
-    direct peers' local，不再递归 peers-of-peers。"""
+    direct peers' local，不再递归 peers-of-peers。
+
+    所有 token 都是 admin——不再做 can_access 过滤，列全量。"""
     rows = list(agentops.list_status())
-    if not local_only and peers.is_cluster() and authtok.is_admin(rec):
+    if not local_only and peers.is_cluster():
         # 排除自己——peer 列表来自共享 etc/peers.toml，集群模式下自己的 id
         # 也可能在里头（多机器各自 git pull 同一份 toml）；fan-in 到自己 = 自递归。
         me_id = node.info()["id"]
@@ -53,9 +55,7 @@ async def api_agents_list(rec: dict = Depends(require_auth),
             results = await asyncio.gather(*[_one(p) for p in pls])
             for r in results:
                 rows.extend(r)
-    if authtok.is_admin(rec):
-        return rows
-    return [r for r in rows if authtok.can_access(rec, r["id"])]
+    return rows
 
 
 @router.post("/api/agents", status_code=201)
