@@ -1,8 +1,8 @@
 """反代核心：本地 + 跨集群统一层。
 
 三种路由，同一端口：
-1. 前缀路由 /px/{agent-id}/* —— 管理面 token 鉴权（admin 或该 agent 范围的
-   user），转发时自动注入该 agent 的观察台 token，客户端无需持有第二层 token；
+1. 前缀路由 /px/{agent-id}/* —— 管理面 token 鉴权（admin token = cluster_secret），
+   转发时自动注入该 agent 的观察台 token，客户端无需持有第二层 token；
    agent 自带的 /ui/ 页面做最小 HTML 路径重写 + 自动带 token，经代理可用。
 2. token 路由（根路径 /v1/*、/ui/*）—— 凭 agent 观察台 token 实时定向到
    所属 agent，原样透传。voidhub App（host+port+token 形态）零改动接入：
@@ -12,6 +12,9 @@
    决定，管理面只做鉴权、token 注入与被动审计（不替 agent 决策）。
 4. 跨集群反代（Phase 2）：当 /api/* 调用 /api/agents/{id}/* 时若 agent 在 peer 上，
    透传到 peer 的同 path，由 peer 重验鉴权并 enforce 作用域。
+
+跨集群转发只把 caller 的 `Authorization` 头原样透传（peer 端 verify 同一
+cluster_secret 即可）。前代 PLAIN→短期 JWT 包装全部删除。
 
 manager 对 agent 的转发只到 127.0.0.1（无论 agent 是否对外暴露）。
 """
@@ -27,7 +30,7 @@ from fastapi import HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
-from . import agentops, authtok, peers, registry, services
+from . import agentops, peers, registry, services
 
 # 请求侧不透传的头（httpx 自动解压请求体无意义，长度重算）
 _HOP_HEADERS = {
@@ -72,6 +75,14 @@ def agent_by_agent_token(token: str) -> tuple[dict, str] | None:
         if token in agentops.read_agent_tokens(a):
             return a, token
     return None
+
+
+def _auth_from_request(request: Request) -> str:
+    """从 FastAPI Request 抽出 `Authorization` 头的字面值（带 'Bearer ' 前缀）。
+    用作跨节点透传——peer 端再做同样常时间比对。"""
+    if request is None:
+        return ""
+    return request.headers.get("authorization", "")
 
 
 # ── 转发 ─────────────────────────────────────────────────────────────
@@ -172,7 +183,7 @@ def _buf_resp(content: bytes, status: int, pairs: list[tuple[str, str]]) -> Resp
 
 
 def rewrite_html(html: bytes, agent_id: str) -> bytes:
-    """把页面里的根绝对路径 /v1/、/ui/ 改写到 /px/{id}/ 下（带引号的字面量）。"""
+    """把页面里的根绝对路径 /v1/、/ui/ 改写到 /px/{id} 下（带引号的字面量）。"""
     p = f"/px/{agent_id}".encode()
     for q in (b"'", b'"'):
         html = html.replace(q + b"/v1/", q + p + b"/v1/")
@@ -253,7 +264,7 @@ async def token_routed(request: Request, target_path: str) -> Response:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 跨集群（Phase 2）：locality 解析 + 远端转发 + 短期 JWT 包装
+# 跨集群（Phase 2）：locality 解析 + 远端转发
 # ═════════════════════════════════════════════════════════════════════
 
 # exceptions 在 peers.py 定义；re-export 方便上层 import
@@ -290,13 +301,13 @@ _loc_cache: dict[str, tuple[float, AgentTarget | None]] = {}
 _loc_lock = threading.Lock()
 
 
-def resolve(agent_id: str, rec: dict | None = None) -> AgentTarget | None:
+def resolve(agent_id: str, request: Request | None = None) -> AgentTarget | None:
     """找 agent 在哪。本地优先；都不命中返回 None（404）。
 
     缓存策略：30s 命中 / 5s 未命中。cluster 模式未启用时永远走本地分支（peer 列表为空）。
 
-    rec：caller 的 token 记录（用于 fan-out 时给 peer 鉴权用）；本地命中时
-    不需要，但签名上保留一致让调用方统一传。"""
+    request：caller 的 FastAPI Request——仅在 fan-out 时被读 `Authorization` 头
+    原样透传给 peer（peer 端再 verify 同一 cluster_secret）。本地命中时不需要。"""
     now = time.monotonic()
     with _loc_lock:
         cached = _loc_cache.get(agent_id)
@@ -319,8 +330,8 @@ def resolve(agent_id: str, rec: dict | None = None) -> AgentTarget | None:
         _put_cache(agent_id, None)
         return None
 
-    # fan-out：并发问每个 peer 的 /api/agents（传 caller JWT 让 peer 鉴权通过）
-    found_peer = _fanout_locate(agent_id, rec)
+    # fan-out：并发问每个 peer 的 /api/agents（透传 caller Authorization 让 peer 鉴权通过）
+    found_peer = _fanout_locate(agent_id, request)
     target = AgentTarget(kind="remote", agent_id=agent_id, peer=found_peer) if found_peer else None
     _put_cache(agent_id, target)
     return target
@@ -340,21 +351,25 @@ def _put_cache(agent_id: str, target: AgentTarget | None) -> None:
         _loc_cache[agent_id] = (time.monotonic(), target)
 
 
-def _fanout_locate(agent_id: str, rec: dict | None = None) -> dict | None:
+def _fanout_locate(agent_id: str, request: Request | None = None) -> dict | None:
     """并发打所有 peer 的 /api/agents，返回含目标 agent_id 的第一个 peer 记录。
 
     排除自己：peer 列表来自共享 etc/peers.toml，集群模式下自己的 id
     也可能在里头（多机器各自 git pull 同一份 toml）；fan-out 到自己 = 自递归。
 
-    rec：调用方的 token 记录（带 token 原文），用于向 peer 鉴权——peer 端
-    require_auth 拒无 token 请求，401 → 我们会误以为 peer 没该 agent。"""
+    request：调方的 Request——`Authorization` 头原样透传给 peer（cluster_secret
+    互通，省去 JWT 包装）；未传则不带任何鉴权头（peer 端 verify 失败 401，
+    本地视为没找到这个 agent）。"""
     from . import node
     me_id = node.info()["id"]
     pls = [p for p in peers.list_peers() if p["id"] != me_id]
     if not pls:
         return None
 
-    headers = bearer_headers(rec) if rec else {}
+    headers: dict[str, str] = {}
+    auth = _auth_from_request(request) if request is not None else ""
+    if auth:
+        headers["authorization"] = auth
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(pls))) as ex:
         futs = {ex.submit(_peer_has_agent, p, agent_id, headers): p for p in pls}
@@ -387,45 +402,28 @@ def _peer_has_agent(peer: dict, agent_id: str, headers: dict) -> bool:
         return False
 
 
-# ── bearer 头构造（PLAIN → 短期 JWT 包装）───────────────────────────
-
-def bearer_headers(rec: dict) -> dict:
-    """把 caller 的 token 还原成 Authorization 头。
-
-    PLAIN → 当场签短期 JWT 给 peer（peer 端 tokens.json 里没有 caller PLAIN）；
-    JWT 透传（cluster trust，peer 用同密钥重验）。"""
-    tok = _token_of(rec)
-    if not tok:
-        return {}
-    if authtok.is_jwt(tok):
-        return {"authorization": f"Bearer {tok}"}
-    wrapped = authtok.sign_jwt_for(rec)
-    if wrapped:
-        return {"authorization": f"Bearer {wrapped}"}
-    return {"authorization": f"Bearer {tok}"}
-
-
-def _token_of(rec: dict) -> str:
-    """从 caller 记录里取回 token 原文（JWT 模式 = token 字段即 JWT）。"""
-    return rec.get("token", "") or ""
-
-
 # ── 跨节点转发 ─────────────────────────────────────────────────────
 
-async def fetch_json(peer: dict, path: str, rec: dict,
-                     *, timeout: float = 5.0) -> Any:
-    """带调用方 JWT 向 peer 发 GET，返回 parsed JSON。失败抛 PeerUnreachable。
+async def fetch_json(peer: dict, path: str, *,
+                     request: Request | None = None,
+                     timeout: float = 5.0) -> Any:
+    """透传 caller `Authorization` 头向 peer 发 GET，返回 parsed JSON。
+    失败抛 PeerUnreachable。
 
-    用于 /api/agents 列表合并——读短超时即可（只取 metadata）。"""
+    request：callers 的 Request——`Authorization` 头原样透传；未传则不带鉴权
+    （peer 端 401，本地多数路径会降级为"peer 没有"）。"""
     url = f"{peer['url'].rstrip('/')}{path}"
-    headers = bearer_headers(rec)
+    headers: dict[str, str] = {}
+    auth = _auth_from_request(request) if request is not None else ""
+    if auth:
+        headers["authorization"] = auth
     try:
         r = await client().get(url, headers=headers, timeout=timeout)
     except httpx.HTTPError as e:
         raise PeerUnreachable(f"peer {peer['id']}：{type(e).__name__}: {e}") from e
     if r.status_code >= 500:
         raise PeerUnreachable(f"peer {peer['id']} HTTP {r.status_code}")
-    # 4xx 不抛——上层按业务处理（如 user 无权访问远端 agent 由 user 角色过滤处理）
+    # 4xx 不抛——上层按业务处理
     if r.status_code >= 400:
         try:
             body = r.json()
@@ -436,12 +434,12 @@ async def fetch_json(peer: dict, path: str, rec: dict,
 
 
 async def forward_to_peer(peer: dict, request: Request,
-                         target_path: str, *, rec: dict) -> Response:
+                         target_path: str) -> Response:
     """把 FastAPI Request 原样转发到 peer 的同 path，返回 peer 的响应。
 
     行为：
-    - 鉴权头自治：caller 的 token 是 JWT → 透传；是 PLAIN（明文 legacy）→
-      当场用 cluster_secret 签短期 JWT 给 peer（用户 PLAIN 也能跨集群透明工作）。
+    - 鉴权头从 caller Request 直接 `Authorization: Bearer <cluster_secret>` 透传
+      （peer 端用同密钥常时间比对，互通）；旧版 PLAIN→短期 JWT 包装已删除。
     - 查询串保留（除 mtoken）
     - body / method 全透传
     - 响应除 hop 头外原样回传（流式，避免把 peer 的响应体整包缓冲）
@@ -449,8 +447,6 @@ async def forward_to_peer(peer: dict, request: Request,
     - peer 4xx/5xx → 透传同码同 body"""
     url = f"{peer['url'].rstrip('/')}{target_path}"
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_HEADERS}
-    # 鉴权头：JWT 透传 / PLAIN 自动包装（与 bearer_headers 同形）
-    headers.update(bearer_headers(rec))
     params = {k: v for k, v in request.query_params.items() if k != "mtoken"}
     body = await request.body()
     try:

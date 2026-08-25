@@ -1,9 +1,10 @@
 """反代路由：/px/{id}/*、/svc、/svc/{id}/{name}/*、/v1/*、/ui/*。
 
 共享辅助：
-- _svc_px_auth  /px 与 /svc 共用鉴权（管理面 token 或该 agent 观察台 token）
-- _rec_of       软版本 extract caller rec（不抛 401）
-- _forward_passthrough  远端 /px 转发（与 forward_to_peer 区别：保留 observer token 透传）
+- _svc_px_auth       /px 与 /svc 共用鉴权（管理面 token 或该 agent 观察台 token）
+- _forward_passthrough 远端 /px 转发（透传 caller Authorization；与
+                        forward_to_peer 的差别：原 Authorization 透传，
+                        不重新构造，便于 agent 观察台 token 走 peer 自验）
 """
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -11,14 +12,15 @@ from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
 from .. import agentops, authtok, proxy, registry, services
-from .auth import _rec_of
+from .auth import require_auth
+from fastapi import Depends
 
 router = APIRouter()
 
 
 def _svc_px_auth(request: Request, agent: dict) -> None:
     """/px 与 /svc 共用鉴权（二选一）：
-    ① 管理面 token（admin——所有 token 都是 admin，无需范围检查）；
+    ① 管理面 token（cluster_secret——admin 通配所有 agent）；
     ② 该 agent 自己的观察台 token（让 agent 自带页面/仅持观察台 token 的
        外部客户端如 voidhub App 也能通行）。"""
     tok = request.query_params.get("mtoken")
@@ -41,53 +43,32 @@ async def px(request: Request, agent_id: str, sub_path: str = "") -> Response:
        （拿不到管理面 token 的上下文）发出的 Bearer 请求也能通行。
 
     远端 agent（集群模式 + 在 peer 上）：本机无法验观察台 token
-    （peer 的 agent tokens.json 不在本机），改由 peer 端自己 inject agent token
-    再转给本地 agent 的 127.0.0.1。HTML 中的相对路径 `/v1/*` 由 peer 在 HTML 重写时
-    改成 `/px/{id}/v1/*`——浏览器仍在 dev 页面里继续触发 `/px/...`，再被 dev 转发到 peer
-    （递归）。观察台面板 JS 的 fetch 只带 `Authorization: Bearer <该 agent 的观察台 token>`
-    ——这种 token 我们本地 verify 一定返 None，必须整段转给 peer 让它验（peer 有自己的
-    agent tokens.json 命中）。"""
-    target = proxy.resolve(agent_id, rec=_rec_of(request))
+    （peer 的 agent tokens.json 不在本机），整段 Authorization / mtoken 原样
+    透传给 peer，peer 端 _svc_px_auth 自己验。观察台 token 走 peer 是
+    "voidhub 形态"的零改动接入前提。"""
+    target = proxy.resolve(agent_id, request=request)
     if target is None:
         raise HTTPException(404, f"agent 不存在: {agent_id}")
     if target.kind == "local":
         # 本机：观察台 token 走 `_svc_px_auth` 的备用路径（Bearer = 观察台 token 也行）
         _svc_px_auth(request, target.agent)
         return await proxy.prefix_proxy(request, agent_id, sub_path)
-    # 远端：_rec_of 拿到的是 caller 的本机验证 rec——PLAIN 时用它走 bearer_headers
-    # 包装成 JWT 给 peer（peer 端 tokens.json 里没 caller 的 PLAIN）；观察台 token
-    # 时 rec=None（peer 才有该 agent 的观察台 token），整段 Authorization / mtoken
-    # 原样透传，peer 端 _svc_px_auth 自己验。
-    return await _forward_passthrough(target.peer, request, request.url.path,
-                                       rec=_rec_of(request))
+    # 远端：原样透传全部 Authorization / mtoken，由 peer 端 _svc_px_auth 处理
+    return await _forward_passthrough(target.peer, request, request.url.path)
 
 
-async def _forward_passthrough(peer: dict, request: Request, target_path: str,
-                               rec: dict | None = None) -> Response:
+async def _forward_passthrough(peer: dict, request: Request, target_path: str) -> Response:
     """远端 /px/{id}/... 的专用转发。
 
-    与 proxy.forward_to_peer 的区别：forward_to_peer 走 bearer_headers 重新
-    构造 Authorization——caller 的 PLAIN（明文 legacy）也会被当场包装成 JWT。
-    /px 这边同样需要包装：peer 端 tokens.json 里没有 caller PLAIN，直接透传
-    → peer verify 返 None → 401。包装的 claims 来自 rec（=本机 verify 结果），
-    不会再造"无 verify 凭据"——角色/agents 仍是 caller 在 tokens.json 里登记的
-    真实范围，peer 用 JWT 验完会按 JWT 的 agents 重新 enforce，权限不放大。
+    与 `proxy.forward_to_peer` 在 header 处理上一致（都做 hop header 过滤）
+    之所以单独存在是因为 /px 的鉴权接受 agent 自己的观察台 token，而这种
+    token 仅 peer 端可见——peer 端 `_svc_px_auth` 必须自己验。本机只负责把
+    caller 的 Authorization / mtoken 不动声色地穿过去。
 
-    不像 /api/agents/{id}/* 那种纯 JSON 读端点能直接用 forward_to_peer——/px
-    鉴权还接受「agent 自己观察台 token」，那种 token 不在 rec 里（仅 peer 有），
-    也无 rec 可包装——这时候就只能原样透传，peer 自己验。
-
-    收尾行为：
-    - rec 已 verify（管理面 token 在本机 tokens.json 命中）：
-      headers['Authorization'] = sign_jwt_for(rec) 或原 JWT 透传
-    - rec 未 verify（agent 观察台 token 或 caller 不在本机）：
-      透传 caller 的 Authorization / mtoken，peer 端 _svc_px_auth 自己验。
+    收尾行为：hop header 过滤 + body/method 全透传 + 流式回传。
     """
     url = f"{peer['url'].rstrip('/')}{target_path}"
     headers = {k: v for k, v in request.headers.items() if k.lower() not in proxy._HOP_HEADERS}
-    if rec is not None:
-        # 用包装/透传后的 Authorization 覆盖 caller 原 header（如果有的话）
-        headers.update(proxy.bearer_headers(rec))
     # query 整段透传：peer 端 require_auth / _svc_px_auth 自己读 mtoken + token。
     params = dict(request.query_params)
     body = await request.body()

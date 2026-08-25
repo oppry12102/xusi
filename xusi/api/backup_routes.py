@@ -21,12 +21,12 @@ def api_agent_backup(req: BackupReq, pair: tuple = Depends(require_agent),
 @router.get("/api/agents/{agent_id}/backups")
 async def api_agent_backups_list(request: Request, with_meta: bool = False,
                                  pair: tuple = Depends(require_agent_or_remote)) -> Response:
-    target, rec = pair
+    target, _rec = pair
     if target.kind == "local":
         if with_meta:
             return JSONResponse(backup.list_with_meta(agent_id=target.agent["id"]))
         return JSONResponse(backup.list_backups(agent_id=target.agent["id"]))
-    return await proxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
+    return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
 @router.get("/api/backups")
