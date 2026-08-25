@@ -18,7 +18,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-from . import __version__, authtok
+from . import __version__, authtok, peers
 from .config import ROOT, get_config
 
 DEPS = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "httpx[socks]>=0.27"]
@@ -356,9 +356,8 @@ def cmd_restore(args) -> int:
 # ── peers（Phase 2 集群名册） ──────────────────────────────────────
 
 def cmd_peers_probe(_args) -> int:
-    from . import peers as _peers
-    _peers.clear_probe_cache()
-    rows = _peers.list_peers()
+    peers.clear_probe_cache()
+    rows = peers.list_peers()
     if not rows:
         print("(尚未注册 peer)")
         return 0
@@ -367,15 +366,14 @@ def cmd_peers_probe(_args) -> int:
 
 
 def cmd_peers_list(_args) -> int:
-    from . import peers as _peers
-    if not _peers.is_cluster():
+    if not peers.is_cluster():
         print("(单节点模式：[cluster].secret 未设，peer 名册禁用)", file=sys.stderr)
-    rows = _peers.list_peers()
+    rows = peers.list_peers()
     if not rows:
         print("(尚未注册 peer)")
         return 0
     for p in rows:
-        r = _peers.probe_peer(p)
+        r = peers.probe_peer(p)
         flag = "✓" if r["ok"] else "✗"
         detail = f"{r.get('latency_ms', '?')}ms" if r["ok"] else r.get("error", "?")
         name = p.get("name") or ""
@@ -384,13 +382,9 @@ def cmd_peers_list(_args) -> int:
 
 
 def cmd_peers_add(args) -> int:
-    from . import peers as _peers
     try:
-        rec = _peers.add_peer(args.url, name=args.name)
-    except _peers.PeerUnreachable as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 2
-    except _peers.PeerRefused as e:
+        rec = peers.add_peer(args.url, name=args.name)
+    except (peers.PeerUnreachable, peers.PeerRefused) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     print(f"  ✓ {rec['id']}  {rec.get('name', '')}  {rec['url']}")
@@ -398,8 +392,7 @@ def cmd_peers_add(args) -> int:
 
 
 def cmd_peers_remove(args) -> int:
-    from . import peers as _peers
-    if _peers.remove_peer(args.peer_id):
+    if peers.remove_peer(args.peer_id):
         print(f"  ✓ 已移除 peer {args.peer_id}")
         return 0
     print(f"  ✗ 未找到 peer {args.peer_id}", file=sys.stderr)

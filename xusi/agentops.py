@@ -231,6 +231,22 @@ def _resolve_source_choice(src_ver: str) -> str:
             f"或手动 git clone 到 {get_config().source_dir}") from None
 
 
+def _validate_brains(bl: list[str]) -> None:
+    """校验大脑列表：非空、都在密钥池里、都有 key。失败抛 AgentError。
+
+    create_agent 与 patch_agent 共用同一份校验（patch_agent 不会改这条契约，
+    只复用这段断言）。"""
+    if not bl:
+        raise AgentError("至少选择一家大脑")
+    pool = {b["name"]: b for b in brains.pool_summary()}
+    unknown = [b for b in bl if b not in pool]
+    if unknown:
+        raise AgentError(f"密钥池中没有这些大脑：{', '.join(unknown)}")
+    no_key = [b for b in bl if not pool[b]["has_key"]]
+    if no_key:
+        raise AgentError(f"这些大脑没配 api_key（etc/brains.toml）：{', '.join(no_key)}")
+
+
 def create_agent(name: str, mission: str, brain_list: list[str], *,
                  expose: bool = False, port: int | None = None,
                  budgets: dict | None = None, note: str = "",
@@ -257,15 +273,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
             f"当前节点 role={cfg.node_role} 不允许注册 agent（仅 worker 角色可；"
             f"backup/portal 节点专用于备份与门户聚合）"
         )
-    pool = {b["name"]: b for b in brains.pool_summary()}
-    unknown = [b for b in brain_list if b not in pool]
-    if unknown:
-        raise AgentError(f"密钥池中没有这些大脑：{', '.join(unknown)}")
-    no_key = [b for b in brain_list if not pool[b]["has_key"]]
-    if no_key:
-        raise AgentError(f"这些大脑没配 api_key（etc/brains.toml）：{', '.join(no_key)}")
-    if not brain_list:
-        raise AgentError("至少选择一家大脑")
+    _validate_brains(brain_list)
     src_ver = _resolve_source_choice((source_version or "").strip())
 
     agent_id = gen_id(name)
@@ -289,29 +297,13 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
         "tokens": [],
     }
     try:
-        # 0) 选了版本：版本仓库 → 实例私有源码副本（各实例隔离，互不影响）
-        if src_ver:
-            versions.extract(src_ver, home / versions.SRC_DIR_NAME)
-        # 1) init：建 home/data、workspace，播种 playbook 经验库与全部能力包种子
-        #    （v2 公开 CLI，播种无条件幂等；版本化实例用它自己的源码副本跑）。
-        #    不传 --capability：不写 [capabilities]、不触发 extras 预装——
-        #    启用与否、依赖安装归大脑
-        _run_cli(["--home", str(home), "init", "--mission", mission, "--force"],
-                 timeout=300, agent=rec)
-        # 1b) 播种对外接口 playbook（workspace/EXTERNAL-API.md：管理面反代约定，
-        #     agent 据此自建对外服务可获得正式外部入口；纯被动文档，已存在不动）
-        services.seed_playbook(home / "workspace")
-        # 2) 渲染 config.toml（含所选大脑与 key，600）。内核/大脑写入的段
-        #    （如 [capabilities]）保真回传——墟司只重渲染自己认识的段
-        brains.write_agent_config(home, mission, brain_list, rec["budgets"])
-        # 3) 注册（期望态 running）
+        _init_workspace(rec, src_ver)
+        # 注册（期望态 running）
         registry.add_agent(rec)
-        # 4) systemd 拉起（Restart=always 掉线保护）
-        _spawn_unit(rec)
-        # 5) 健康验收
-        wait_health(port, agent_id)
-        # 6) 签发首个观察台 token（代理注入 + 用户取用）
-        tok, label = _mint_token(agent_id, "xusi-proxy")
+        # systemd 拉起（Restart=always 掉线保护）+ 健康验收
+        _spawn_and_verify(rec)
+        # 签发首个观察台 token（代理注入 + 用户取用）
+        _mint_token(agent_id, "xusi-proxy")
     except Exception as e:
         _rollback_create(unit, home, agent_id)
         raise AgentError(f"创建失败已回滚：{e}") from e
@@ -320,6 +312,37 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
           expose=expose, brains=brain_list, source=src_ver or "main",
           source_defaulted=not (source_version or "").strip())
     return get_agent_or_404(agent_id)
+
+
+def _init_workspace(rec: dict, src_ver: str) -> None:
+    """在 agent 被注册/拉起之前，把它的 home 准备到位：
+
+    - 选了版本：从版本仓库解压到实例私有源码副本
+    - 调 xuseek CLI init 建 home/data + workspace + 播种能力包种子
+    - 播种对外接口 playbook（agent 据此可注册自建服务拿外部入口）
+    - 渲染 config.toml（含所选大脑与 key）
+
+    失败抛 AgentError，由 create_agent 的统一 try/except 回滚（home 仍可能存在，
+    rollback 把它挪进 .trash）。"""
+    home = _home(rec)
+    if src_ver:
+        versions.extract(src_ver, home / versions.SRC_DIR_NAME)
+    # init：建 home/data、workspace，播种 playbook 经验库与全部能力包种子
+    # （v2 公开 CLI，播种无条件幂等；版本化实例用它自己的源码副本跑）。
+    # 不传 --capability：不写 [capabilities]、不触发 extras 预装——
+    # 启用与否、依赖安装归大脑
+    _run_cli(["--home", str(home), "init", "--mission", rec["mission"], "--force"],
+             timeout=300, agent=rec)
+    services.seed_playbook(home / "workspace")
+    # 渲染 config.toml（含所选大脑与 key，600）。内核/大脑写入的段
+    # （如 [capabilities]）保真回传——墟司只重渲染自己认识的段
+    brains.write_agent_config(home, rec["mission"], rec["brains"], rec["budgets"])
+
+
+def _spawn_and_verify(rec: dict) -> None:
+    """systemd 拉起 + 健康验收。失败抛 AgentError。"""
+    _spawn_unit(rec)
+    wait_health(rec["port"], rec["id"])
 
 
 def _rollback_create(unit: str, home: Path, agent_id: str) -> None:
@@ -354,14 +377,10 @@ def get_agent_or_404(agent_id: str) -> dict:
 
 def start(agent_id: str) -> dict:
     agent = get_agent_or_404(agent_id)
-    unit = _unit(agent)
-    state = systemdctl.unit_state(unit)
-    if state != "active":
+    if systemdctl.unit_state(_unit(agent)) != "active":
         _spawn_unit(agent)
         wait_health(agent["port"], agent_id)
-    registry.update_agent(agent_id, {"desired_state": "running"})
-    audit("agent.start", agent=agent_id)
-    return {"id": agent_id, "desired_state": "running"}
+    return _finalize(agent_id, "running", "start")
 
 
 def stop(agent_id: str) -> dict:
@@ -379,9 +398,7 @@ def stop(agent_id: str) -> dict:
         # 单元已消失（曾经 stop 过）视为成功
         if systemdctl.unit_state(_unit(agent)) != "not-found":
             raise AgentError(str(e))
-    registry.update_agent(agent_id, {"desired_state": "stopped"})
-    audit("agent.stop", agent=agent_id)
-    return {"id": agent_id, "desired_state": "stopped"}
+    return _finalize(agent_id, "stopped", "stop")
 
 
 def pause(agent_id: str) -> dict:
@@ -391,9 +408,7 @@ def pause(agent_id: str) -> dict:
     if systemdctl.unit_state(unit) != "active":
         raise AgentError("agent 未在运行，无法暂停（先 start）")
     systemdctl.kill_signal(unit, "SIGSTOP")
-    registry.update_agent(agent_id, {"desired_state": "paused"})
-    audit("agent.pause", agent=agent_id)
-    return {"id": agent_id, "desired_state": "paused"}
+    return _finalize(agent_id, "paused", "pause")
 
 
 def resume(agent_id: str) -> dict:
@@ -402,24 +417,27 @@ def resume(agent_id: str) -> dict:
     if systemdctl.unit_state(unit) != "active":
         raise AgentError("agent 未在运行（先 start）")
     systemdctl.kill_signal(unit, "SIGCONT")
-    registry.update_agent(agent_id, {"desired_state": "running"})
-    audit("agent.resume", agent=agent_id)
-    return {"id": agent_id, "desired_state": "running"}
+    return _finalize(agent_id, "running", "resume")
 
 
 def restart(agent_id: str) -> dict:
     """优雅重启：SIGTERM 落盘 → 重新拉起 → 健康验收。"""
     agent = get_agent_or_404(agent_id)
-    unit = _unit(agent)
-    state = systemdctl.unit_state(unit)
-    if state == "active":
-        systemdctl.restart(unit)
+    if systemdctl.unit_state(_unit(agent)) == "active":
+        systemdctl.restart(_unit(agent))
     else:
         _spawn_unit(agent)
     wait_health(agent["port"], agent_id)
-    registry.update_agent(agent_id, {"desired_state": "running"})
-    audit("agent.restart", agent=agent_id)
-    return {"id": agent_id, "desired_state": "running"}
+    return _finalize(agent_id, "running", "restart")
+
+
+def _finalize(agent_id: str, desired: str, action: str) -> dict:
+    """生命周期动作收尾：写 desired_state → 审计 → 返回统一形态。
+
+    5 个 start/stop/pause/resume/restart 共用——成功路径必以这一行收尾。"""
+    registry.update_agent(agent_id, {"desired_state": desired})
+    audit(f"agent.{action}", agent=agent_id)
+    return {"id": agent_id, "desired_state": desired}
 
 
 def delete(agent_id: str) -> dict:
@@ -462,16 +480,8 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     need_restart = False
 
     if "brains" in changes:
-        pool = {b["name"]: b for b in brains.pool_summary()}
         bl = list(changes["brains"])
-        if not bl:
-            raise AgentError("至少选择一家大脑")
-        unknown = [b for b in bl if b not in pool]
-        if unknown:
-            raise AgentError(f"密钥池中没有这些大脑：{', '.join(unknown)}")
-        no_key = [b for b in bl if not pool[b]["has_key"]]
-        if no_key:
-            raise AgentError(f"这些大脑没配 api_key：{', '.join(no_key)}")
+        _validate_brains(bl)
         hot["brains"] = bl
     if "mission" in changes:
         m = str(changes["mission"]).strip()
@@ -528,7 +538,6 @@ def _respawn(agent: dict) -> None:
 def status(agent_id: str) -> dict:
     """状态聚合：systemd 单元 + /v1/health + /v1/status。全程只读 GET。"""
     agent = get_agent_or_404(agent_id)
-    unit = _unit(agent)
     out: dict[str, Any] = {
         "id": agent["id"],
         "name": agent["name"],
@@ -546,23 +555,33 @@ def status(agent_id: str) -> dict:
         "tokens_count": len(read_agent_tokens(agent)),
         "fetched_at": _iso(),
     }
-    brief = systemdctl.unit_brief(unit)
-    out["process"] = brief
-    if brief["active"] != "active":
-        out["health"] = {"ok": False, "note": f"单元 {brief['active']}"}
+    out["process"] = systemdctl.unit_brief(_unit(agent))
+    if out["process"]["active"] != "active":
+        out["health"] = {"ok": False, "note": f"单元 {out['process']['active']}"}
         return out
+    out["health"] = _probe_health(agent)
+    if not out["health"]["ok"]:
+        return out
+    out["agent_status"] = _probe_agent_status(agent)
+    return out
+
+
+def _probe_health(agent: dict) -> dict:
+    """/v1/health 单次探——公开端点，不带 token。失败给 note 字段便于前端区分。"""
     try:
-        h = httpx.get(f"http://127.0.0.1:{agent['port']}/v1/health", timeout=2.5)
-        out["health"] = {"ok": h.status_code == 200}
+        r = httpx.get(f"http://127.0.0.1:{agent['port']}/v1/health", timeout=2.5)
+        return {"ok": r.status_code == 200}
     except Exception as e:
-        out["health"] = {"ok": False, "note": type(e).__name__}
-        return out
+        return {"ok": False, "note": type(e).__name__}
+
+
+def _probe_agent_status(agent: dict) -> dict:
+    """/v1/status 取 agent 自报——带 token。"""
     try:
         r = _get(agent, "/v1/status", timeout=4.0)
-        out["agent_status"] = r.json() if r.status_code == 200 else {"error": f"HTTP {r.status_code}"}
+        return r.json() if r.status_code == 200 else {"error": f"HTTP {r.status_code}"}
     except Exception as e:
-        out["agent_status"] = {"error": type(e).__name__}
-    return out
+        return {"error": type(e).__name__}
 
 
 def observe(agent_id: str, what: str, limit: int = 50) -> Any:
@@ -613,11 +632,10 @@ def mail(agent_id: str, text: str) -> dict:
         raise AgentError("实例目录不存在")
     msg = {"id": uuid.uuid4().hex[:12], "sender": "admin", "text": text, "at": _iso()}
     line = json.dumps(msg, ensure_ascii=False) + "\n"
-    for name in ("mailbox.jsonl", "mailbox_log.jsonl"):
-        p = home / "data" / name
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("a", encoding="utf-8") as f:
-            f.write(line)
+    p = home / "data" / "mailbox.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(line)
     audit("agent.mail", agent=agent_id, chars=len(text))
     return {"posted": True, "id": msg["id"], "at": msg["at"]}
 
