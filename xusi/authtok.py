@@ -193,8 +193,8 @@ def verify(token: str) -> dict | None:
 
     校验路径：
     1. JWT（dot 数 == 2）：用 cluster_secret 验签 + 检查 exp + kpr=xusi。
-       tokens.json 里可能残留老 cluster-mode 自动签发的 JWT，verify 仍接受——
-       保证 secret 轮换之外的升级不影响用户体验。
+       用户层签发的都是 PLAIN（参见 `new_token`），这条路径只为兼容历史 tokens.json
+       里的 JWT 残留保留；verify 仍接受。
     2. PLAIN（任何 dot 数 < 2 的输入）：tokens.json 里等值比较（防时序侧信道）。
 
     集群（cluster_secret 非空）模式下 JWT 输入**只走 JWT 路径**——失败直接 None，
