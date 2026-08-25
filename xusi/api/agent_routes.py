@@ -11,11 +11,6 @@
 `forward_to_peer`——caller 的 Authorization 头原样透传，peer 端用同一
 `[cluster].secret` verify 后由该 peer 自己执行 agentops.*。两端同密钥即
 同集群，admin 自动通配。
-
-local 写完成后调 `proxy.invalidate_cache(agent_id)`——让本机 locality 缓存
-即时刷掉"agent 在哪 / 状态如何"（虽然本机刚动过，但 target.kind 早已在
-resolve 时落缓存；保持一致即可）。remote 写无需本机额外操作——peer 端会
-自己清自己的缓存，caller 这边下次 resolve 会 fan-out 重新拉到。
 """
 import asyncio
 
@@ -99,9 +94,8 @@ async def api_agent_patch(request: Request, req: PatchAgentReq, apply_restart: b
         raise HTTPException(400, "请求体里没有任何要修改的字段")
     target, _rec = pair
     if target.kind == "local":
-        out = agentops.patch_agent(target.agent["id"], changes, apply_restart=apply_restart)
-        proxy.invalidate_cache(target.agent["id"])
-        return JSONResponse(out)
+        return JSONResponse(agentops.patch_agent(
+            target.agent["id"], changes, apply_restart=apply_restart))
     return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
@@ -110,9 +104,7 @@ async def api_agent_delete(request: Request,
                            pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
     target, _rec = pair
     if target.kind == "local":
-        out = agentops.delete(target.agent["id"])
-        proxy.invalidate_cache(target.agent["id"])
-        return JSONResponse(out)
+        return JSONResponse(agentops.delete(target.agent["id"]))
     return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
@@ -132,9 +124,7 @@ def _make_lifecycle_handler(action: str):
                  pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
         target, _rec = pair
         if target.kind == "local":
-            out = _lifecycle(target.agent["id"], action)
-            proxy.invalidate_cache(target.agent["id"])
-            return JSONResponse(out)
+            return JSONResponse(_lifecycle(target.agent["id"], action))
         return await proxy.forward_to_peer(target.peer, request, request.url.path)
     _h.__name__ = f"api_agent_{action}"
     return _h

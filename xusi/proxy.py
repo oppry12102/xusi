@@ -337,15 +337,6 @@ def resolve(agent_id: str, request: Request | None = None) -> AgentTarget | None
     return target
 
 
-def invalidate_cache(agent_id: str | None = None) -> None:
-    """lifecycle 写操作完成后清缓存（Phase 2 v1 不触发，但 v2 写路径需要）。"""
-    with _loc_lock:
-        if agent_id is None:
-            _loc_cache.clear()
-        else:
-            _loc_cache.pop(agent_id, None)
-
-
 def _put_cache(agent_id: str, target: AgentTarget | None) -> None:
     with _loc_lock:
         _loc_cache[agent_id] = (time.monotonic(), target)

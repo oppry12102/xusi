@@ -83,10 +83,7 @@ async def require_agent_or_remote_admin(
     保证只有 admin 才能进。语义上：
     - 本地命中 → local 走 agentops.*；peer 端也验同一 cluster_secret
     - 远端命中 → caller Authorization 头原样透传，peer 端再 verify 同一
-      cluster_secret（两端同一密钥即同集群，admin 自动通配）
-
-    写完成后调用方应 `proxy.invalidate_cache(agent_id)`——让本机 locality
-    缓存即时刷掉远端 agent 状态变化（避免 UI 看到 30s 内的陈旧数据）。"""
+      cluster_secret（两端同一密钥即同集群，admin 自动通配）"""
     from .. import proxy
     target = proxy.resolve(agent_id, request=request)
     if target is None:
