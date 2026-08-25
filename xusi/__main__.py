@@ -2,8 +2,8 @@
 
     python -m xusi serve                 # 前台跑管理面（调试用；常驻走 install）
     python -m xusi install               # 建 venv → 装 systemd 用户服务 → 启动
+    python -m xusi init                  # 首次安装 / 新节点加入集群（写 [cluster].secret）
     python -m xusi uninstall             # 停止并移除管理面服务（不动 agent 数据）
-    python -m xusi token new/list/revoke # 管理面 token
     python -m xusi status                # 全部 agent 一览
     python -m xusi doctor                # 环境自检
 """
@@ -13,12 +13,13 @@ import argparse
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
 
-from . import __version__, authtok, peers
+from . import __version__, peers
 from .config import ROOT, get_config
 
 DEPS = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "httpx[socks]>=0.27"]
@@ -110,13 +111,22 @@ def cmd_install(args) -> int:
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", "--now", "xusi.service"], check=True)
 
-    # 首个 admin token（仅此处打印一次；etc/tokens.json 可随时读回）
-    if not authtok.list_tokens():
-        rec = authtok.new_token("admin")
+    # 首次安装：生成 [cluster].secret（管理面 admin token + 集群互信共用）。
+    # 同 secret 的所有 xusi 同集群——admin 凭一把 token 可登任何节点。
+    # 已存在则不动（重跑 install 不轮换）。
+    if not cfg.cluster_secret:
+        secret = secrets.token_urlsafe(32)
+        toml_path = cfg.root / "etc" / "xusi.toml"
+        from . import _bootstrap_migrate as _bm
+        _bm._write_secret(toml_path, secret)
+        cfg.cluster_secret = secret
         print("\n════════════════════════════════════════════════════")
         print(f"  管理面 admin token（仅显示一次，请保存）：\n")
-        print(f"    {rec['token']}\n")
-        print(f"  WebUI:  http://127.0.0.1:{get_config().port}/")
+        print(f"    {secret}\n")
+        print(f"  集群模式：把同一 secret 写入其它 xusi 的 etc/xusi.toml")
+        print(f"           的 [cluster].secret（先 `xusi status` 拿值，")
+        print(f"           另一台跑 `xusi init --cluster-secret <值>`）即可组集群。")
+        print(f"  WebUI:  http://127.0.0.1:{cfg.port}/")
         print("════════════════════════════════════════════════════")
     subprocess.run(["systemctl", "--user", "status", "xusi.service",
                     "--no-pager", "-l"], check=False)
@@ -145,28 +155,29 @@ def cmd_serve(args) -> int:
     uvicorn.run("xusi.api:app", host=host, port=port, log_level=args.log_level)
 
 
-# ── token ────────────────────────────────────────────────────────────
+# ── init（写 / 轮换 [cluster].secret）──────────────────────────────────
 
-def cmd_token(args) -> int:
-    if args.cmd == "new":
-        rec = authtok.new_token(args.label, rotate=args.rotate)
-        print(rec["token"])
-        rotate_note = "（rotate：旧 PLAIN 已废）" if args.rotate else ""
-        print(f"# label: {rec['label']}  role: {rec['role']}  agents: {rec['agents']}{rotate_note}",
-              file=sys.stderr)
-    elif args.cmd == "list":
-        rows = authtok.list_tokens()
-        if not rows:
-            print("(尚无管理面 token)")
-            return 0
-        for t in rows:
-            is_jwt = authtok.is_jwt(t["token"])
-            tag = "  [jwt, 历史残留]" if is_jwt else ""
-            print(f"{t['created_at']}  {t['label']:20}  {t['role']:6}  "
-                  f"agents={','.join(t['agents'])}  {t['token']}{tag}")
-    elif args.cmd == "revoke":
-        n = authtok.revoke_token(args.prefix)
-        print(f"已撤销 {n} 个管理面 token")
+def cmd_init(args) -> int:
+    """首次安装 / 新节点加入集群 / 轮换 admin token。
+
+    集群互信 = 两端 [cluster].secret 同值。新 xusi 加入已有集群：
+        1) A: xusi status                # 拿现有 secret
+        2) B: xusi init --cluster-secret <A的secret>
+        3) A / B: xusi peer add <对端 URL>
+    """
+    cfg = get_config()
+    toml_path = cfg.root / "etc" / "xusi.toml"
+    if cfg.cluster_secret and not getattr(args, "rotate", False):
+        print(f"[cluster].secret 已存在：{cfg.cluster_secret[:8]}..."
+              "（如要轮换，加 --rotate）")
+        return 0
+    secret = getattr(args, "secret", None) or secrets.token_urlsafe(32)
+    from . import _bootstrap_migrate as _bm
+    if not _bm._write_secret(toml_path, secret):
+        print(f"error: 无法写 {toml_path}", file=sys.stderr)
+        return 1
+    print(f"[cluster].secret 已写入 {toml_path}")
+    print(f"admin token: {secret}")
     return 0
 
 
@@ -265,7 +276,8 @@ def cmd_doctor(_args) -> int:
           or ports.port_free(cfg.port))
     check("agent 端口段有富余", len(ports.available_ports(5)) >= 5,
           f"可用示例 {ports.available_ports(5)}")
-    check("管理面 token 已初始化", bool(authtok.list_tokens()))
+    check("管理面 token 已初始化", bool(get_config().cluster_secret),
+          "[cluster].secret 缺失——`xusi init` 生成，或在 etc/xusi.toml 手填")
     # agent 自建服务清单：坏条目不致命（逐级降级），只报数
     from . import registry, services
     n_svc = n_err = 0
@@ -413,18 +425,12 @@ def main() -> int:
     sub.add_parser("status", help="agent 一览").set_defaults(fn=cmd_status)
     sub.add_parser("doctor", help="环境自检").set_defaults(fn=cmd_doctor)
 
-    t = sub.add_parser("token", help="管理面 token")
-    ts = t.add_subparsers(dest="cmd", required=True)
-    tn = ts.add_parser("new", help="签发（仅显示一次）")
-    tn.add_argument("label", nargs="?", default="")
-    tn.add_argument("--rotate", action="store_true",
-                    help="签发前先 revoke 既有所有 PLAIN——用户层始终只看见一把 active")
-    tn.set_defaults(fn=cmd_token)
-    tl = ts.add_parser("list", help="列出")
-    tl.set_defaults(fn=cmd_token)
-    tr = ts.add_parser("revoke", help="按前缀撤销")
-    tr.add_argument("prefix")
-    tr.set_defaults(fn=cmd_token)
+    init_ = sub.add_parser("init", help="生成 / 同步 [cluster].secret（admin token + 集群互信）")
+    init_.add_argument("--cluster-secret", dest="secret", default=None,
+                       help="同步已有集群的 secret；缺省 = 本机生成新的")
+    init_.add_argument("--rotate", action="store_true",
+                       help="已有 secret 时强制轮换（重新生成）")
+    init_.set_defaults(fn=cmd_init)
 
     bp_ = sub.add_parser("backup", help="备份 agent 的 data + workspace（仅 sleeping 可）")
     bp_.add_argument("agent_id", nargs="?", default="")
