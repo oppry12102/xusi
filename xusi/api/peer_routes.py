@@ -84,8 +84,7 @@ def api_peers_open(peer_id: str,
 
 @router.post("/api/peers/probe")
 def api_peers_probe_all(_rec: dict = Depends(require_admin)) -> dict:
-    """强制清 5s 探活缓存 + 立即全员重探；前端手动刷新按钮用。"""
-    peers.clear_probe_cache()
+    """立即全员重探；前端手动刷新按钮用。"""
     rows = peers.list_peers()
     out = []
     for p in rows:

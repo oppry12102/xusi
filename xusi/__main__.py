@@ -366,12 +366,11 @@ def cmd_restore(args) -> int:
 # ── peers（Phase 2 集群名册） ──────────────────────────────────────
 
 def cmd_peers_probe(_args) -> int:
-    peers.clear_probe_cache()
     rows = peers.list_peers()
     if not rows:
         print("(尚未注册 peer)")
         return 0
-    print(f"==> 已清缓存，开始重探 {len(rows)} 个 peer")
+    print(f"==> 重探 {len(rows)} 个 peer")
     return 0
 
 

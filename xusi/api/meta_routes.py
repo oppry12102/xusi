@@ -65,7 +65,7 @@ def api_cluster(_rec: dict = Depends(require_auth)) -> dict:
     for p in peers.list_peers():
         if p["id"] == me["id"]:
             continue  # 排除自递归
-        r = peers.probe_peer(p)  # 5s TTL 缓存；前端 5s 轮询不会打爆 peer
+        r = peers.probe_peer(p)  # 实时探活；前端 15s 轮询无穿透压力
         entry: dict = {"id": p["id"], "name": p.get("name", ""),
                        "url": p["url"], "ok": r["ok"]}
         if r.get("latency_ms") is not None:

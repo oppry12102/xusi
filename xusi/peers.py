@@ -1,8 +1,9 @@
-"""peer 名册：etc/peers.toml 持久化 + 探活缓存。
+"""peer 名册：etc/peers.toml 持久化 + 实时探活。
 
 加 peer = 探活拿 id 写 toml；列 peer = 读 toml；探活 = hit
-{peer.url}/api/peer/id（不鉴权，握手用），5s TTL 缓存避免前端轮询
-打爆 peer。
+{peer.url}/api/peer/id（不鉴权，握手用）。前端 refresh 周期 15s，频率
+远低于 5s 缓存能省穿透的边界——探活直接打，不缓存。peer 挂掉立刻反映；
+起来也立刻看见。
 
 集群互信 = 两端 `[cluster].secret` 一致。admin 拿同一把 token 即可
 登任何一台——跨节点转发也只是把 `Authorization: Bearer <secret>` 透传给
@@ -18,7 +19,6 @@ HTTPException——上层（api.py）按上下文决定码（404/400/502）。
 """
 from __future__ import annotations
 
-import threading
 import time
 from pathlib import Path
 
@@ -35,12 +35,6 @@ class PeerUnreachable(Exception):
 class PeerRefused(Exception):
     """本地拒绝——cluster_secret 未设（无集群模式）、url 格式坏、id 重名等
     不是网络问题。"""
-
-
-_PROBE_TTL = 5.0  # 探活缓存秒数；前端轮询通常 5s，不会穿透
-
-_probe_cache: dict[str, tuple[float, dict]] = {}
-_probe_lock = threading.Lock()
 
 
 def is_cluster() -> bool:
@@ -136,8 +130,6 @@ def add_peer(url: str, name: str = "") -> dict:
            "name": (name or info["info"].get("name", "")).strip()}
     data["peers"].append(rec)
     _save(data)
-    with _probe_lock:
-        _probe_cache.pop(pid, None)
     return rec
 
 
@@ -148,8 +140,6 @@ def remove_peer(peer_id: str) -> bool:
     if len(data["peers"]) == before:
         return False
     _save(data)
-    with _probe_lock:
-        _probe_cache.pop(peer_id, None)
     return True
 
 
@@ -174,20 +164,6 @@ def _probe_url(url: str) -> dict:
 
 
 def probe_peer(peer: dict) -> dict:
-    """peer 记录（带 id）的探活——5s TTL 缓存。"""
-    pid = peer["id"]
-    now = time.monotonic()
-    with _probe_lock:
-        cached = _probe_cache.get(pid)
-        if cached and (now - cached[0]) < _PROBE_TTL:
-            return cached[1]
-    result = _probe_url(peer["url"])
-    with _probe_lock:
-        _probe_cache[pid] = (now, result)
-    return result
-
-
-def clear_probe_cache() -> None:
-    """CLI 强制重探时清缓存。"""
-    with _probe_lock:
-        _probe_cache.clear()
+    """peer 记录（带 id）的实时探活——不缓存：前端 15s 轮询无穿透压力，
+    不缓存换来挂/起立刻反映。"""
+    return _probe_url(peer["url"])
