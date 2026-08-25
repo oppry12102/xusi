@@ -1,15 +1,16 @@
 """鉴权依赖：每个路由模块按需 import。
 
-四档：
-- require_auth           仅管理面 token（admin 或 user）
-- require_admin          必须是 admin
-- require_agent          必须是 admin OR 该 agent 范围内的 user
-- require_agent_or_remote 同上但允许 agent 在 peer 上（返回 AgentTarget）
-- _rec_of                软版本（不抛 401），用于 /px 等需要容错的端点
+五档：
+- require_auth                仅管理面 token（admin 或 user）
+- require_admin               必须是 admin
+- require_admin_or_invitation  admin token 或邀请 JWT（redeem 专用）
+- require_agent               必须是 admin OR 该 agent 范围内的 user
+- require_agent_or_remote     同上但允许 agent 在 peer 上（返回 AgentTarget）
+- _rec_of                     软版本（不抛 401），用于 /px 等需要容错的端点
 """
 from fastapi import Depends, HTTPException, Request
 
-from .. import authtok, registry
+from .. import authtok, peers, registry
 
 
 def require_auth(request: Request) -> dict:
@@ -30,6 +31,28 @@ def require_admin(rec: dict = Depends(require_auth)) -> dict:
     if rec["role"] != "admin":
         raise HTTPException(403, "此操作需要 admin token")
     return rec
+
+
+async def require_admin_or_invitation(request: Request) -> dict:
+    """redeem 端点专用：接受 admin token 或邀请 JWT。
+
+    邀请 JWT 用 cluster_secret 签名、内嵌 cluster_secret——本身就是集群成员资格
+    证明；bootstrap 脚本只能凭它调 redeem，没法要求新机器再持一份 admin token。
+    返回 rec["role"] 是 "admin"（普通流程）或 "invitation"（bootstrap 流程）。"""
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(401, "需要 admin token 或有效的邀请 token")
+    tok = auth[7:].strip()
+    if not tok:
+        raise HTTPException(401, "需要 admin token 或有效的邀请 token")
+    rec = authtok.verify(tok)
+    if rec and rec["role"] == "admin":
+        return rec
+    if authtok.is_jwt(tok):
+        payload = peers.verify_invitation(tok)
+        if payload and payload.get("kind") == "invitation":
+            return {"role": "invitation", "invitation": payload, "token": tok}
+    raise HTTPException(401, "需要 admin token 或有效的邀请 token")
 
 
 def require_agent(agent_id: str, rec: dict = Depends(require_auth)) -> tuple[dict, dict]:

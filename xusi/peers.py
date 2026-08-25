@@ -217,6 +217,16 @@ def _sign(payload: dict, secret: str) -> str:
     return f"{h}.{p}.{_b64u(sig)}"
 
 
+def verify_invitation(token: str) -> dict | None:
+    """公开版：验签邀请 JWT，返回 payload 或 None。
+    redeem 端点用它取代 admin token（邀请 JWT 内嵌 cluster_secret，本身就是
+    集群成员资格证明；bootstrap 脚本没法再要求调用方持 admin token）。"""
+    cfg = get_config()
+    if not cfg.cluster_secret:
+        return None
+    return _verify(token, cfg.cluster_secret)
+
+
 def _verify(token: str, secret: str) -> dict | None:
     parts = token.split(".")
     if len(parts) != 3:

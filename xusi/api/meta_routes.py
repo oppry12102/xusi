@@ -56,8 +56,9 @@ def api_cluster(_rec: dict = Depends(require_auth)) -> dict:
     单节点模式（cluster_secret 未设）：peers 永远空，不探活。
     排除自己——peer 列表来自共享 toml，集群模式下自己的 id 可能在里头。"""
     me = node.info()
-    out = {"self": me, "peers": []}
-    if not peers.is_cluster():
+    cluster_on = peers.is_cluster()
+    out = {"self": me, "cluster": cluster_on, "peers": []}
+    if not cluster_on:
         return out
     for p in peers.list_peers():
         if p["id"] == me["id"]:

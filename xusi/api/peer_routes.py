@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
 from .. import peers
-from .auth import require_admin, require_auth
+from .auth import require_admin, require_admin_or_invitation, require_auth
 from .models import AddPeerReq, IssueInvitationReq, RedeemInvitationReq
 
 router = APIRouter()
@@ -85,8 +85,10 @@ def api_peers_invite(req: IssueInvitationReq,
 
 @router.post("/api/peers/invitations/redeem")
 def api_peers_redeem(req: RedeemInvitationReq,
-                     _rec: dict = Depends(require_admin)) -> dict:
-    """新机器装好后调用：消费 sid + 注册到本机 peer 名册。"""
+                     rec: dict = Depends(require_admin_or_invitation)) -> dict:
+    """新机器装好后调用：消费 sid + 注册到本机 peer 名册。
+    鉴权：admin token（手动重试）或邀请 JWT（bootstrap 脚本——凭 cluster_secret
+    签名就是集群成员资格证明）。"""
     return peers.redeem_invitation(req.token, req.url)
 
 
@@ -186,7 +188,11 @@ say "安装 systemd 用户服务并启动 xusi"
 
 # ── 6. 自动回链：本机认识 issuer ─────────────────────────
 say "注册对端 $ISSUER 到本机 peer 名册"
-.venv/bin/python -m xusi peers add "$ISSUER" || say "  (peers add 失败也无妨——后续可手动加)"
+if .venv/bin/python -m xusi peers add "$ISSUER" 2>&1 | sed 's/^/  /'; then
+  say "✓ 本机已认识 issuer"
+else
+  say "⚠ peers add 失败——后续可手动跑: .venv/bin/python -m xusi peers add $ISSUER"
+fi
 
 # ── 7. 让 issuer 认识本机 ───────────────────────────────
 # 探测本机公网 URL：优先 ifconfig.me，回落本机首个非环回 IP
@@ -204,15 +210,29 @@ HTTP_CODE=$(curl -fsS -o /tmp/xusi-redeem.json -w '%{http_code}' \
   -X POST "$ISSUER/api/peers/invitations/redeem" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d "{\"token\":\"$TOKEN\",\"url\":\"$SELF_URL\"}" || echo "000")
+  -d "{\"token\":\"$TOKEN\",\"url\":\"$SELF_URL\"}" 2>/dev/null || echo "000")
 
 if [[ "$HTTP_CODE" =~ ^2 ]]; then
   say "✓ issuer 已把本机加入 peer 名册"
   cat /tmp/xusi-redeem.json
   echo
+elif [[ "$HTTP_CODE" == "401" || "$HTTP_CODE" == "403" ]]; then
+  say "✗ redeem 被拒（HTTP $HTTP_CODE）：token 已过期（5 分钟）或无效。"
+  say "  解决：在 issuer 上重新生成一行命令（Tab 1 → 生成一行命令），重跑整段"
+elif [[ "$HTTP_CODE" == "400" ]]; then
+  # 已被消费 / url 已存在 / 其他本地拒绝
+  say "ℹ redeem 拒绝（HTTP $HTTP_CODE）："
+  cat /tmp/xusi-redeem.json 2>/dev/null | sed 's/^/    /'
+  echo
+elif [[ "$HTTP_CODE" == "502" || "$HTTP_CODE" == "000" ]]; then
+  say "✗ 调不到 issuer（HTTP $HTTP_CODE）——网络/防火墙问题。"
+  say "  解决：确认 $ISSUER 从本机可达（curl -I $ISSUER/api/health）"
+  say "  然后手动在 issuer 上跑：.venv/bin/python -m xusi peers add $SELF_URL"
 else
-  say "✗ redeem 失败（HTTP $HTTP_CODE）——issuer 端没把本机加入名册；可手动在 issuer 上跑："
-  say "    .venv/bin/python -m xusi peers add $SELF_URL"
+  say "✗ redeem 失败（HTTP $HTTP_CODE）："
+  cat /tmp/xusi-redeem.json 2>/dev/null | sed 's/^/    /'
+  echo
+  say "  可手动在 issuer 上跑：.venv/bin/python -m xusi peers add $SELF_URL"
 fi
 
 say
