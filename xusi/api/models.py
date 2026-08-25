@@ -37,6 +37,11 @@ class TokenNewReq(BaseModel):
     label: str = ""
 
 
+class ApiTokenNewReq(BaseModel):
+    """反代入口凭证签发（api token）：admin-only；明文只在本次响应里返回一次。"""
+    label: str = Field("", max_length=64, description="给人看的备注（哪个服务/客户端在用）")
+
+
 class BackupReq(BaseModel):
     reason: str = Field("manual", description="备份原因（manual/pre-modify/...）；写进 meta")
 

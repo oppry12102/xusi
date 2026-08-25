@@ -127,6 +127,15 @@ def run() -> None:
     if not tokens_path.exists():
         return  # 无老文件，no-op
 
+    # 新约定（api tokens）：etc/tokens.json 是对象 {"tokens": [...]}——这是
+    # 反代入口凭证的事实源，**不要碰**。老迁移只针对"顶层是 list"的旧格式。
+    try:
+        peek = json.loads(tokens_path.read_text(encoding="utf-8"))
+    except Exception:
+        peek = None
+    if isinstance(peek, dict) and isinstance(peek.get("tokens"), list):
+        return
+
     toml_path = cfg.root / "etc" / "xusi.toml"
 
     # 已迁过：同伴 .migrated.* / .deprecated.* 存在 → 跳过（防重启重复打日志）

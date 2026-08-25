@@ -22,24 +22,70 @@ python3 -m xusi doctor       # 环境自检
 给外部用户/App 的接入方式见 [`docs/api.md`](docs/api.md)（也在线提供：`GET /api/docs.md`）。
 小型实验任务的现成 mission 见 [`docs/mission-examples.md`](docs/mission-examples.md)。
 
-## 单凭证设计
+## 凭证设计（三档独立）
 
-**整个管理面只有一种凭证：`[cluster].secret`**（`etc/xusi.toml` 里）。任何
-`cluster_secret` 持有人都是 admin —— 路由只做存在性校验，不做 scope 校验。
+管理面用三档凭证，**互不相通、各管各的**——任何一档泄露都只炸自己这一档
+的爆炸半径：
+
+| 凭证 | 文件 / 位置 | 谁签发 | 用途 |
+|---|---|---|---|
+| **admin token** | `etc/xusi.toml` 的 `[cluster].secret` | `xusi install` / `xusi init` | 管理面全权（任何 `/api/*` 端点 + 反代入口） |
+| **api token** | `etc/tokens.json`（明文不落盘，存 sha256） | `POST /api/tokens`（admin） | **只**进反代入口（`/px /svc /v1 /ui`），给外部反代服务用 |
+| **agent webui token** | `instances/<id>/data/webui_tokens.json` | agent CLI（`xuseek token new`） | 仅该 agent 的 `/v1 /ui /px` |
+
+**admin token** 与 **api token** 的关键边界：
+
+- admin token → 任何 `/api/*` 端点（写操作只有它能进）+ 反代入口
+- api token → **只**进 `/px /svc /v1 /ui`；**任何 `/api/*` 都拒**（含
+  `GET /api/tokens` 自己）；不能让外部服务借它篡改管理面
+- agent webui token → 跟具体 agent 绑死，不能跨 agent
+
+**admin token 不出现在外部世界**。手机 App / 外部服务 / 浏览器扩展永远只
+拿 api token，反代走 `/px` `/svc` `/v1` `/ui` 即可——他们压根不知道有
+admin token 存在。
 
 集群内所有 xusi 配同一个 `cluster_secret` 即互相视为同一集群：
 
 - 本机拿 secret → 任何 agent 的读/写、PATCH/DELETE/lifecycle 全通
 - 远端 agent → 同一 secret 在 peer 端 `verify()` 也通过 → 自动通配
 
-**没有 JWT、没有 invitation、没有 `tokens.json`**。从老版本升上来的 `tokens.json`
-会在首次启动时被一次性迁移：把第一条 PLAIN admin token 接管成 `cluster_secret`，
-然后把 `tokens.json` 改名 `.migrated.YYYY-MM-DD-HHMMSS`；同一台机器上任何持有
-该老 token 的客户端自动升级为 admin。**跨节点升级必须一刀切** —— 老 token 在
-新节点上不再被认可。
+api token 不跨节点同步（每节点一份 `tokens.json`，外部服务绑定到具体入口）。
+要跨节点请在每台各签发一次。
+
+**没有 JWT、没有 invitation**。`etc/tokens.json` 在 2026-08-25 起重启用，
+**新 schema**（对象含 `tokens` 数组，存 hash）。老格式（顶层 list 含 admin
+token）启动时一次性迁移：把第一条 PLAIN admin token 接管成 `cluster_secret`，
+老文件改名 `.migrated.*`——这条迁移在新格式落盘后**自动跳过**（migration
+run 看见顶层是对象就 no-op）。
 
 新建 xusi：`python3 -m xusi init --secret <secret>` 把已有集群的 secret 同步进
 `etc/xusi.toml` 即可加入。
+
+### api token 速查
+
+```bash
+# 签发（admin token 鉴权）
+curl -X POST http://xusi:8601/api/tokens \
+     -H "Authorization: Bearer <admin token>" \
+     -H "Content-Type: application/json" \
+     -d '{"label": "voidhub-bridge"}'
+# → {"id":"tk_xxx","hash":"sha256:...","label":"...","created_at":"...","token":"<明文，只此一次>"}
+```
+
+```bash
+# 列出（不含 hash / 明文）
+curl http://xusi:8601/api/tokens -H "Authorization: Bearer <admin token>"
+
+# 吊销
+curl -X DELETE http://xusi:8601/api/tokens/tk_xxx -H "Authorization: Bearer <admin token>"
+```
+
+外部服务拿到 api token 后用它调任一反代入口：
+```bash
+curl http://xusi:8601/svc -H "Authorization: Bearer <api token>"
+curl http://xusi:8601/px/<agent-id>/v1/health -H "Authorization: Bearer <api token>"
+curl 'http://xusi:8601/v1/health?token=<api token>'
+```
 
 ## 集群 / peer 名册
 
@@ -104,6 +150,7 @@ xusi/
 │   └── webui/           单文件管理页
 ├── etc/
 │   ├── xusi.toml        监听/端口段/源码路径 + [cluster].secret（admin token）
+│   ├── tokens.json      反代入口凭证（api token，存 hash；admin 签发/吊销）
 │   ├── brains.toml      主密钥池（管理员维护；600，模板见 brains.toml.example）
 │   ├── agents.json      注册表（agent 档案 + 期望态 + token 记录）
 │   ├── peers.toml       peer 名册（[[peers]]，两边各管自己的）

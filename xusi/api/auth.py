@@ -1,8 +1,11 @@
 """鉴权依赖：每个路由模块按需 import。
 
-系统只剩一种凭证：`[cluster].secret`。任何 `verify(token) == rec` 的请求
-持有人都是 admin——`require_auth` / `require_admin` 是同一档依赖（保留两个
-名字是给路由签名做语义占位，admin-only 路由用 `require_admin` 一眼可读）。
+管理面写端点只看一种凭证：`[cluster].secret`。任何 `verify(token) == rec`
+的请求持有人都是 admin——`require_auth` / `require_admin` 是同一档依赖（保留
+两个名字是给路由签名做语义占位，admin-only 路由用 `require_admin` 一眼可读）。
+
+**api token（反代入口凭证）不能进任何 `/api/*` 端点**——它只走 `/px /svc /v1 /ui`，
+由 proxy_routes._svc_px_auth 单独鉴权，不复用本文件的依赖家族。
 
 依赖家族：
 - require_auth                    仅 verify（读端点用）

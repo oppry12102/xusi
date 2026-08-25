@@ -1,11 +1,18 @@
 """管理面凭证：`etc/xusi.toml` 的 `[cluster].secret` 就是 admin token。
 
-整个系统只有这一种凭证。同 secret 的所有 xusi 互信：admin 拿这把 token
-登任何一台都能访问所有资源；跨节点转发也只是把 Authorization 头原样透传
-过去，peer 端用同样的常时间比对接收。`tokens.json` / JWT / invitation 整套
-已删除——过去的 7 类凭证 / 3 套 JWT 体系 / invitation bootstrap 全部归零。
-agent 观察台 token 仍由 agent 自己管（webui_tokens.json），那是 agent
-自家的事，跟管理面凭证无关。"""
+同 secret 的所有 xusi 互信：admin 拿这把 token 登任何一台都能访问所有资源；
+跨节点转发也只是把 Authorization 头原样透传过去，peer 端用同样的常时间比对
+接收。
+
+三档凭证完全隔离、各管各的：
+- `[cluster].secret`（admin token）——管理面全权（写端点只认它）；
+- 反代入口 api token（`etc/tokens.json`，见 apitokens.py）——admin 签发、
+  吊销，**只**进 `/px /svc /v1 /ui` 反代入口，`/api/*` 一律不认；
+- 该 agent 自己的 `webui_tokens.json`——仅该 agent 的 `/v1 /ui /px`。
+
+agent 观察台 token 由 agent 自己管，那是 agent 自家的事，跟管理面凭证无关。
+过去的 7 类凭证 / 3 套 JWT 体系 / invitation bootstrap 已全部归零。
+"""
 from __future__ import annotations
 
 import hmac

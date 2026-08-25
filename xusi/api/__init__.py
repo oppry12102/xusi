@@ -32,6 +32,7 @@ from .peer_routes import router as peer_router
 from .agent_routes import router as agent_router
 from .backup_routes import router as backup_router
 from .proxy_routes import router as proxy_router
+from .token_routes import router as token_router
 
 
 def _json_str(s: str) -> str:
@@ -129,4 +130,5 @@ app.include_router(meta_router)
 app.include_router(peer_router)
 app.include_router(agent_router)
 app.include_router(backup_router)
+app.include_router(token_router)
 app.include_router(proxy_router)

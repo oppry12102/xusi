@@ -10,12 +10,23 @@
 
 ---
 
-## 1. 鉴权：两层 token
+## 1. 鉴权：三档 token
 
 | 层 | 用途 | 形态 | 获取 |
 |---|---|---|---|
-| **管理面 token** | 调用 `/api/*`、`/px/{id}/*` | `Authorization: Bearer <token>` 或 `?mtoken=<token>`（浏览器用，会进访问日志，勿外发） | 管理员在服务器签发（见 §8） |
-| **agent 观察台 token** | 访问某个 agent 的观察台（`/v1/*`、`/ui/*`） | `Authorization: Bearer <token>` 或 `?token=<token>` | `GET /api/agents/{id}/tokens`（经管理面认证后获取） |
+| **管理面 token**（admin） | 任何 `/api/*` + 反代入口 | `Authorization: Bearer <token>` 或 `?mtoken=<token>`（浏览器用，会进访问日志，勿外发） | 管理员在服务器签发（见 §8） |
+| **api token** | **只**进 `/px /svc /v1 /ui`（反代入口），**任何 `/api/*` 都拒** | 同上（Bearer / `?mtoken=` / `?token=`） | `POST /api/tokens`（admin 签发，明文只返一次） |
+| **agent 观察台 token** | 仅该 agent 的 `/v1 /ui /px` | `Authorization: Bearer <token>` 或 `?token=<token>` | `GET /api/agents/{id}/tokens`（经管理面认证后获取） |
+
+三档凭证**互不相通**：
+
+- admin token 走任何端点（管理面 + 反代）——唯一能调 `/api/*` 写端点
+- api token 只能进反代入口——**不能**调 `GET /api/tokens` 自己，更不能调 `DELETE`
+- agent webui token 仅对所属 agent 的 `/v1 /ui /px` 有效
+
+**为什么分出 api token**：admin token 太重要（管理员私用），不应暴露给外部
+反代服务（手机 App / 第三方客户端 / 浏览器扩展）。把这些外部场景搬到 api token
+后，admin token 完全留在 admin 世界，泄露面收窄到管理面本身。详见 §3.6。
 
 管理面 token **统一为 admin**：全权（创建/删除/改参/启停/签发 token）。
 
@@ -25,10 +36,12 @@
 
 ```http
 HTTP/1.1 401 Unauthorized
-{"detail": "missing or invalid manager token"}
+{"detail": "missing or invalid token..."}
 ```
 
 管理面 token 通过后一律放行——不再有 403 Forbidden（用户场景已删除）。
+api token 通过也放行（仅限反代入口）；不带 / 无效在反代入口 → 401，
+在 `/api/*` → 一律 401（连 401 都跟 admin token 走同一条，不会暴露路由存在性）。
 
 ---
 
@@ -37,11 +50,11 @@ HTTP/1.1 401 Unauthorized
 | 路径 | 鉴权 | 说明 |
 |---|---|---|
 | `/api/health` | 无 | 管理面探活 |
-| `/api/*` | 管理面 token | 管理 API（§3–§6） |
-| `/px/{agent-id}/*` | 管理面 token | 前缀反代到该 agent（§7.1，自动注入 agent token） |
-| `/svc` | 管理面 token 或 agent 观察台 token | agent 自建服务**发现**（§7.3.1） |
-| `/svc/{agent-id}/{服务名}/*` | 管理面 token 或 agent 观察台 token | agent 自建服务**全功能反代**（§7.3） |
-| `/v1/*`、`/ui/*` | agent 观察台 token | token 路由反代（§7.2，App 直连形态） |
+| `/api/*` | **仅**管理面 token | 管理 API（§3–§6） |
+| `/px/{agent-id}/*` | 管理面 token / api token / agent 观察台 token | 前缀反代到该 agent（§7.1） |
+| `/svc` | 管理面 token / api token / agent 观察台 token | agent 自建服务**发现**（§7.3.1） |
+| `/svc/{agent-id}/{服务名}/*` | 管理面 token / api token / agent 观察台 token | agent 自建服务**全功能反代**（§7.3） |
+| `/v1/*`、`/ui/*` | 管理面 token / api token / agent 观察台 token | token 路由反代（§7.2，App 直连形态） |
 | `/` | 可 `?mtoken=<管理面token>` 直达 | WebUI 管理页（URL 带 token 打开即认证并存本浏览器，地址栏参数自动清除） |
 | `/docs`、`/api/openapi.json` | 无 | Swagger / OpenAPI |
 | `/api/docs.md` | 无 | 本文档 |
@@ -70,6 +83,43 @@ curl -s -H "Authorization: Bearer $T" http://SERVER:8601/api/versions
 curl -s -H "Authorization: Bearer $T" "http://SERVER:8601/api/ports/available?count=5"
 # {"range":[8602,8699],"ports":[8602,8603,8604,8605,8606]}
 ```
+
+---
+
+## 3b. api token 管理（admin-only）
+
+反代入口凭证：admin 签发、admin 吊销，存 sha256（明文只在签发响应里出现一次）。
+**api token 只能进 `/px /svc /v1 /ui`，调任何 `/api/*` 一律 401**——保护 admin
+token 不外泄给外部反代服务。详见 §1（鉴权）和 §10（安全说明）。
+
+```bash
+# 签发：admin 鉴权，label 可选（不传 = 空字符串）
+curl -s -X POST -H "Authorization: Bearer $ADMIN" -H "Content-Type: application/json" \
+     -d '{"label":"voidhub-bridge"}' \
+     http://SERVER:8601/api/tokens
+# → 201 {"id":"tk_xxxxxx","hash":"sha256:...","label":"voidhub-bridge",
+#       "created_at":"2026-08-25T07:47:56Z","token":"<明文，只此一次>"}
+
+# 列出：脱敏（id/label/created_at），不含 hash / 明文
+curl -s -H "Authorization: Bearer $ADMIN" http://SERVER:8601/api/tokens
+# → [{"id":"tk_xxxxxx","label":"voidhub-bridge","created_at":"..."}]
+
+# 吊销
+curl -s -X DELETE -H "Authorization: Bearer $ADMIN" http://SERVER:8601/api/tokens/tk_xxxxxx
+# → {"revoked":"tk_xxxxxx"}
+```
+
+拿到 api token 后用它调任一反代入口（与 admin token 同形）：
+
+```bash
+curl -s -H "Authorization: Bearer $API" http://SERVER:8601/svc
+curl -s -H "Authorization: Bearer $API" http://SERVER:8601/px/<agent-id>/v1/health
+curl -s "http://SERVER:8601/v1/health?token=$API"
+```
+
+**集群语义**：api token 不跨节点同步（每节点一份 `etc/tokens.json`，外部服务
+绑定到具体入口）。跨节点时在每台各签发一次。审计落 `etc/audit.jsonl` 的
+`token.new` / `token.revoke` 事件。
 
 ---
 
@@ -541,11 +591,12 @@ cd /home/htao/work/xusi
 ## 10. 安全说明
 
 - 管理面监听 `0.0.0.0:8601`，是**唯一**需要放行的对外端口；agent 默认仅 `127.0.0.1`，自建服务也建议仅 `127.0.0.1`。
-- token 明文存于服务器上 600 权限文件（`etc/tokens.json` / 各 agent `data/webui_tokens.json`），管理员可随时读回、撤销即时生效。
+- 三档凭证互不相通：admin token（`[cluster].secret`）管 `/api/*` + 反代入口；api token（`etc/tokens.json`，存 sha256）**只**进反代入口 `/px /svc /v1 /ui`，调 `/api/*` 一律 401；agent webui token 仅该 agent 有效。外部反代服务（手机 App / 第三方客户端）只拿 api token，admin token 永不外泄。
+- api token 的明文仅签发响应里出现一次，文件存 hash（sha256）；600 权限。吊销即时生效（删记录即拒）。
 - LLM api_key 由管理面代持（`etc/brains.toml`，600），签发给用户的 token 只授予观察台权限，接触不到 key。
 - `/svc` 反代里客户端的 `Authorization` 绝不透传给 agent 自建服务（声明 `token_file` 则服务端替换注入，否则删除）。
-- `?mtoken=`（管理面）与 `?token=`（观察台）会进访问日志，仅建议浏览器一次性使用；脚本/App 一律用 Bearer 头。
-- 管理操作全量审计：`etc/audit.jsonl`（谁、何时、对哪个 agent、做了什么）；`/svc` 对 agent 服务的写调用同样入审计（`svc.write`）。
+- `?mtoken=`（管理面 / api token）与 `?token=`（观察台 / api token）会进访问日志，仅建议浏览器一次性使用；脚本/App 一律用 Bearer 头。
+- 管理操作全量审计：`etc/audit.jsonl`（谁、何时、对哪个 agent、做了什么，含 `token.new` / `token.revoke`）；`/svc` 对 agent 服务的写调用同样入审计（`svc.write`）。
 
 ---
 
