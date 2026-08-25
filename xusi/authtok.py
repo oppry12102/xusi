@@ -162,6 +162,24 @@ def revoke_token(prefix: str) -> int:
     return before - len(data["tokens"])
 
 
+def prune_legacy_jwt() -> int:
+    """清掉 tokens.json 里的 JWT 残留——新约定下用户层只该看见 PLAIN。
+
+    历史 cluster 自动签发的 JWT 是 xusi 内部事务（跨节点转发时现场由 PLAIN 包
+    装，不再预先签发），保留在文件里只会让 list 输出带 [jwt, 历史残留] 标迷惑
+    用户。secret 轮换后它们也已自然失效（_jwt_verify 签名错返 None），没清理
+    也无害，但清掉更干净。
+
+    返回被清掉的条数。"""
+    data = _load()
+    before = len(data["tokens"])
+    data["tokens"] = [t for t in data["tokens"] if t["token"].count(".") != 2]
+    n = before - len(data["tokens"])
+    if n:
+        _save(data)
+    return n
+
+
 def sign_jwt_for(rec: dict, *, ttl_seconds: int = 300) -> str | None:
     """当场签短期 JWT，**仅 xusi 内部使用**（跨节点转发时给 peer 验签）。
 
