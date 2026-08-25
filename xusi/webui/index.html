@@ -652,6 +652,8 @@ function openNodeDialog() {
     acts.appendChild(b);
   }
   $("#btn-peer-add").hidden = !(meAdmin && tok && nodeCluster.cluster);
+  // 打开时重渲一次 peer 行——保证 meAdmin 变化（如刚登 admin）后删按钮就出现
+  if (nodeCluster && nodeCluster.peers) renderPeerList(nodeCluster.peers);
   document.getElementById("dlg-node").showModal();
 }
 
@@ -804,6 +806,9 @@ async function refresh(first = false) {
     $("#login-tip").hidden = true;
     agentsCache = list;
     renderCards(list);
+    // meAdmin 改变后重渲 peer 行——「删」按钮 admin-only；startup 时 meAdmin=false
+    // 首次渲染的 HTML 没按钮，登录后才补
+    if (nodeCluster && nodeCluster.peers) renderPeerList(nodeCluster.peers);
     if (first) console.log("ok");
   } catch (e) { if (String(e.message) !== "401") $("#summary").textContent = "⚠ " + e.message; }
 }
