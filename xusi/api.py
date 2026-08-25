@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, agentops, authtok, backup, brains, capabilities, node, peers, ports, proxy, registry, services, versions, xproxy
+from . import __version__, agentops, authtok, backup, brains, capabilities, node, peers, ports, proxy, registry, services, versions
 from .config import get_config
 from .systemdctl import SystemdError
 
@@ -141,17 +141,17 @@ async def require_agent_or_remote(
     request: Request,
     agent_id: str,
     rec: dict = Depends(require_auth),
-) -> tuple["xproxy.AgentTarget", dict]:
+) -> tuple["proxy.AgentTarget", dict]:
     """Phase 2 跨节点读端点的鉴权依赖：
     - 作用域检查先于 locality 查询（不泄露远端 agent 的存在性）
     - 本地命中：kind="local"（pair[0].agent == registry 记录）
     - 远端命中：kind="remote"（pair[0].peer == peer 记录；proxy 时由
-      xproxy.forward_to_peer 透传 caller JWT 到 peer，peer 端重验 + 重 enforce 作用域）
+      proxy.forward_to_peer 透传 caller JWT 到 peer，peer 端重验 + 重 enforce 作用域）
     - 全 miss → 404
     """
     if not authtok.can_access(rec, agent_id):
         raise HTTPException(403, f"token 无权访问 agent {agent_id}")
-    target = xproxy.resolve(agent_id, rec=rec)
+    target = proxy.resolve(agent_id, rec=rec)
     if target is None:
         raise HTTPException(404, f"agent 不存在: {agent_id}")
     return target, rec
@@ -397,15 +397,15 @@ async def api_agents_list(rec: dict = Depends(require_auth),
                 try:
                     # 给 peer 传 local_only=1：peer 也只返回自己的 local，
                     # 不再 fan-in 它自己的 peers——这是双边注册能 work 的关键。
-                    r = await xproxy.fetch_json(p, "/api/agents?local_only=1",
+                    r = await proxy.fetch_json(p, "/api/agents?local_only=1",
                                                 rec, timeout=5)
                     for row in r:
                         if isinstance(row, dict):
                             row["_via"] = p["id"]
                     return [row for row in r if isinstance(row, dict)]
-                except xproxy.PeerUnreachable:
+                except proxy.PeerUnreachable:
                     return []  # 单 peer 挂掉让 list 降级而非 502
-                except xproxy.PeerHttpError:
+                except proxy.PeerHttpError:
                     return []
             results = await asyncio.gather(*[_one(p) for p in pls])
             for r in results:
@@ -415,7 +415,7 @@ async def api_agents_list(rec: dict = Depends(require_auth),
     return [r for r in rows if authtok.can_access(rec, r["id"])]
 
 
-async def _agent_or_proxy(target: "xproxy.AgentTarget", request: Request,
+async def _agent_or_proxy(target: "proxy.AgentTarget", request: Request,
                           local_handler, rec: dict) -> Response:
     """agent-scoped 读端点统一调度：local 直接调 handler；remote 转发到 peer。
     local_handler 必须接受 (agent_id, ...) 并返回 JSON-serializable dict。
@@ -424,7 +424,7 @@ async def _agent_or_proxy(target: "xproxy.AgentTarget", request: Request,
         return JSONResponse(local_handler(target.agent["id"]))
     # remote：透传同 path 到 peer
     sub = request.url.path  # /api/agents/{id} 或 /api/agents/{id}/...
-    return await xproxy.forward_to_peer(target.peer, request, sub, rec=rec)
+    return await proxy.forward_to_peer(target.peer, request, sub, rec=rec)
 
 
 @app.post("/api/agents", status_code=201)
@@ -445,7 +445,7 @@ async def api_agent_capabilities(request: Request,
     target, rec = pair
     if target.kind == "local":
         return JSONResponse(capabilities.list_for_agent(target.agent))
-    return await xproxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
+    return await proxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
 
 
 @app.get("/api/agents/{agent_id}")
@@ -454,7 +454,7 @@ async def api_agent_get(request: Request,
     target, rec = pair
     if target.kind == "local":
         return JSONResponse(agentops.status(target.agent["id"]))
-    return await xproxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
+    return await proxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
 
 
 @app.patch("/api/agents/{agent_id}")
@@ -503,7 +503,7 @@ async def api_services_list(request: Request, probe: bool = True,
     target, rec = pair
     if target.kind == "local":
         return JSONResponse(services.list_services(target.agent, probe=probe))
-    return await xproxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
+    return await proxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
 
 
 # ── 观察（只读）与投信 ───────────────────────────────────────────────
@@ -518,7 +518,7 @@ def _mk_observe(what: str):
             return JSONResponse({"id": target.agent["id"], "what": what,
                                  "data": agentops.observe(target.agent["id"], what, limit)})
         # 远程：把 ?limit= 一并透传，peer 端 handler 自己解析
-        return await xproxy.forward_to_peer(target.peer, request,
+        return await proxy.forward_to_peer(target.peer, request,
                                             request.url.path, rec=rec)
     _h.__name__ = f"api_agent_observe_{what}"
     return app.get(f"/api/agents/{{agent_id}}/{what}")(_h)
@@ -550,7 +550,7 @@ async def api_agent_backups_list(request: Request, with_meta: bool = False,
         if with_meta:
             return JSONResponse(backup.list_with_meta(agent_id=target.agent["id"]))
         return JSONResponse(backup.list_backups(agent_id=target.agent["id"]))
-    return await xproxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
+    return await proxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
 
 
 @app.get("/api/backups")
@@ -668,7 +668,7 @@ async def api_tokens_list(request: Request,
     target, rec = pair
     if target.kind == "local":
         return JSONResponse(agentops.tokens_list(target.agent["id"]))
-    return await xproxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
+    return await proxy.forward_to_peer(target.peer, request, request.url.path, rec=rec)
 
 
 @app.post("/api/agents/{agent_id}/tokens", status_code=201)
@@ -717,14 +717,14 @@ async def px(request: Request, agent_id: str, sub_path: str = "") -> Response:
     （递归）。观察台面板 JS 的 fetch 只带 `Authorization: Bearer <该 agent 的观察台 token>`
     ——这种 token 我们本地 verify 一定返 None，必须整段转给 peer 让它验（peer 有自己的
     agent tokens.json 命中）。"""
-    target = xproxy.resolve(agent_id, rec=_rec_of(request))
+    target = proxy.resolve(agent_id, rec=_rec_of(request))
     if target is None:
         raise HTTPException(404, f"agent 不存在: {agent_id}")
     if target.kind == "local":
         # 本机：观察台 token 走 `_svc_px_auth` 的备用路径（Bearer = 观察台 token 也行）
         _svc_px_auth(request, target.agent)
         return await proxy.prefix_proxy(request, agent_id, sub_path)
-    # 远端：_rec_of 拿到的是 caller 的本机验证 rec——PLAIN 时用它走 _bearer_headers
+    # 远端：_rec_of 拿到的是 caller 的本机验证 rec——PLAIN 时用它走 bearer_headers
     # 包装成 JWT 给 peer（peer 端 tokens.json 里没 caller 的 PLAIN）；观察台 token
     # 时 rec=None（peer 才有该 agent 的观察台 token），整段 Authorization / mtoken
     # 原样透传，peer 端 _svc_px_auth 自己验。
@@ -736,7 +736,7 @@ async def _forward_passthrough(peer: dict, request: Request, target_path: str,
                                rec: dict | None = None) -> Response:
     """远端 /px/{id}/... 的专用转发。
 
-    与 xproxy.forward_to_peer 的区别：forward_to_peer 走 _bearer_headers 重新
+    与 proxy.forward_to_peer 的区别：forward_to_peer 走 bearer_headers 重新
     构造 Authorization——caller 的 PLAIN（明文 legacy）也会被当场包装成 JWT。
     /px 这边同样需要包装：peer 端 tokens.json 里没有 caller PLAIN，直接透传
     → peer verify 返 None → 401。包装的 claims 来自 rec（=本机 verify 结果），
@@ -756,12 +756,12 @@ async def _forward_passthrough(peer: dict, request: Request, target_path: str,
     import httpx
     from fastapi.responses import StreamingResponse
     from starlette.background import BackgroundTask
-    from . import proxy as _proxy, xproxy as _xproxy
+    from . import proxy as _proxy
     url = f"{peer['url'].rstrip('/')}{target_path}"
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _proxy._HOP_HEADERS}
     if rec is not None:
         # 用包装/透传后的 Authorization 覆盖 caller 原 header（如果有的话）
-        headers.update(_xproxy._bearer_headers(rec))
+        headers.update(proxy.bearer_headers(rec))
     # query 整段透传：peer 端 require_auth / _svc_px_auth 自己读 mtoken + token。
     params = dict(request.query_params)
     body = await request.body()
