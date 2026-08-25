@@ -1,21 +1,36 @@
-"""备份 / 恢复路由。"""
+"""备份 / 恢复路由。
+
+- POST /api/agents/{id}/backup  支持远端 forward（peer 端用同一 cluster_secret
+  verify 后由 peer 自己 backup.snapshot，落到 peer 自己的 etc/backups/）
+- POST /api/restore  永远本地（写本机 instances/，与远端无关）
+- GET  /api/agents/{id}/backups  支持远端 forward
+- GET  /api/backups  本机备份清单（admin-only，与 peer 无关——peer 自己的
+  备份清单去 peer 的 WebUI 看）
+"""
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from .. import backup, proxy
-from .auth import require_admin, require_agent, require_agent_or_remote
+from .auth import require_admin, require_agent_or_remote, require_agent_or_remote_admin
 from .models import BackupReq, RestoreReq
 
 router = APIRouter()
 
 
 @router.post("/api/agents/{agent_id}/backup", status_code=201)
-def api_agent_backup(req: BackupReq, pair: tuple = Depends(require_agent),
-                     _rec: dict = Depends(require_admin)) -> dict:
-    """备份到 backend（默认 LocalBackend：etc/backups/）。前置：sleeping + grace。"""
-    return backup.snapshot(pair[0]["id"], reason=req.reason)
+async def api_agent_backup(request: Request, req: BackupReq,
+                           pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
+    """备份到 backend（默认 LocalBackend：etc/backups/）。前置：sleeping + grace。
+
+    远端 agent 走 forward——peer 端自己 snapshot，落 peer 自己的 etc/backups/。
+    想拉远端备份到本机：先在 peer 端备份，再用 peer 的 /api/backups/{key} 拉
+    tar.gz 流回本机——备份内容走的是路径，不走身份。"""
+    target, _rec = pair
+    if target.kind == "local":
+        return JSONResponse(backup.snapshot(target.agent["id"], reason=req.reason))
+    return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
 @router.get("/api/agents/{agent_id}/backups")

@@ -5,6 +5,17 @@
 - 生命周期：5 个 POST /api/agents/{id}/{action}
 - 观察（只读 GET，跨节点 fan-in）：status / events / sessions / messages / outbox / logs
 - capabilities / services / mail / tokens 列表
+
+写端点（PATCH / DELETE / 5 lifecycle / mail / tokens new+revoke）走
+`require_agent_or_remote_admin`：local 命中走 agentops.*；remote 命中走
+`forward_to_peer`——caller 的 Authorization 头原样透传，peer 端用同一
+`[cluster].secret` verify 后由该 peer 自己执行 agentops.*。两端同密钥即
+同集群，admin 自动通配。
+
+local 写完成后调 `proxy.invalidate_cache(agent_id)`——让本机 locality 缓存
+即时刷掉"agent 在哪 / 状态如何"（虽然本机刚动过，但 target.kind 早已在
+resolve 时落缓存；保持一致即可）。remote 写无需本机额外操作——peer 端会
+自己清自己的缓存，caller 这边下次 resolve 会 fan-out 重新拉到。
 """
 import asyncio
 
@@ -12,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from .. import agentops, capabilities, node, peers, proxy, services
-from .auth import require_admin, require_agent, require_agent_or_remote
+from .auth import require_admin, require_agent_or_remote, require_agent_or_remote_admin
 from .models import CreateAgentReq, MailReq, PatchAgentReq, TokenNewReq
 
 router = APIRouter()
@@ -62,6 +73,8 @@ async def api_agents_list(request: Request, local_only: bool = False) -> list[di
 
 @router.post("/api/agents", status_code=201)
 def api_agents_create(req: CreateAgentReq, _rec: dict = Depends(require_admin)) -> dict:
+    """新建 agent 总是落在本机（远端 peer 的注册表由 peer 自己管）——admin
+    想在 peer B 上建 agent 要先登 B 的 WebUI。"""
     return agentops.create_agent(
         req.name, req.mission, req.brains, expose=req.expose, port=req.port,
         budgets=req.budgets, note=req.note, source_version=req.source_version)
@@ -77,19 +90,30 @@ async def api_agent_get(request: Request,
 
 
 @router.patch("/api/agents/{agent_id}")
-def api_agent_patch(req: PatchAgentReq, apply_restart: bool = False,
-                    pair: tuple = Depends(require_agent),
-                    _rec: dict = Depends(require_admin)) -> dict:
+async def api_agent_patch(request: Request, req: PatchAgentReq, apply_restart: bool = False,
+                          pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
+    """改 agent 字段。local → agentops.patch_agent；remote → forward。
+    apply_restart=1 会触发 restart（agent 重启），远端时 query 串已透传。"""
     changes = {k: v for k, v in req.model_dump().items() if v is not None}
     if not changes:
         raise HTTPException(400, "请求体里没有任何要修改的字段")
-    return agentops.patch_agent(pair[0]["id"], changes, apply_restart=apply_restart)
+    target, _rec = pair
+    if target.kind == "local":
+        out = agentops.patch_agent(target.agent["id"], changes, apply_restart=apply_restart)
+        proxy.invalidate_cache(target.agent["id"])
+        return JSONResponse(out)
+    return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
 @router.delete("/api/agents/{agent_id}")
-def api_agent_delete(pair: tuple = Depends(require_agent),
-                     _rec: dict = Depends(require_admin)) -> dict:
-    return agentops.delete(pair[0]["id"])
+async def api_agent_delete(request: Request,
+                           pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
+    target, _rec = pair
+    if target.kind == "local":
+        out = agentops.delete(target.agent["id"])
+        proxy.invalidate_cache(target.agent["id"])
+        return JSONResponse(out)
+    return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
 # ── 生命周期（5 个 POST）────────────────────────────────────────────
@@ -104,9 +128,14 @@ def _lifecycle(agent_id: str, action: str) -> dict:
 
 
 def _make_lifecycle_handler(action: str):
-    def _h(pair: tuple = Depends(require_agent),
-          _rec: dict = Depends(require_admin)) -> dict:
-        return _lifecycle(pair[0]["id"], action)
+    async def _h(request: Request,
+                 pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
+        target, _rec = pair
+        if target.kind == "local":
+            out = _lifecycle(target.agent["id"], action)
+            proxy.invalidate_cache(target.agent["id"])
+            return JSONResponse(out)
+        return await proxy.forward_to_peer(target.peer, request, request.url.path)
     _h.__name__ = f"api_agent_{action}"
     return _h
 
@@ -165,8 +194,13 @@ for _what in _OBSERVE_KINDS:
 
 
 @router.post("/api/agents/{agent_id}/mail")
-def api_agent_mail(req: MailReq, pair: tuple = Depends(require_agent)) -> dict:
-    return agentops.mail(pair[0]["id"], req.text)
+async def api_agent_mail(request: Request, req: MailReq,
+                         pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
+    """投信：admin 把一条文字塞进 agent 的 inbox。远端 agent 走 forward。"""
+    target, _rec = pair
+    if target.kind == "local":
+        return JSONResponse(agentops.mail(target.agent["id"], req.text))
+    return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
 # ── 观察台 token（agent 自家事，与管理面 cluster_secret 无关）────────────
@@ -181,12 +215,20 @@ async def api_agent_tokens_list(request: Request,
 
 
 @router.post("/api/agents/{agent_id}/tokens", status_code=201)
-def api_agent_token_new(req: TokenNewReq, pair: tuple = Depends(require_agent),
-                        _rec: dict = Depends(require_admin)) -> dict:
-    return agentops.token_new(pair[0]["id"], req.label)
+async def api_agent_token_new(request: Request, req: TokenNewReq,
+                              pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
+    """签发该 agent 自己的观察台 token。远端走 forward——peer 端自己读
+    自己的 webui_tokens.json 写新 token。"""
+    target, _rec = pair
+    if target.kind == "local":
+        return JSONResponse(agentops.token_new(target.agent["id"], req.label))
+    return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
 @router.delete("/api/agents/{agent_id}/tokens/{prefix}")
-def api_agent_token_revoke(prefix: str, pair: tuple = Depends(require_agent),
-                           _rec: dict = Depends(require_admin)) -> dict:
-    return agentops.token_revoke(pair[0]["id"], prefix)
+async def api_agent_token_revoke(request: Request, prefix: str,
+                                 pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
+    target, _rec = pair
+    if target.kind == "local":
+        return JSONResponse(agentops.token_revoke(target.agent["id"], prefix))
+    return await proxy.forward_to_peer(target.peer, request, request.url.path)
