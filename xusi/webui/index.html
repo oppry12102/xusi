@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- HTML 静态资源不缓存：避免部署新版后用户受旧 JS 影响（见 xusi-ui-bugfix-2026-08-25.md 根因 B） -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>墟司 · xuseek 智能体管理面</title>
 <style>
   :root{
@@ -718,7 +722,36 @@ function copyInstallCmd() {
   }).catch(() => { /* 复制失败：用户可手动选中 */ });
 }
 
-$("#pa-invite-go").onclick = doIssueInvitation;$("#pa-exist-go").onclick = doAddExisting;
+$("#pa-invite-go").onclick = doIssueInvitation;
+$("#pa-exist-go").onclick = doAddExisting;
+
+// Tab 2: 已有 xusi 加为 peer（补回 commit b71a618 漏掉的定义——见
+// xusi-ui-bugfix-2026-08-25.md 根因 A：onclick 引用却未定义 → 整个
+// <script> 在该行 ReferenceError 中断，后续 refresh(true) 不跑，UI 空）
+async function doAddExisting() {
+  $("#pa-exist-err").hidden = true;
+  $("#pa-exist-go").disabled = true;
+  try {
+    const url = $("#pa-exist-url").value.trim();
+    const name = $("#pa-exist-name").value.trim();
+    if (!url) {
+      $("#pa-exist-err").textContent = "URL 不能为空";
+      $("#pa-exist-err").hidden = false;
+      return;
+    }
+    const r = await api("/api/peers", {method: "POST", body: JSON.stringify({url, name})});
+    $("#pa-exist-result").innerHTML =
+      `<span style="color:var(--ok)">✓ 已注册</span> ` +
+      `<b>${esc(r.name || r.id)}</b>（${esc(r.url)}）`;
+    $("#pa-exist-result").hidden = false;
+    loadNode();   // 顺手刷新节点对话框的名册
+  } catch (e) {
+    $("#pa-exist-err").textContent = e.message;
+    $("#pa-exist-err").hidden = false;
+  } finally {
+    $("#pa-exist-go").disabled = false;
+  }
+}
 
 async function openRenameDialog() {
   $("#rename-input").value = nodeInfo?.name || "";
