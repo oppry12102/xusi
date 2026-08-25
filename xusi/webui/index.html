@@ -488,6 +488,15 @@ function logout() {
 let nodeInfo = null;     // /api/peer/id 缓存
 let nodeCluster = null;  // /api/cluster 缓存（self + peers[]）
 let peersById = {};      // peer id → peer 记录（给 _via 徽章取名用）
+
+// 远端 agent = 注册在 peer 上的（list 项里带 _via 字段）。
+// Phase 2 v2 写路径未落地——一切写按钮（生命周期/改参/投信/token/备份/删除）都要禁用，
+// 统一这条 hint 解释为什么不能点。
+const REMOTE_HINT = "远端 agent 暂不支持该操作（写路径在 Phase 2 v2）";
+function isRemoteAgent(id) {
+  const a = agentsCache.find(x => x.id === id);
+  return !!(a && a._via);
+}
 let meAdmin = false;     // 缓存：从 me.role 派生（未登录为 false）
 
 async function loadNode() {
@@ -626,20 +635,26 @@ function renderCards(list) {
     const ds = a.desired_state, run = (a.process || {}).active === "active";
     // 按钮方案（防误删 + 语义去重）：运行中只有 暂停/停止；暂停中 续跑/停止；
     // 停止态才有 启动 和 删除。重启不进界面（改参换端口时后端自动重启；脚本走 /restart）。
+    const remote = !!a._via;   // 远端 agent：所有写按钮一律 disabled（Phase 2 v2 未做）
     const acts = [];
     if (ds === "paused") {
-      acts.push(`<button onclick="act('${a.id}','resume')">▶ 续跑</button>`,
-                `<button onclick="act('${a.id}','stop')">■ 停止</button>`);
+      acts.push(remote ? `<button disabled title="${REMOTE_HINT}">▶ 续跑</button>`
+                       : `<button onclick="act('${a.id}','resume')">▶ 续跑</button>`);
+      acts.push(remote ? `<button disabled title="${REMOTE_HINT}">■ 停止</button>`
+                       : `<button onclick="act('${a.id}','stop')">■ 停止</button>`);
     } else if (run) {
-      acts.push(`<button onclick="act('${a.id}','pause')">⏸ 暂停</button>`,
-                `<button onclick="act('${a.id}','stop')">■ 停止</button>`);
+      acts.push(remote ? `<button disabled title="${REMOTE_HINT}">⏸ 暂停</button>`
+                       : `<button onclick="act('${a.id}','pause')">⏸ 暂停</button>`);
+      acts.push(remote ? `<button disabled title="${REMOTE_HINT}">■ 停止</button>`
+                       : `<button onclick="act('${a.id}','stop')">■ 停止</button>`);
     } else {
-      acts.push(`<button onclick="act('${a.id}','start')">▶ 启动</button>`);
+      acts.push(remote ? `<button disabled title="${REMOTE_HINT}">▶ 启动</button>`
+                       : `<button onclick="act('${a.id}','start')">▶ 启动</button>`);
     }
     acts.push(`<button onclick="openDetail('${a.id}')">详情</button>`);
     // ⋯ 二级菜单：备份 / 回滚 / 删除——仅 stopped 态才出现；非 stopped 态卡片根本不渲染 ⋯ 按钮
     const stopped = !run && ds !== "paused";
-    if (stopped) {
+    if (stopped && !remote) {
       const ovId = `ov-${a.id}`;
       acts.push(`<span class="ov" style="margin-left:auto">
         <button class="ov-btn" onclick="ovToggle('${a.id}', event)" title="备份 / 回滚 / 删除">⋯</button>
@@ -732,6 +747,9 @@ function brainChips(a) {
       return `<b class="chip bcur" title="当前默认大脑">${esc(b)}</b>`;
     if (me?.role !== "admin")
       return `<span class="chip">${esc(b)}</span>`;
+    if (a._via)
+      // 远端 agent：写路径在 Phase 2 v2，切大脑也走 PATCH，一并禁掉
+      return `<span class="chip" title="${REMOTE_HINT}">${esc(b)}</span>`;
     return `<span class="chip bsw" title="点击切换为默认大脑（热生效：下一口呼吸起用）"
               onclick="switchBrain('${a.id}','${esc(b)}')">${esc(b)}</span>`;
   }).join("");
@@ -740,6 +758,7 @@ function brainChips(a) {
 async function switchBrain(id, brain) {
   const a = agentsCache.find(x => x.id === id);
   if (!a) return;
+  if (a._via) { alert(REMOTE_HINT); return; }   // 兜底：UI 应已禁，绕过时也挡住
   const order = [brain, ...(a.brains || []).filter(b => b !== brain)];
   if (!confirm(`把「${a.name}」的默认大脑切换为 ${brain}？\n\n` +
       `热生效：当前会话继续用旧大脑跑完，下一口呼吸起用新配置（config.toml 已重渲染）。\n` +
@@ -751,6 +770,7 @@ async function switchBrain(id, brain) {
 }
 
 async function act(id, action) {
+  if (isRemoteAgent(id)) { alert(REMOTE_HINT); return; }   // 兜底
   if (!confirm(`确认对 ${id} 执行「${action}」？`)) return;
   try { await api(`/api/agents/${id}/${action}`, {method: "POST"}); refresh(); }
   catch (e) { alert(e.message); }
@@ -1011,7 +1031,12 @@ const TABS = ["状态", "事件", "会话", "信箱", "服务", "工具", "Token
 async function openDetail(id) {
   cur = id; curTab = "状态";
   drawer.classList.add("open");
-  $("#d-edit").hidden = me?.role !== "admin";   // 改参需要 admin（PATCH 侧同样校验）
+  // 改参需要 admin；远端 agent 写路径未落地，禁用而非隐藏（露出选项 + 给原因）
+  const editBtn = $("#d-edit");
+  const isRemote = isRemoteAgent(id);
+  editBtn.hidden = me?.role !== "admin";   // 非 admin 一律不露
+  editBtn.disabled = isRemote;
+  editBtn.title = isRemote ? REMOTE_HINT : "改参（admin）";
   $("#tabs").innerHTML = TABS.map(t => `<button data-t="${t}" onclick="switchTab('${t}')">${t}</button>`).join("");
   // 观测台链接：双 token —— mtoken 过 /px 鉴权，token 给页面自身存 localStorage
   //（页面从浏览器地址栏读 ?token=，注入必须落在 URL 上才有效）
@@ -1108,11 +1133,14 @@ async function loadDetail() {
       const [m, o] = await Promise.all([
         api(`/api/agents/${id}/messages?limit=30`), api(`/api/agents/${id}/outbox?limit=30`)]);
       if (id !== cur) return;
+      const remote = isRemoteAgent(id);
       setPane(
 `
         <h4 style="margin:4px 0 6px">投信（写入信箱文件，休眠中 5s 内唤醒）</h4>
-        <div class="sendbox"><textarea id="m-txt" placeholder="给大脑写信…"></textarea>
-          <button class="pri" onclick="sendMail('${id}')">投递</button></div>
+        ${remote
+          ? `<p class="hint" style="color:var(--sub)">${REMOTE_HINT}——来信历史与外发仍可只读查看。</p>`
+          : `<div class="sendbox"><textarea id="m-txt" placeholder="给大脑写信…"></textarea>
+          <button class="pri" onclick="sendMail('${id}')">投递</button></div>`}
         <h4 style="margin:12px 0 6px">来信历史（管理员 → 大脑）</h4>
         ${(m.data || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)}</div>${esc(x.text)}</div>`).join("") || "<p>（还没有来信——用上方表单给大脑投第一封）</p>"}
         <h4 style="margin:12px 0 6px">外发（大脑 → 管理员，send_mail）</h4>
@@ -1126,17 +1154,20 @@ async function loadDetail() {
       const ts = await api(`/api/agents/${id}/tokens`);
       if (id !== cur) return;
       const isAdmin = me?.role === "admin";
+      const remote = isRemoteAgent(id);
       setPane(
 `
         <p class="hint" style="color:var(--sub)">观察台 token = 访问该 agent 的凭证。用法：
         ① 管理面反代 <code class="mono">/px/${id}/…</code>（管理面 token 认证，无需此 token）；
         ② 直连 <code class="mono">http://&lt;IP&gt;:${location.port}</code> + 此 token（App「IP+端口+token」形态，零改动）；
         ③ 暴露外网时直连 agent 端口 + 此 token。</p>
-        ${isAdmin ? `<button class="pri" onclick="newTok('${id}')">＋ 签发新 token</button>` : ""}
+        ${remote
+          ? `<p class="hint" style="color:var(--sub)">${REMOTE_HINT}——下方仅展示已存在的 token。</p>`
+          : (isAdmin ? `<button class="pri" onclick="newTok('${id}')">＋ 签发新 token</button>` : "")}
         <div style="margin-top:10px">${ts.map(t => `<div class="tokrow">
           <code id="tk-${t.token.slice(0, 8)}">${esc(t.token)}</code>
           <span class="hint" style="color:var(--sub);font-size:12px">${esc(t.label || "")}</span>
-          ${isAdmin ? `<button class="danger" onclick="revTok('${id}','${t.token.slice(0, 10)}')">撤销</button>` : ""}
+          ${(isAdmin && !remote) ? `<button class="danger" onclick="revTok('${id}','${t.token.slice(0, 10)}')">撤销</button>` : ""}
         </div>`).join("") || "<p>（无）</p>"}</div>`
       );
     } else if (curTab === "日志") {
@@ -1148,6 +1179,7 @@ async function loadDetail() {
 }
 
 async function sendMail(id) {
+  if (isRemoteAgent(id)) { alert(REMOTE_HINT); return; }   // 兜底
   const t = $("#m-txt").value.trim(); if (!t) return;
   try { await api(`/api/agents/${id}/mail`, {method: "POST", body: JSON.stringify({text: t})});
     $("#m-txt").value = ""; loadDetail(); } catch (e) { alert(e.message); }
@@ -1253,6 +1285,7 @@ let editCur = null;   // 打开对话框时的完整档案（判断 port/expose 
 
 async function openEdit(id) {
   if (me?.role !== "admin") { alert("改参需要 admin token"); return; }
+  if (isRemoteAgent(id)) { alert(REMOTE_HINT); return; }   // 兜底
   try {
     const [s, bs] = await Promise.all([api(`/api/agents/${id}`), api("/api/brains")]);
     editCur = s;
@@ -1306,11 +1339,13 @@ async function saveEdit() {
   finally { $("#btn-edit-save").disabled = false; }
 }
 async function newTok(id) {
+  if (isRemoteAgent(id)) { alert(REMOTE_HINT); return; }   // 兜底
   const label = prompt("token 备注（label）：", "phone") || "";
   try { const r = await api(`/api/agents/${id}/tokens`, {method: "POST", body: JSON.stringify({label})});
     prompt("新 token（仅此一次完整显示）：", r.token); loadDetail(); } catch (e) { alert(e.message); }
 }
 async function revTok(id, prefix) {
+  if (isRemoteAgent(id)) { alert(REMOTE_HINT); return; }   // 兜底
   if (!confirm(`撤销 token ${prefix}…？立即生效。`)) return;
   try { await api(`/api/agents/${id}/tokens/${prefix}`, {method: "DELETE"}); loadDetail(); }
   catch (e) { alert(e.message); }
