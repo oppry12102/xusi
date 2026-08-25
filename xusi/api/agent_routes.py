@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from .. import agentops, capabilities, node, peers, proxy, services
-from .auth import require_admin, require_agent_or_remote, require_agent_or_remote_admin
+from .auth import require_admin, require_agent_or_remote, require_agent_or_remote_admin, require_auth
 from .models import CreateAgentReq, MailReq, PatchAgentReq, TokenNewReq
 
 router = APIRouter()
@@ -27,7 +27,9 @@ router = APIRouter()
 # ── CRUD ─────────────────────────────────────────────────────────────
 
 @router.get("/api/agents")
-async def api_agents_list(request: Request, local_only: bool = False) -> list[dict]:
+async def api_agents_list(request: Request,
+                          rec: dict = Depends(require_auth),
+                          local_only: bool = False) -> list[dict]:
     """agent 一览：本地 + 集群模式下 fan-in peer（每行 _via=<peer-id>）。
     单 peer 挂了不影响其他 / 本地——降级展示即可。
 
