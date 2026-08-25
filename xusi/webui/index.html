@@ -605,6 +605,14 @@ async function loadNode() {
   }
 }
 
+async function deletePeer(peerId, name) {
+  if (!confirm(`从本机 peer 名册移除「${name}」？\n只影响本机——对方仍然认识你（除非对方也删）。`)) return;
+  try {
+    await api(`/api/peers/${encodeURIComponent(peerId)}`, {method: "DELETE"});
+    await loadNode();   // 重拉并重渲染
+  } catch (e) { alert("删除失败：" + e.message); }
+}
+
 function renderPeerList(peers) {
   const el = $("#dnode-peers");
   if (!peers || !peers.length) {
@@ -620,12 +628,16 @@ function renderPeerList(peers) {
     const name = esc(p.name || p.id);
     const idShort = esc(p.id);
     const tail = p.ok ? `${p.latency_ms}ms` : esc(p.error || "不可达");
+    const delBtn = meAdmin
+      ? `<button class="danger mini" onclick="deletePeer('${idShort}', '${name}')" title="从本机 peer 名册移除">删</button>`
+      : "";
     return `<div class="peer-row">
       <span class="dot ${dot}" title="${p.ok ? "可达" : "不可达"}"></span>
       <b>${name}</b>
       <span class="mono">${idShort}</span>
       <a class="open" href="${esc(p.url)}" target="_blank" rel="noopener">打开</a>
       <span class="peer-latency">${tail}</span>
+      ${delBtn}
     </div>`;
   }).join("");
 }
