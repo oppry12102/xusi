@@ -600,7 +600,7 @@ function renderPeerList(peers) {
       <span class="dot ${dot}" title="${p.ok ? "可达" : "不可达"}"></span>
       <b>${name}</b>
       <span class="mono">${idShort}</span>
-      <a class="open" href="/api/peers/${idShort}/open" target="_blank" rel="noopener">打开</a>
+      <a class="open" href="/api/peers/${idShort}/open?mtoken=${encodeURIComponent(tok)}" target="_blank" rel="noopener">打开</a>
       <span class="peer-latency">${tail}</span>
       ${delBtn}
     </div>`;
