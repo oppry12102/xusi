@@ -236,7 +236,7 @@ def _bearer_headers(rec: dict) -> dict:
     tok = _token_of(rec)
     if not tok:
         return {}
-    if tok.count(".") == 2:
+    if authtok.is_jwt(tok):
         return {"authorization": f"Bearer {tok}"}
     wrapped = authtok.sign_jwt_for(rec)
     if wrapped:

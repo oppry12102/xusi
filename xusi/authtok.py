@@ -83,6 +83,15 @@ def _cluster_on() -> bool:
     return bool(get_config().cluster_secret)
 
 
+def is_jwt(token: str) -> bool:
+    """判断 token 是否为 JWT 形态（xxx.yyy.zzz）。仅供内部区分用——不验签。
+
+    新约定下用户层只签 PLAIN，但 tokens.json 里可能仍有老 cluster 模式自动签
+    的 JWT 残留、且 sign_jwt_for 会给 peer 现场包装 JWT——这两条路径都需要识别。
+    """
+    return token.count(".") == 2
+
+
 def _load() -> dict:
     f = get_config().tokens_file
     try:
@@ -142,7 +151,7 @@ def new_token(label: str = "", role: str = "user",
         # 仅 revoke PLAIN 形态的同 role token（JWT 是 xusi 内部事务，不动）
         data["tokens"] = [
             t for t in data["tokens"]
-            if not (t["role"] == role and t["token"].count(".") != 2)
+            if not (t["role"] == role and not is_jwt(t["token"]))
         ]
     data["tokens"].append(rec)
     _save(data)
@@ -172,7 +181,7 @@ def sign_jwt_for(rec: dict, *, ttl_seconds: int = 300) -> str | None:
     if not _cluster_on():
         return None
     tok = (rec.get("token") or "").strip()
-    if tok.count(".") == 2:
+    if is_jwt(tok):
         # 已是 JWT——透传由 forward_to_peer 直接发，不重签
         return None
     cfg = get_config()
@@ -201,7 +210,7 @@ def verify(token: str) -> dict | None:
     不让明文回退去命中 tokens.json 里旧 JWT 的同名字符串绕过 secret 轮换。"""
     if not token:
         return None
-    if token.count(".") == 2:
+    if is_jwt(token):
         if _cluster_on():
             payload = _jwt_verify(token, get_config().cluster_secret)
             if payload and payload.get("kpr") == "xusi":

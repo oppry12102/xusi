@@ -617,7 +617,7 @@ def api_tokens_list(_rec: dict = Depends(require_admin)) -> list[dict]:
        仍可 verify 通过；UI 不暴露签发/撤销入口，让管理员知道那不是用户 token。"""
     rows = []
     for t in authtok.list_tokens():
-        is_jwt = t["token"].count(".") == 2
+        is_jwt = authtok.is_jwt(t["token"])
         rows.append({
             "token": t["token"],
             "label": t["label"],

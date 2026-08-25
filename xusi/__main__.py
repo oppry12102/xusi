@@ -162,7 +162,7 @@ def cmd_token(args) -> int:
             print("(尚无管理面 token)")
             return 0
         for t in rows:
-            is_jwt = t["token"].count(".") == 2
+            is_jwt = authtok.is_jwt(t["token"])
             tag = "  [jwt, 历史残留]" if is_jwt else ""
             print(f"{t['created_at']}  {t['label']:20}  {t['role']:6}  "
                   f"agents={','.join(t['agents'])}  {t['token']}{tag}")
