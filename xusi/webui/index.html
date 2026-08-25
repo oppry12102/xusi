@@ -593,6 +593,8 @@ function renderPeerList(peers) {
     const name = esc(p.name || p.id);
     const idShort = esc(p.id);
     const tail = p.ok ? `${p.latency_ms}ms` : esc(p.error || "不可达");
+    const peerUrl = esc(p.url).replace(/\/+$/, "") + "/";
+    const openHref = `${peerUrl}?mtoken=${encodeURIComponent(tok)}`;
     const delBtn = meAdmin
       ? `<button class="danger mini" onclick="deletePeer('${idShort}', '${name}')" title="从本机 peer 名册移除">删</button>`
       : "";
@@ -600,7 +602,7 @@ function renderPeerList(peers) {
       <span class="dot ${dot}" title="${p.ok ? "可达" : "不可达"}"></span>
       <b>${name}</b>
       <span class="mono">${idShort}</span>
-      <a class="open" href="/api/peers/${idShort}/open?mtoken=${encodeURIComponent(tok)}" target="_blank" rel="noopener">打开</a>
+      <a class="open" href="${openHref}" target="_blank" rel="noopener">打开</a>
       <span class="peer-latency">${tail}</span>
       ${delBtn}
     </div>`;

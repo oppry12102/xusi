@@ -1,13 +1,15 @@
-"""peer 名册路由（Phase 2 集群）：CRUD + 强制重探 + 跨节点跳转。
+"""peer 名册路由（Phase 2 集群）：CRUD + 强制重探。
 
 加/减 peer 走标准三段：add 探活拿 id（验证两端 `[cluster].secret` 一致
 后才能互信）；remove 直接改 toml。新节点引导走 `xusi init --cluster-secret <A的secret>`
 → `xusi peer add http://B:8601`（不再用 invitation JWT / join.sh 脚本）。
-"""
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import RedirectResponse
 
-from .. import authtok, peers
+跨节点跳转走前端：peer 行「打开」直接拼 `${peer.url}/?mtoken=<tok>` 跳到
+peer——浏览器一次性到 peer，省一次本机中转 round-trip + admin token 不在
+本机 server access log 留痕。"""
+from fastapi import APIRouter, Depends, HTTPException
+
+from .. import peers
 from .auth import require_admin, require_auth
 from .models import AddPeerReq
 
@@ -16,7 +18,7 @@ router = APIRouter()
 
 @router.get("/api/peers")
 def api_peers_list(_rec: dict = Depends(require_auth)) -> dict:
-    """列出所有 peer + 探活结果（带 5s TTL）。
+    """列出所有 peer + 实时探活。
     返回 shape 与 /api/cluster.peers 相同；前端若只需要名册而非 self 也用这个。"""
     out = {"cluster": peers.is_cluster(), "peers": []}
     if not peers.is_cluster():
@@ -58,28 +60,6 @@ def api_peers_remove(peer_id: str,
     if not peers.remove_peer(peer_id):
         raise HTTPException(404, f"peer 不存在: {peer_id}")
     return {"removed": peer_id}
-
-
-@router.get("/api/peers/{peer_id}/open")
-def api_peers_open(peer_id: str,
-                   _rec: dict = Depends(require_admin)) -> RedirectResponse:
-    """「打开 peer」：重定向到 peer URL，带本机 `cluster_secret` 作为 ?mtoken=。
-
-    集群模式下两端 cluster_secret 一致 → peer 端 `verify()` 直接通过 → admin
-    自动登入。打开一次后浏览器把 mtoken 存 localStorage，后续 API 调用用它，
-    等同于「一次打开、持续可用」（直到 secret 轮换或浏览器清存储）。
-    无 cluster_secret 时退化到裸 URL 打开（peer 端只能看到登录页）。
-
-    路径：{peer_id}/open——前端节点对话框「打开」按钮直接走这里（target=_blank
-    自动跟随 302），不在 URL 留任何 token。"""
-    peer = next((p for p in peers.list_peers() if p["id"] == peer_id), None)
-    if peer is None:
-        raise HTTPException(404, f"peer 不存在: {peer_id}")
-    target = peer["url"].rstrip("/") + "/"
-    secret = authtok.cluster_secret()
-    if not secret:
-        return RedirectResponse(url=target, status_code=302)
-    return RedirectResponse(url=f"{target}?mtoken={secret}", status_code=302)
 
 
 @router.post("/api/peers/probe")
