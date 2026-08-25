@@ -73,3 +73,14 @@ class AddPeerReq(BaseModel):
     """注册一个 peer；server 会立即探活 {peer.url}/api/peer/id 拿 id。"""
     url: str = Field(min_length=1, description="peer 管理面 url（如 http://10.0.16.15:8601）")
     name: str = Field("", description="显示名（缺省用 peer 自报）")
+
+
+class IssueInvitationReq(BaseModel):
+    """签发一行引导脚本用的邀请 token（Phase 2 v1.1）。"""
+    name: str = Field("", description="建议的新节点名（写入 [node].name 与 peer.name）")
+
+
+class RedeemInvitationReq(BaseModel):
+    """新机器装好后回调：消费 token + 注册到 issuer 的 peer 名册。"""
+    token: str = Field(min_length=1, description="issue 时返回的 JWT（再次传入以确保只有持 token 者能 redeem）")
+    url: str = Field(min_length=1, description="新机器自己的公开 URL（须 issuer 端可访问）")

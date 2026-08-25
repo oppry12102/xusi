@@ -4,11 +4,20 @@
 {peer.url}/api/peer/id（不鉴权，握手用），5s TTL 缓存避免前端轮询
 打爆 peer。
 
+Phase 2 v1.1 起加**邀请 token**：dev 节点签发短期 JWT，内含 cluster_secret
++ 自身 URL + 一次性 sid；新机器一行 `curl ... | bash` 跑完自动装好 xusi、
+写入 secret、回链注册。详见 issue_invitation / redeem_invitation。
+
 fail-soft 原则：所有错误都从函数签名表达（返回 dict 含 ok/error），不抛
 HTTPException——上层（api.py）按上下文决定码（404/400/502）。
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -175,3 +184,119 @@ def clear_probe_cache() -> None:
     """CLI 强制重探时清缓存。"""
     with _probe_lock:
         _probe_cache.clear()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 邀请 token（Phase 2 v1.1：一行命令从零引导新 xusi 节点）
+# ═════════════════════════════════════════════════════════════════════
+
+_INV_TTL = 300.0   # 邀请 token 5 分钟过期——一行命令足够；过长会被偷
+_invitations: dict[str, tuple[float, dict]] = {}   # sid → (exp_ts, payload)
+_inv_lock = threading.Lock()
+
+
+def _b64u(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+
+def _b64u_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+
+def _sign(payload: dict, secret: str) -> str:
+    """HS256 签 JWT。peers 邀请 token 与 authtok 的 JWT 同算法不同上下文（这里
+    payload 是邀请信息，含 cluster_secret 一次性传给新节点）。"""
+    h = _b64u(json.dumps({"alg": "HS256", "typ": "JWT"},
+                         separators=(",", ":")).encode())
+    p = _b64u(json.dumps(payload, separators=(",", ":"),
+                        ensure_ascii=False).encode())
+    sig = hmac.new(secret.encode("utf-8"),
+                   f"{h}.{p}".encode("ascii"),
+                   hashlib.sha256).digest()
+    return f"{h}.{p}.{_b64u(sig)}"
+
+
+def _verify(token: str, secret: str) -> dict | None:
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    h, p, s = parts
+    expected = _b64u(hmac.new(secret.encode("utf-8"),
+                              f"{h}.{p}".encode("ascii"),
+                              hashlib.sha256).digest())
+    if not hmac.compare_digest(expected, s):
+        return None
+    try:
+        payload = json.loads(_b64u_decode(p).decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("kind") != "invitation":
+        return None
+    exp = payload.get("exp")
+    try:
+        if exp is None or int(time.time()) > int(exp):
+            return None
+    except (ValueError, TypeError):
+        return None
+    return payload
+
+
+def _purge_inv(now: float) -> None:
+    """惰性清过期 sid（每次访问时顺手做，O(n)；n 通常很小）。"""
+    with _inv_lock:
+        dead = [k for k, (ts, _) in _invitations.items() if ts <= now]
+        for k in dead:
+            _invitations.pop(k, None)
+
+
+def issue_invitation(suggested_name: str = "", ttl: int = 300) -> dict | None:
+    """签发一行引导用的 JWT。返回 {token, expires_at, install_cmd}；非集群模式返 None。
+
+    内嵌 cluster_secret：让新机器装好后无需手改 etc/xusi.toml。
+    sid：新机器 redeem 时凭此消费（一次性，防重放）。
+    issuer：本机 public_url——新机器回链的地址。"""
+    cfg = get_config()
+    if not cfg.cluster_secret:
+        return None
+    sid = secrets.token_urlsafe(16)
+    exp = int(time.time()) + ttl
+    payload = {
+        "kind": "invitation",
+        "sid": sid,
+        "secret": cfg.cluster_secret,
+        "issuer": cfg.public_url.rstrip("/"),
+        "name": (suggested_name or "").strip()[:64],
+        "exp": exp,
+    }
+    token = _sign(payload, cfg.cluster_secret)
+    with _inv_lock:
+        _invitations[sid] = (time.monotonic() + ttl, payload)
+    cmd = f'curl -sSL "{cfg.public_url.rstrip("/")}/api/peers/join.sh?token={token}" | bash -s'
+    return {"token": token, "expires_at": exp, "install_cmd": cmd}
+
+
+def redeem_invitation(token: str, peer_url: str) -> dict:
+    """新机器 redeem：验签 + 消费 sid + 把它加入本地 peer 名册。
+
+    失败抛 PeerRefused（验签/过期/sid 已用）；peer 不可达 → PeerUnreachable。
+    peer_url：新机器自己的公开 URL（必须从外部可访问，否则反向调不通）。"""
+    cfg = get_config()
+    if not cfg.cluster_secret:
+        raise PeerRefused("单节点模式：邀请 token 需要集群模式")
+    payload = _verify(token, cfg.cluster_secret)
+    if payload is None:
+        raise PeerRefused("邀请 token 无效或签名错误")
+    sid = payload.get("sid")
+    _purge_inv(time.monotonic())
+    with _inv_lock:
+        rec = _invitations.pop(sid, None)   # 一次性消费：pop 不存在 = 已用 / 已过期
+    if rec is None:
+        raise PeerRefused("邀请 token 已使用或已过期")
+    # 验签通过、sid 也活着 → 信任 payload 内的 issuer（= 签发者）
+    issuer = str(payload.get("issuer", "")).rstrip("/")
+    if not issuer:
+        raise PeerRefused("邀请 token 缺 issuer 字段")
+    # 注册新机器到本机的 peer 名册（走现有 add_peer，URL 格式 / 探活由它把关）
+    new_rec = add_peer(peer_url, name=payload.get("name", ""))
+    return {**new_rec, "issuer": issuer}
