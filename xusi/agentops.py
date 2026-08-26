@@ -632,10 +632,14 @@ def mail(agent_id: str, text: str) -> dict:
         raise AgentError("实例目录不存在")
     msg = {"id": uuid.uuid4().hex[:12], "sender": "admin", "text": text, "at": _iso()}
     line = json.dumps(msg, ensure_ascii=False) + "\n"
-    p = home / "data" / "mailbox.jsonl"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("a", encoding="utf-8") as f:
-        f.write(line)
+    # 与 agent mailbox.post() 同语义：mailbox.jsonl 给 daemon 收信；
+    # mailbox_log.jsonl 是观测历史（agent drain 后 pending 清空，历史保留，
+    # 详情页"来信历史"就走它读——漏写会被 agent 拿走再清掉，看起来"丢了"）
+    for name in ("mailbox.jsonl", "mailbox_log.jsonl"):
+        p = home / "data" / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(line)
     audit("agent.mail", agent=agent_id, chars=len(text))
     return {"posted": True, "id": msg["id"], "at": msg["at"]}
 

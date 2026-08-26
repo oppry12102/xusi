@@ -29,3 +29,7 @@ __pycache__/
 *.pyc
 *.tmp
 etc/backups/
+# Claude Code harness 配置（本地权限/项目记忆；每台机器独立）
+.claude/
+# 旧 token 轮换时被改名留底的废弃文件（含明文凭证，永不入库）
+etc/*.deprecated.*
