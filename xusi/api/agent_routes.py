@@ -41,7 +41,7 @@ async def api_agents_list(request: Request,
 
     request：注入用于把 `Authorization` 头透传给 peer（peer 端用同一
     cluster_secret verify 后 fan-in 返回）。"""
-    rows = list(agentops.list_status())
+    rows = await asyncio.to_thread(agentops.list_status)
     if not local_only and peers.is_cluster():
         # 排除自己——peer 列表来自共享 etc/peers.toml，集群模式下自己的 id
         # 也可能在里头（多机器各自 git pull 同一份 toml）；fan-in 到自己 = 自递归。
