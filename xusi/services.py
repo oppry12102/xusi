@@ -25,9 +25,12 @@
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
+import socket
+import struct
 import time
 from pathlib import Path
 
@@ -35,6 +38,61 @@ import httpx
 
 from .config import get_config
 from . import apitokens
+
+# 并发探测池：4 worker；单 worker 卡死最多占满自己，submit + wait(timeout=2.0)
+# 把整批请求的硬墙卡死在 2s。模块级单例：进程内复用，避免每次列表请求都建池。
+_AUTO_PROBE_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="xusi-probe")
+
+
+def _probe_alive(url: str, timeout: float = 0.8) -> tuple[bool, int | None, int | None, str | None]:
+    """socket 直连探活（避开 httpx 在「accept 后沉默」场景的死等陷阱）。
+
+    返回 (ok, status, ms, note)。注：
+      - socket.create_connection(timeout=) 只覆盖 connect 阶段，recv 必须显式
+        s.settimeout(timeout)，否则对端「accept 后不响应」会永久死等
+      - httpx 的 timeout= 在 socket 半关闭 / 对端不死等响应场景下不触发 read
+        timeout，worker 卡死在 httpcore/_sync/http11.py:_receive_response_body
+      - HTTP/1.0 + Connection: close 让对端 send 完即关连接，避免 keep-alive 假活
+      - SO_LINGER 0：防止对端不 ack 时本侧 close 卡 FIN_WAIT；兜底用，对端正常时无感
+    """
+    m = re.match(r"^http://([^/:]+):(\d+)(/.*)?$", url)
+    if not m:
+        return False, None, None, "bad-url"
+    host, port, path = m.group(1), int(m.group(2)), m.group(3) or "/"
+    t0 = time.monotonic()
+    s: socket.socket | None = None
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+        s.settimeout(timeout)                              # ← 关键：recv 硬墙
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        except OSError:
+            pass
+        s.sendall(f"GET {path} HTTP/1.0\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n".encode())
+        line = b""
+        while not line.endswith(b"\r\n"):
+            chunk = s.recv(1)
+            if not chunk:                                  # 对端关连接
+                return False, None, int((time.monotonic() - t0) * 1000), "eof"
+            line += chunk
+            if len(line) > 64:                             # 异常长首行 → 终止
+                break
+        parts = line.decode("latin-1", errors="replace").split(" ", 2)
+        if len(parts) >= 2 and parts[1].isdigit():
+            status = int(parts[1])
+            return (status < 500), status, int((time.monotonic() - t0) * 1000), None
+        return False, None, int((time.monotonic() - t0) * 1000), "bad-status-line"
+    except (socket.timeout, TimeoutError):
+        return False, None, int((time.monotonic() - t0) * 1000), "timeout"
+    except Exception as e:
+        return False, None, int((time.monotonic() - t0) * 1000), type(e).__name__
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except OSError:
+                pass
 
 # 服务名的唯一硬约束：能安全充当 URL 路径段（中文/大写/数字/-/_ 都行，
 # 客户端会自动 percent-encode）。禁空白与控制符、/\?#%、. 与 ..。
@@ -381,15 +439,31 @@ def find_openapi(agent: dict, svc: dict) -> tuple[str | None, str]:
 # ── 自动发现条目 + 合并 ───────────────────────────────────────────────
 
 def auto_services(agent: dict, *, http_check: bool = True) -> list[dict]:
-    """完全未声明的监听端口 → 候补服务条目（auto-{port}）。http_check 时做 HTTP
-    探活（列表路径用，过滤非 HTTP 的内部 socket）；反代路由路径省略（省网络开销，
-    服务死活由转发结果自然反映）。agent 日后在清单声明同端口即被清单条目接管。"""
+    """完全未声明的监听端口 → 候补服务条目（auto-{port}）。http_check 时并发探测
+    全部端口（池（池（池（pool.submit + wait(2.0) 硬墙，避开 httpx 「对端不死等响应」死等
+    反代路由路径省略（省网络开销，服务死活由转发结果自然反映）。agent 日后
+    在清单声明同端口即被清单条目接管。"""
+    ports = sorted(agent_extra_ports(agent))
     out: list[dict] = []
-    for port in sorted(agent_extra_ports(agent)):
-        if http_check:
-            r = _http_get(f"http://127.0.0.1:{port}/")
-            if r is None or r.status_code >= 500:
+    if not http_check or not ports:
+        return [{"name": f"auto-{p}", "port": p,
+                 "title": f"自动发现 :{p}", "base_path": "",
+                 "openapi": None, "probe": "/", "token_file": None,
+                 "note": "管理面自动发现（agent 未在 services.json 声明）"}
+                for p in ports]
+    # 所有探测一次提交到池；wait(2.0) 是总超时硬墙（4 worker 全卡也 2s 返回）
+    futs = {p: _AUTO_PROBE_POOL.submit(_probe_alive, f"http://127.0.0.1:{p}/", 0.8)
+            for p in ports}
+    concurrent.futures.wait(futs.values(), timeout=2.0)
+    for port, fut in futs.items():
+        try:
+            if not fut.done():                              # 超时未完成 → 保守放弃
                 continue
+            ok, _status, _ms, _note = fut.result()
+        except Exception:
+            continue
+        if not ok:
+            continue
         out.append({"name": f"auto-{port}", "port": port,
                     "title": f"自动发现 :{port}", "base_path": "",
                     "openapi": None, "probe": "/", "token_file": None,
@@ -406,13 +480,15 @@ def merged_with_auto(agent: dict) -> list[dict]:
 
 
 def probe_service(svc: dict) -> dict:
-    """探活：连 127.0.0.1:port{base_path}{probe}。ok = 连上且 status<500（401/404 也算活着）。"""
+    """探活：socket 直连 127.0.0.1:port{base_path}{probe}。ok = 连上且 status<500
+    （401/404 也算活着）。单次调用走 _probe_alive，不走池（避免占用探测 worker）。"""
     url = f"http://127.0.0.1:{svc['port']}{svc.get('base_path', '')}{svc.get('probe', '/')}"
     t0 = time.monotonic()
     try:
-        r = httpx.get(url, timeout=1.5, follow_redirects=True)
-        return {"ok": r.status_code < 500, "status": r.status_code,
-                "ms": int((time.monotonic() - t0) * 1000)}
+        ok, status, ms, note = _probe_alive(url, 0.8)
+        return {"ok": ok, "status": status,
+                "ms": ms if ms is not None else int((time.monotonic() - t0) * 1000),
+                "note": note}
     except Exception as e:
         return {"ok": False, "status": None, "ms": None, "note": type(e).__name__}
 
