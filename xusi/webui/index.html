@@ -1429,12 +1429,23 @@ async function revTok(id, prefix) {
 async function renderSvcTab(id) {
   const r = await api(`/api/agents/${id}/services`);
   if (id !== cur) return;
+  const accessSvcs = (r.services || []).filter(s => s.public_access);
   setPane(
 `
     <p class="hint" style="color:var(--sub)">agent 自建的对外 API 服务（由 agent 在
       <code class="mono">workspace/data/services.json</code> 自声明，换端口自动跟随）。
       访问一律经 <code class="mono">/svc/${id}/&lt;服务名&gt;/</code> 全功能反代，服务 token 由管理面服务端注入；
       方法放行与否由服务自己决定，写方法调用会记入审计。</p>
+    ${accessSvcs.length ? `
+    <div class="svcrow">
+      <div class="hd"><b>对外接入说明</b></div>
+      ${accessSvcs.map(s => `
+      <code class="mono"
+            style="display:block;white-space:pre-wrap;word-break:break-all;
+                   user-select:all;-webkit-user-select:all;margin-top:6px;
+                   font-size:12px;padding:8px 10px;background:var(--bg2);
+                   border-radius:6px">${esc(s.public_access)}</code>`).join("")}
+    </div>` : ""}
     ${(r.errors || []).map(e => `<div class="mailrow" style="border-color:var(--warn);color:var(--warn)">⚠ ${esc(e)}</div>`).join("")}
     ${(r.services || []).map(s => svcRowHtml(id, s)).join("") ||
       "<p>（该 agent 暂无自建服务——它写 services.json 自声明即可被管理面发现）</p>"}`

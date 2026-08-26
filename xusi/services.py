@@ -416,6 +416,28 @@ def probe_service(svc: dict) -> dict:
         return {"ok": False, "status": None, "ms": None, "note": type(e).__name__}
 
 
+def public_access_text(agent: dict, svc: dict) -> str | None:
+    """一句话对外接入文案：admin 复制即可贴给其他 agent / 用户。
+    自动发现服务 / public_url 未配 / token 解析失败 → None（前端静默不渲染）。"""
+    if svc.get("auto"):
+        return None
+    pub = get_config().public_url.rstrip("/")
+    if not pub:
+        return None
+    tok = service_token(agent, svc)
+    if not tok:
+        return None
+    name = (agent.get("name") or agent["id"]).strip()
+    title = (svc.get("title") or svc["name"]).strip()
+    op = svc.get("openapi_found") or svc.get("openapi")
+    if op is None or op is False:
+        op = "/openapi.json"
+    if op and not op.startswith("/"):
+        op = "/" + op
+    url = f"{pub}/svc/{agent['id']}/{svc['name']}{(svc.get('base_path') or '')}{op}"
+    return f"{name} 提供{title}服务，请访问 `{url}` 获得， token = {tok}"
+
+
 def list_services(agent: dict, *, probe: bool = True) -> dict:
     """发现聚合（API 端点用）：清单 + 自动发现 + token/openapi 动态解析标记
     + 端口池警告 + 可选探活。"""
@@ -430,6 +452,7 @@ def list_services(agent: dict, *, probe: bool = True) -> dict:
         row["auth"] = service_token(agent, s) is not None
         row["token_source"] = tok_src
         row["openapi_found"], row["openapi_source"] = find_openapi(agent, s)
+        row["public_access"] = public_access_text(agent, s)
         if cfg.port_lo <= s["port"] <= cfg.port_hi:
             row["warn"] = f"端口 {s['port']} 在管理面分配池 [{cfg.port_lo},{cfg.port_hi}] 内，可能与新 agent 冲突（建议 8700-8799）"
         if probe:
