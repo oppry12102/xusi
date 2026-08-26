@@ -1,7 +1,8 @@
 """反代入口凭证：`etc/tokens.json` 里的 api token。
 
 仅供外部反代服务（如 voidhub 形态的 App / 经 8601 反代调 agent 自建服务的外部
-客户端）使用。admin 签发、admin 吊销；存 hash 不存明文（跟密码库一个思路）。
+客户端）使用。admin 签发、admin 吊销；**明文存盘**（文件权限 600，admin 视角），
+供 `services.public_access_text()` 在 agent 详情页拼"对外接入说明"时直接读取。
 
 跟另外两档凭证完全隔离：
 - `[cluster].secret`（admin token）——管理面全权
@@ -14,24 +15,17 @@ token 格式：`secrets.token_urlsafe(32)`（43 字符 URL-safe base64，无 pad
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import secrets
 import string
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from .config import get_config
 
 
 _LOCK = threading.Lock()
-
-
-def _hash(token: str) -> str:
-    """sha256(token) → 'sha256:<64-hex>'（前缀跟常见密码库一致，便于以后升级）。"""
-    return "sha256:" + hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _stamp() -> str:
@@ -84,20 +78,17 @@ def _save(rows: list[dict]) -> None:
 # ── 验证 / 管理 ──────────────────────────────────────────────────────
 
 def verify(token: str) -> dict | None:
-    """反代入口凭 token 验真：匹配返回 rec（无明文 hash 也无 token 字面量），
-    不匹配返回 None。常数时间比对无关——hash 比对已经 O(n) 扫表，n 极小可忽略。"""
+    """反代入口凭 token 验真：匹配返回 rec，不匹配返回 None。"""
     if not token:
         return None
-    target = _hash(token)
     for rec in load():
-        if rec.get("hash") == target:
+        if rec.get("token") and rec["token"] == token:
             return rec
     return None
 
 
 def mint(label: str = "") -> tuple[str, dict]:
-    """签发新 api token：返 (明文 token, 记录 dict)。明文只在本次调用可见——落
-    盘前已替换成 sha256。id 冲突时重试（极低概率但路径短，重试无成本）。"""
+    """签发新 api token：返 (明文 token, 记录 dict)。明文存盘，admin 视角下次可读。"""
     label = (label or "").strip()[:64]
     for _ in range(8):
         new_id = _id4()
@@ -108,7 +99,7 @@ def mint(label: str = "") -> tuple[str, dict]:
     token = secrets.token_urlsafe(32)
     rec = {
         "id": new_id,
-        "hash": _hash(token),
+        "token": token,
         "label": label,
         "created_at": _stamp(),
     }
@@ -134,11 +125,22 @@ def revoke(token_id: str) -> bool:
 
 
 def list_tokens() -> list[dict]:
-    """列 token：返回脱敏记录（id/label/created_at），不含 hash/明文。"""
+    """列 token：admin 视角，含明文（文件本身只 admin 可读）。"""
     return [{"id": r.get("id", ""),
+             "token": r.get("token", ""),
              "label": r.get("label", ""),
              "created_at": r.get("created_at", "")}
             for r in load()]
+
+
+def latest_token() -> str | None:
+    """最新一枚 api token 的明文（按 created_at 倒序）；用于对外接入说明。
+    多枚时取最近签发那枚——admin 刚签给某外部调用方的那枚。无 token → None。"""
+    rows = sorted(load(), key=lambda r: r.get("created_at", ""), reverse=True)
+    for r in rows:
+        if r.get("token"):
+            return r["token"]
+    return None
 
 
 def seed(token: str, label: str) -> dict:
@@ -148,17 +150,16 @@ def seed(token: str, label: str) -> dict:
     label = (label or "").strip()[:64]
     if not token:
         raise ValueError("token 不能为空")
-    h = _hash(token)
     for _ in range(8):
         new_id = _id4()
         if not any(r.get("id") == new_id for r in load()):
             break
     else:
         raise RuntimeError("api token id 冲突 8 次——请重试")
-    rec = {"id": new_id, "hash": h, "label": label, "created_at": _stamp()}
+    rec = {"id": new_id, "token": token, "label": label, "created_at": _stamp()}
     with _LOCK:
         rows = load()
-        if any(r.get("hash") == h for r in rows):
+        if any(r.get("token") == token for r in rows):
             raise ValueError("该 token 已存在")
         rows.append(rec)
         _save(rows)

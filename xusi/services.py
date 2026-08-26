@@ -34,6 +34,7 @@ from pathlib import Path
 import httpx
 
 from .config import get_config
+from . import apitokens
 
 # 服务名的唯一硬约束：能安全充当 URL 路径段（中文/大写/数字/-/_ 都行，
 # 客户端会自动 percent-encode）。禁空白与控制符、/\?#%、. 与 ..。
@@ -418,13 +419,14 @@ def probe_service(svc: dict) -> dict:
 
 def public_access_text(agent: dict, svc: dict) -> str | None:
     """一句话对外接入文案：admin 复制即可贴给其他 agent / 用户。
-    自动发现服务 / public_url 未配 / token 解析失败 → None（前端静默不渲染）。"""
+    token 取最新一枚反代 api token（外部调用方拿它过 /svc 鉴权）；
+    自动发现服务 / public_url 未配 / 无 api token → None（前端静默不渲染）。"""
     if svc.get("auto"):
         return None
     pub = get_config().public_url.rstrip("/")
     if not pub:
         return None
-    tok = service_token(agent, svc)
+    tok = apitokens.latest_token()
     if not tok:
         return None
     name = (agent.get("name") or agent["id"]).strip()
