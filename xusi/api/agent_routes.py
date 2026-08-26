@@ -82,7 +82,7 @@ async def api_agent_get(request: Request,
                         pair: tuple = Depends(require_agent_or_remote)) -> Response:
     target, _rec = pair
     if target.kind == "local":
-        return JSONResponse(agentops.status(target.agent["id"]))
+        return JSONResponse(await asyncio.to_thread(agentops.status, target.agent["id"]))
     return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
@@ -155,7 +155,8 @@ async def api_services_list(request: Request, probe: bool = True,
                             pair: tuple = Depends(require_agent_or_remote)) -> Response:
     target, _rec = pair
     if target.kind == "local":
-        return JSONResponse(services.list_services(target.agent, probe=probe))
+        return JSONResponse(await asyncio.to_thread(
+            services.list_services, target.agent, probe=probe))
     return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
@@ -170,9 +171,11 @@ def _make_observe_handler(what: str):
         target, _rec = pair
         if target.kind == "local":
             if what == "logs":
-                return JSONResponse(agentops.logs(target.agent["id"], limit))
+                return JSONResponse(await asyncio.to_thread(
+                    agentops.logs, target.agent["id"], limit))
             return JSONResponse({"id": target.agent["id"], "what": what,
-                                 "data": agentops.observe(target.agent["id"], what, limit)})
+                                 "data": await asyncio.to_thread(
+                                     agentops.observe, target.agent["id"], what, limit)})
         # 远程：把 ?limit= 一并透传，peer 端 handler 自己解析
         return await proxy.forward_to_peer(target.peer, request,
                                             request.url.path)
