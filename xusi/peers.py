@@ -88,6 +88,9 @@ def _save(data: dict) -> None:
         lines.append(f'url = "{_toml_escape(p["url"])}"')
         if p.get("name"):
             lines.append(f'name = "{_toml_escape(p["name"])}"')
+        # show_agents 默认 true——只在显式为 false 时写出，避免污染 toml
+        if p.get("show_agents") is False:
+            lines.append("show_agents = false")
         lines.append("")
     tmp = f.with_suffix(".toml.tmp")
     tmp.write_text("\n".join(lines), encoding="utf-8")
@@ -101,8 +104,16 @@ def _toml_escape(s: str) -> str:
 # ── 名册 CRUD ───────────────────────────────────────────────────────
 
 def list_peers() -> list[dict]:
-    """读 etc/peers.toml，返回 [[peers]] 列表（深拷贝）。"""
-    return list(_load()["peers"])
+    """读 etc/peers.toml，返回 [[peers]] 列表（深拷贝）。
+
+    show_agents 字段缺省补 True（老 toml 没这个字段时按"主动加的"对待——
+    升级前已存在的 peer 都是手动加的）。"""
+    out = []
+    for p in _load()["peers"]:
+        if "show_agents" not in p:
+            p = {**p, "show_agents": True}
+        out.append(p)
+    return out
 
 
 def get_peer(peer_id: str) -> dict | None:
@@ -121,12 +132,15 @@ def find_by_url(url: str) -> dict | None:
     return None
 
 
-def add_peer(url: str, name: str = "") -> dict:
+def add_peer(url: str, name: str = "", show_agents: bool = True) -> dict:
     """加 peer。先探活（拿 id），落 toml。失败抛 PeerUnreachable / PeerRefused。
 
     前置：cluster_secret 非空（无集群模式直接拒绝）。两端 secret 一致的事
     由 admin 自己保证——admin 把同一 secret 同步到了对端的 etc/xusi.toml
-    才会来这里 add peer。"""
+    才会来这里 add peer。
+
+    show_agents 默认 true（admin 主动加就是想看对端 agents）；传 false
+    走纯通信模式（peer 行还在但 fan-in 视图不显示）。"""
     if not is_cluster():
         raise PeerRefused("无集群模式（[cluster].secret 为空）；peer 注册需要集群模式"
                           "——先 `xusi init --cluster-secret <值>`")
@@ -144,7 +158,8 @@ def add_peer(url: str, name: str = "") -> dict:
         if p["url"].rstrip("/") == url:
             raise PeerRefused(f"peer url {url} 已存在")
     rec = {"id": pid, "url": url,
-           "name": (name or info["info"].get("name", "")).strip()}
+           "name": (name or info["info"].get("name", "")).strip(),
+           "show_agents": bool(show_agents)}
     data["peers"].append(rec)
     _save(data)
     return rec
@@ -160,14 +175,33 @@ def remove_peer(peer_id: str) -> bool:
     return True
 
 
+def update_peer_visibility(peer_id: str, show_agents: bool) -> dict | None:
+    """切换单个 peer 行的 show_agents。返更新后的 record，未找到返 None。
+
+    用于"节点页面打开"——admin 把某个被动收进来的 peer 改成可见，或反过来。
+    不影响其他字段；show_agents 持久化到 toml。"""
+    data = _load()
+    for p in data["peers"]:
+        if p["id"] == peer_id:
+            old = p.get("show_agents", True)
+            if old == show_agents:
+                return p  # 没变化，不写盘
+            p["show_agents"] = show_agents
+            _save(data)
+            return p
+    return None
+
+
 # ── 集群内自收敛（announce / resync）───────────────────────────
 
-def local_add_or_update(rec: dict) -> str:
-    """接收端 idempotent 入册：远端 /api/internal/peers/announce 调用此函数。
+def local_add_or_update(rec: dict, default_show_agents: bool = False) -> str:
+    """接收端 idempotent 入册：远端 announce / welcome 调用此函数。
 
     语义：
-    - 本地无此 id → 入册，返 'added'
-    - 本地有此 id 且 url 相同 → 跳过，返 'skipped'（防覆盖已对齐数据）
+    - 本地无此 id → 入册，show_agents=default_show_agents（announce/welcome 默认 false）；
+      但若 rec 显式带 show_agents 字段，以 rec 的为准（主动加的不会降级）
+    - 本地有此 id 且 url 相同 → 跳过，返 'skipped'——**不**改本地 show_agents
+      （保护主动意图：不主动收进来的 sync，永远不能把已 true 的降为 false）
     - 本地有此 id 且 url 不一致 → 保留本地，返 'skipped_conflict'（不信任
       单方面通告去改 peer 地址——要改走 remove_peer + add_peer）
 
@@ -177,13 +211,18 @@ def local_add_or_update(rec: dict) -> str:
         raise PeerRefused(f"announce 字段不全: {rec}")
     new_id, new_url = rec["id"], rec["url"].rstrip("/")
     new_name = (rec.get("name") or "").strip()
+    # rec 显式带 show_agents 时尊重它；否则用默认（welcome/announce 路径 = false）
+    rec_show = rec.get("show_agents")
+    if rec_show is None:
+        rec_show = default_show_agents
     data = _load()
     for p in data["peers"]:
         if p["id"] == new_id:
             if p["url"].rstrip("/") == new_url:
-                return "skipped"
+                return "skipped"  # 已有：不动（包括 show_agents）
             return "skipped_conflict"
-    data["peers"].append({"id": new_id, "url": new_url, "name": new_name})
+    data["peers"].append({"id": new_id, "url": new_url, "name": new_name,
+                          "show_agents": rec_show})
     _save(data)
     return "added"
 

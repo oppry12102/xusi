@@ -68,9 +68,14 @@ class AddPeerReq(BaseModel):
     """注册一个 peer；server 会立即探活 {peer.url}/api/peer/id 拿 id。
 
     集群互信前提：双方 [cluster].secret 一致——admin 自己负责把这个值同步到
-    两端的 etc/xusi.toml，再来加 peer。"""
+    两端的 etc/xusi.toml，再来加 peer。
+
+    show_agents 默认 true（admin 主动加就是想看对端 agents）；可显式
+    设 false 走纯通信模式（peer 行还在但 fan-in 跳过）。"""
     url: str = Field(min_length=1, description="peer 管理面 url（如 http://10.0.16.15:8601）")
     name: str = Field("", description="显示名（缺省用 peer 自报）")
+    show_agents: bool = Field(True,
+                              description="是否在 /api/agent-peers fan-in 里显示该 peer 的 agents")
 
 
 class AnnouncePeerReq(BaseModel):
@@ -90,3 +95,8 @@ class WelcomePeersReq(BaseModel):
     from_id: str = Field(min_length=1, description="通告方自己的 node_id（仅日志用）")
     peers: list[dict] = Field(default_factory=list,
                               description="[{id, url, name}, ...]；除 self 与被迎新者")
+
+
+class VisibilityReq(BaseModel):
+    """切换单个 peer 行的 show_agents——"在节点页面打开 / 关闭" agent 显示。"""
+    show_agents: bool

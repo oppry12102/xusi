@@ -392,11 +392,12 @@ def cmd_peers_list(_args) -> int:
 
 def cmd_peers_add(args) -> int:
     try:
-        rec = peers.add_peer(args.url, name=args.name)
+        rec = peers.add_peer(args.url, name=args.name, show_agents=args.show_agents)
     except (peers.PeerUnreachable, peers.PeerRefused) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    print(f"  ✓ {rec['id']}  {rec.get('name', '')}  {rec['url']}")
+    flag = "✓" if rec.get("show_agents", True) else "✓(hide)"
+    print(f"  {flag} {rec['id']}  {rec.get('name', '')}  {rec['url']}")
     # 集群模式时同步广播给其他已知 peer（fire-and-forget）
     if peers.is_cluster():
         import asyncio as _aio
@@ -464,6 +465,9 @@ def main() -> int:
     pra = prs.add_parser("add", help="注册一个 peer（先探活拿 id）")
     pra.add_argument("url", help="peer 的管理面 url（如 http://10.0.16.15:8601）")
     pra.add_argument("--name", default="", help="显示名（缺省用 peer 自报）")
+    pra.add_argument("--no-show-agents", dest="show_agents",
+                     action="store_false", default=True,
+                     help="纯通信模式：peer 行还在但 /api/agent-peers fan-in 不显示该 peer")
     pra.set_defaults(fn=cmd_peers_add)
     prr = prs.add_parser("remove", help="移除")
     prr.add_argument("peer_id")

@@ -260,7 +260,10 @@ async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
     if not local_only and peers.is_cluster():
         from ..config import get_config
         admin_tok = get_config().cluster_secret
-        pls = [p for p in peers.list_peers() if p["id"] != me_node_id]
+        # show_agents=false 的 peer 跳过：被动收进来的默认不显示
+        # （详见 peers.local_add_or_update 的语义说明）
+        pls = [p for p in peers.list_peers()
+               if p["id"] != me_node_id and p.get("show_agents", True)]
         if pls and admin_tok:
             async def _one(p: dict) -> None:
                 try:

@@ -19,7 +19,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from .. import peers
 from .auth import require_admin, require_auth
-from .models import AddPeerReq, AnnouncePeerReq, WelcomePeersReq
+from .models import AddPeerReq, AnnouncePeerReq, VisibilityReq, WelcomePeersReq
 
 router = APIRouter()
 
@@ -34,7 +34,8 @@ def api_peers_list(_rec: dict = Depends(require_auth)) -> dict:
     for p in peers.list_peers():
         r = peers.probe_peer(p)
         entry = {"id": p["id"], "name": p.get("name", ""),
-                 "url": p["url"], "ok": r["ok"]}
+                 "url": p["url"], "ok": r["ok"],
+                 "show_agents": p.get("show_agents", True)}
         if r.get("latency_ms") is not None:
             entry["latency_ms"] = r["latency_ms"]
         if r["ok"]:
@@ -56,7 +57,7 @@ async def api_peers_add(req: AddPeerReq,
     广播是 fire-and-forget：失败仅记日志，不影响本次 add 的 201 响应。
     BackgroundTasks 直接 await 异步协程（不再套 asyncio.run——后者在已有
     event loop 里 RuntimeError，被 catch 吞了导致静默失败）。"""
-    rec = peers.add_peer(req.url, name=req.name)  # 抛异常被全局 handler 接住
+    rec = peers.add_peer(req.url, name=req.name, show_agents=req.show_agents)  # 抛异常被全局 handler 接住
     bg.add_task(peers._broadcast_peer_add, rec)   # async 协程；FastAPI 自动 await
     r = peers.probe_peer(rec)
     return {
@@ -74,6 +75,23 @@ def api_peers_remove(peer_id: str,
     if not peers.remove_peer(peer_id):
         raise HTTPException(404, f"peer 不存在: {peer_id}")
     return {"removed": peer_id}
+
+
+@router.post("/api/peers/{peer_id}/visibility")
+def api_peers_visibility(peer_id: str,
+                          req: VisibilityReq,
+                          _rec: dict = Depends(require_admin)) -> dict:
+    """节点页面开关：切换某个 peer 行的 show_agents。
+
+    show_agents=true → 该 peer 的 agents 出现在 /api/agent-peers fan-in 里
+    show_agents=false → fan-in 跳过该 peer（但 peer 行本身还在，互联 token
+    不受影响；之前缓存过的 token 仍能调 /svc/...）
+
+    仅影响本机 fan-in 视图；不通知对端（这是本机自己的偏好）。"""
+    updated = peers.update_peer_visibility(peer_id, req.show_agents)
+    if not updated:
+        raise HTTPException(404, f"peer 不存在: {peer_id}")
+    return {"id": peer_id, "show_agents": updated.get("show_agents", True)}
 
 
 @router.post("/api/peers/probe")
