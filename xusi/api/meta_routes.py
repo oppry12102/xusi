@@ -105,7 +105,16 @@ def api_ports(count: int = 10, _rec: dict = Depends(require_auth)) -> dict:
 
 @router.get("/")
 def index() -> FileResponse:
-    return FileResponse(get_config().webui_dir / "index.html", media_type="text/html")
+    """WebUI 入口：单文件 SPA，inline JS + inline CSS。
+
+    强制 no-cache：开发者改完 index.html 浏览器立刻拿到新版，不要等缓存过期。
+    否则 FileResponse 默认带 Last-Modified + ETag → 浏览器下次 GET 收 304 →
+    继续用旧 inline JS（看不见的 bug：JS 旧但 UI 没明显错误信息）。"""
+    resp = FileResponse(get_config().webui_dir / "index.html", media_type="text/html")
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @router.get("/api/docs.md")
