@@ -4,7 +4,8 @@
 的请求持有人都是 admin——`require_auth` / `require_admin` 是同一档依赖（保留
 两个名字是给路由签名做语义占位，admin-only 路由用 `require_admin` 一眼可读）。
 
-**api token（反代入口凭证）不能进任何 `/api/*` 端点**——它只走 `/px /svc /v1 /ui`，
+**api token（反代入口凭证）不能进任何 `/api/*` 端点**——它只走 `/px /svc`
+（`/v1` 仅 health 探活），
 由 proxy_routes._svc_px_auth 单独鉴权，不复用本文件的依赖家族。
 
 依赖家族：
@@ -22,6 +23,8 @@
 from fastapi import Depends, HTTPException, Request
 
 from .. import authtok, peers, registry
+
+import asyncio
 
 
 def require_auth(request: Request) -> dict:
@@ -69,7 +72,9 @@ async def require_agent_or_remote(
     """
     # 延迟 import：避免 auth.py 顶层依赖 proxy（可能循环）
     from .. import proxy
-    target = proxy.resolve(agent_id, request=request)
+    # resolve 的 fan-out 是线程池 + 网络探查（硬墙 10s）——丢线程池跑，
+    # 不能在事件循环上同步等（否则一个未知 agent_id 的请求冻住整个管理面）
+    target = await asyncio.to_thread(proxy.resolve, agent_id, request=request)
     if target is None:
         raise HTTPException(404, f"agent 不存在: {agent_id}")
     return target, rec
@@ -88,7 +93,8 @@ async def require_agent_or_remote_admin(
     - 远端命中 → caller Authorization 头原样透传，peer 端再 verify 同一
       cluster_secret（两端同一密钥即同集群，admin 自动通配）"""
     from .. import proxy
-    target = proxy.resolve(agent_id, request=request)
+    # 同上：resolve 的 fan-out 丢线程池，别冻事件循环
+    target = await asyncio.to_thread(proxy.resolve, agent_id, request=request)
     if target is None:
         raise HTTPException(404, f"agent 不存在: {agent_id}")
     return target, _rec

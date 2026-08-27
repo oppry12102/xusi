@@ -9,6 +9,8 @@
 """
 from pathlib import Path
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
@@ -29,7 +31,10 @@ async def api_agent_backup(request: Request, req: BackupReq,
     tar.gz 流回本机——备份内容走的是路径，不走身份。"""
     target, _rec = pair
     if target.kind == "local":
-        return JSONResponse(backup.snapshot(target.agent["id"], reason=req.reason))
+        # snapshot 含 SIGSTOP 冻结窗 + 双遍 tar（分钟级）——线程池跑，
+        # 别冻事件循环（否则备份期间所有反代 / 轮询 / fan-in 一起卡）
+        return JSONResponse(await asyncio.to_thread(
+            backup.snapshot, target.agent["id"], reason=req.reason))
     return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
@@ -38,9 +43,12 @@ async def api_agent_backups_list(request: Request, with_meta: bool = False,
                                  pair: tuple = Depends(require_agent_or_remote)) -> Response:
     target, _rec = pair
     if target.kind == "local":
+        # with_meta 要逐包开 tar 读头——线程池跑
         if with_meta:
-            return JSONResponse(backup.list_with_meta(agent_id=target.agent["id"]))
-        return JSONResponse(backup.list_backups(agent_id=target.agent["id"]))
+            return JSONResponse(await asyncio.to_thread(
+                backup.list_with_meta, target.agent["id"]))
+        return JSONResponse(await asyncio.to_thread(
+            backup.list_backups, target.agent["id"]))
     return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 

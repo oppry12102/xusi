@@ -99,8 +99,11 @@ async def api_agent_patch(request: Request, req: PatchAgentReq, apply_restart: b
         raise HTTPException(400, "请求体里没有任何要修改的字段")
     target, _rec = pair
     if target.kind == "local":
-        return JSONResponse(agentops.patch_agent(
-            target.agent["id"], changes, apply_restart=apply_restart))
+        # patch 含 systemd 子进程；apply_restart 时还有 90s 级健康验收——
+        # 线程池跑，别冻事件循环
+        return JSONResponse(await asyncio.to_thread(
+            agentops.patch_agent, target.agent["id"], changes,
+            apply_restart=apply_restart))
     return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
@@ -109,7 +112,10 @@ async def api_agent_delete(request: Request,
                            pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
     target, _rec = pair
     if target.kind == "local":
-        return JSONResponse(agentops.delete(target.agent["id"]))
+        # delete 要停单元 + 把整个 home 挪进 .trash（GB 级目录可达分钟）——
+        # 线程池跑，别冻事件循环
+        return JSONResponse(await asyncio.to_thread(
+            agentops.delete, target.agent["id"]))
     return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
@@ -129,7 +135,11 @@ def _make_lifecycle_handler(action: str):
                  pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
         target, _rec = pair
         if target.kind == "local":
-            return JSONResponse(_lifecycle(target.agent["id"], action))
+            # 生命周期 = systemd 子进程 + 最长 90s 的健康验收（wait_health）——
+            # 必须丢线程池；在事件循环上同步等会冻住整个管理面（反代 / 轮询 /
+            # peer fan-in 一起卡）
+            return JSONResponse(await asyncio.to_thread(
+                _lifecycle, target.agent["id"], action))
         return await proxy.forward_to_peer(target.peer, request, request.url.path)
     _h.__name__ = f"api_agent_{action}"
     return _h
@@ -149,7 +159,10 @@ async def api_agent_capabilities(request: Request,
     实况（通常全 false——墟司不写该段；若大脑自行写入亦如实显示）。"""
     target, _rec = pair
     if target.kind == "local":
-        return JSONResponse(capabilities.list_for_agent(target.agent))
+        # 首查可能建探测 venv 跑 CLI（_PROBE_TIMEOUT=300s）——线程池跑，
+        # 别冻事件循环（详情页状态 tab 每次都调这里）
+        return JSONResponse(await asyncio.to_thread(
+            capabilities.list_for_agent, target.agent))
     return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
@@ -236,7 +249,9 @@ async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
     elif inter_agent_tokens.verify(tok):
         src_id = None  # 互联 token 不绑 agent 身份，caller 不可识别
     else:
-        pair = proxy.agent_by_agent_token(tok)
+        # agent_by_agent_token 逐个读 webui_tokens.json（agent 数 × 文件 IO）
+        # ——线程池跑，别冻事件循环
+        pair = await asyncio.to_thread(proxy.agent_by_agent_token, tok)
         if pair:
             src_id = pair[0]["id"]
         else:
@@ -324,7 +339,9 @@ async def api_agent_token_new(request: Request, req: TokenNewReq,
     自己的 webui_tokens.json 写新 token。"""
     target, _rec = pair
     if target.kind == "local":
-        return JSONResponse(agentops.token_new(target.agent["id"], req.label))
+        # 签发要跑 xuseek CLI 子进程（装依赖场景分钟级）——线程池跑
+        return JSONResponse(await asyncio.to_thread(
+            agentops.token_new, target.agent["id"], req.label))
     return await proxy.forward_to_peer(target.peer, request, request.url.path)
 
 
@@ -333,5 +350,7 @@ async def api_agent_token_revoke(request: Request, prefix: str,
                                  pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
     target, _rec = pair
     if target.kind == "local":
-        return JSONResponse(agentops.token_revoke(target.agent["id"], prefix))
+        # 撤销同样跑 xuseek CLI 子进程——线程池跑
+        return JSONResponse(await asyncio.to_thread(
+            agentops.token_revoke, target.agent["id"], prefix))
     return await proxy.forward_to_peer(target.peer, request, request.url.path)

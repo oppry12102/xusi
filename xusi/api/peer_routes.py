@@ -15,6 +15,8 @@
 peer——浏览器一次性到 peer，省一次本机中转 round-trip + admin token 不在
 本机 server access log 留痕。
 """
+import asyncio
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from .. import peers
@@ -57,9 +59,12 @@ async def api_peers_add(req: AddPeerReq,
     广播是 fire-and-forget：失败仅记日志，不影响本次 add 的 201 响应。
     BackgroundTasks 直接 await 异步协程（不再套 asyncio.run——后者在已有
     event loop 里 RuntimeError，被 catch 吞了导致静默失败）。"""
-    rec = peers.add_peer(req.url, name=req.name, show_agents=req.show_agents)  # 抛异常被全局 handler 接住
+    # add_peer / probe_peer 都是同步 httpx 探活（各 5s 超时）——线程池跑，
+    # 别冻事件循环
+    rec = await asyncio.to_thread(peers.add_peer, req.url, name=req.name,
+                                   show_agents=req.show_agents)  # 抛异常被全局 handler 接住
     bg.add_task(peers._broadcast_peer_add, rec)   # async 协程；FastAPI 自动 await
-    r = peers.probe_peer(rec)
+    r = await asyncio.to_thread(peers.probe_peer, rec)
     return {
         **rec,
         "ok": r["ok"],
@@ -163,10 +168,13 @@ async def api_peers_resync(from_peer_id: str | None = Query(
         if not src:
             raise HTTPException(404, f"peer {from_peer_id} 不在名册")
     else:
-        for p in pls:
-            if peers.probe_peer(p)["ok"]:
-                src = p
-                break
+        def _first_reachable() -> dict | None:
+            for p in pls:
+                if peers.probe_peer(p)["ok"]:
+                    return p
+            return None
+        # 探活是同步网络调用（5s/个）——线程池跑，别冻事件循环
+        src = await asyncio.to_thread(_first_reachable)
         if not src:
             raise HTTPException(502, "没有可达 peer 可供 resync")
 

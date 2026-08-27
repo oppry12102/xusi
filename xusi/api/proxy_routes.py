@@ -6,6 +6,8 @@
                         forward_to_peer 的差别：原 Authorization 透传，
                         不重新构造，便于 agent 观察台 token 走 peer 自验）
 """
+import asyncio
+
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
@@ -22,7 +24,7 @@ def _svc_px_auth(request: Request, agent: dict) -> None:
     """/px 与 /svc 共用鉴权（四档，任一通过即放行）：
     ① 管理面 token（cluster_secret——admin 通配所有 agent）；
     ② 反代入口 api token（etc/tokens.json——admin 签发、签给外部反代服务用，
-       仅这一档能跨过 /px /svc /v1 /ui，/api/* 一律不认）；
+       仅这一档能跨过 /px /svc（/v1 仅 health 探活），/api/* 一律不认）；
     ③ 智能体互联 token（etc/inter_agent_tokens.json——本 xusi 一把，集群内
        agent 互调 /svc 时用；不验目标，与 api token 同语义"持票即登机"）；
     ④ 该 agent 自己的观察台 token（让 agent 自带页面/仅持观察台 token 的
@@ -54,7 +56,8 @@ async def px(request: Request, agent_id: str, sub_path: str = "") -> Response:
     （peer 的 agent tokens.json 不在本机），整段 Authorization / mtoken 原样
     透传给 peer，peer 端 _svc_px_auth 自己验。观察台 token 走 peer 是
     "voidhub 形态"的零改动接入前提。"""
-    target = proxy.resolve(agent_id, request=request)
+    # resolve 的 fan-out 是线程池 + 网络探查（硬墙 10s）——线程池跑，别冻事件循环
+    target = await asyncio.to_thread(proxy.resolve, agent_id, request=request)
     if target is None:
         raise HTTPException(404, f"agent 不存在: {agent_id}")
     if target.kind == "local":
@@ -159,9 +162,12 @@ async def svc(request: Request, agent_id: str, svc_name: str, sub_path: str = ""
     if not agent:
         raise HTTPException(404, f"agent 不存在: {agent_id}")
     _svc_px_auth(request, agent)
-    svc_rec = services.find_service(agent, svc_name)
+    # find_service / service_names 走清单文件 + cgroup/proc 扫描（自动发现）——
+    # 线程池跑；这是 /svc 反代热路径，每个请求都要过
+    svc_rec = await asyncio.to_thread(services.find_service, agent, svc_name)
     if not svc_rec:
-        names = ", ".join(services.service_names(agent)) or "（无）"
+        names = ", ".join(await asyncio.to_thread(
+            services.service_names, agent)) or "（无）"
         raise HTTPException(404, f"服务不存在: {svc_name}（可用：{names}）")
     resp = await proxy.service_proxy(request, agent, svc_rec, sub_path)
     if request.method not in ("GET", "HEAD", "OPTIONS"):
