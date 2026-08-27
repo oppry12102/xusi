@@ -232,19 +232,12 @@ def _resolve_source_choice(src_ver: str) -> str:
 
 
 def _validate_brains(bl: list[str]) -> None:
-    """校验大脑列表：非空、都在密钥池里、都有 key。失败抛 AgentError。
-
-    create_agent 与 patch_agent 共用同一份校验（patch_agent 不会改这条契约，
-    只复用这段断言）。"""
-    if not bl:
-        raise AgentError("至少选择一家大脑")
-    pool = {b["name"]: b for b in brains.pool_summary()}
-    unknown = [b for b in bl if b not in pool]
-    if unknown:
-        raise AgentError(f"密钥池中没有这些大脑：{', '.join(unknown)}")
-    no_key = [b for b in bl if not pool[b]["has_key"]]
-    if no_key:
-        raise AgentError(f"这些大脑没配 api_key（etc/brains.toml）：{', '.join(no_key)}")
+    """校验大脑列表（ brains.validate_selection 的 AgentError 适配——
+    create / patch / restore 共用同一份断言，见 brains.py）。"""
+    try:
+        brains.validate_selection(bl)
+    except ValueError as e:
+        raise AgentError(str(e)) from None
 
 
 def create_agent(name: str, mission: str, brain_list: list[str], *,
@@ -277,36 +270,40 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     src_ver = _resolve_source_choice((source_version or "").strip())
 
     agent_id = gen_id(name)
-    port = ports.allocate(port)
-    home = cfg.instance_home(agent_id)
-    unit = cfg.unit_name(agent_id)
+    # 端口分配 → 注册表落盘必须整体持锁（见 ports.ALLOC_LOCK）：窗口隔着
+    # init（分钟级），两个并发 create 会拿到同一端口。锁内串行——create 本就
+    # 是低频 admin 操作，等待方只是晚几分钟拿到自己的端口。
+    with ports.ALLOC_LOCK:
+        port = ports.allocate(port)
+        home = cfg.instance_home(agent_id)
+        unit = cfg.unit_name(agent_id)
 
-    rec = {
-        "id": agent_id,
-        "name": name.strip() or agent_id,
-        "mission": mission,
-        "brains": list(brain_list),
-        "budgets": budgets or {},
-        "expose": bool(expose),
-        "port": port,
-        "desired_state": "running",
-        "note": note,
-        "source_version": src_ver,
-        "created_at": registry.now_iso(),
-        "updated_at": registry.now_iso(),
-        "tokens": [],
-    }
-    try:
-        _init_workspace(rec, src_ver)
-        # 注册（期望态 running）
-        registry.add_agent(rec)
-        # systemd 拉起（Restart=always 掉线保护）+ 健康验收
-        _spawn_and_verify(rec)
-        # 签发首个观察台 token（代理注入 + 用户取用）
-        _mint_token(agent_id, "xusi-proxy")
-    except Exception as e:
-        _rollback_create(unit, home, agent_id)
-        raise AgentError(f"创建失败已回滚：{e}") from e
+        rec = {
+            "id": agent_id,
+            "name": name.strip() or agent_id,
+            "mission": mission,
+            "brains": list(brain_list),
+            "budgets": budgets or {},
+            "expose": bool(expose),
+            "port": port,
+            "desired_state": "running",
+            "note": note,
+            "source_version": src_ver,
+            "created_at": registry.now_iso(),
+            "updated_at": registry.now_iso(),
+            "tokens": [],
+        }
+        try:
+            _init_workspace(rec, src_ver)
+            # 注册（期望态 running）
+            registry.add_agent(rec)
+            # systemd 拉起（Restart=always 掉线保护）+ 健康验收
+            spawn_and_verify(rec)
+            # 签发首个观察台 token（代理注入 + 用户取用）
+            _mint_token(agent_id, "xusi-proxy")
+        except Exception as e:
+            _rollback_create(unit, home, agent_id)
+            raise AgentError(f"创建失败已回滚：{e}") from e
 
     audit("agent.create", agent=agent_id, name=rec["name"], port=port,
           expose=expose, brains=brain_list, source=src_ver or "main",
@@ -340,8 +337,11 @@ def _init_workspace(rec: dict, src_ver: str) -> None:
     brains.write_agent_config(home, rec["mission"], rec["brains"], rec["budgets"])
 
 
-def _spawn_and_verify(rec: dict) -> None:
-    """systemd 拉起 + 健康验收。失败抛 AgentError。"""
+def spawn_and_verify(rec: dict) -> None:
+    """systemd 拉起 + 健康验收。失败抛 AgentError。
+
+    公开给 backup.restore 复用（create 的私有实现提级——恢复与创建走同一条
+    拉起路径，别再各自 systemdctl.spawn_agent）。"""
     _spawn_unit(rec)
     wait_health(rec["port"], rec["id"])
 
@@ -424,9 +424,15 @@ def resume(agent_id: str) -> dict:
 
 
 def restart(agent_id: str) -> dict:
-    """优雅重启：SIGTERM 落盘 → 重新拉起 → 健康验收。"""
+    """优雅重启：SIGTERM 落盘 → 重新拉起 → 健康验收。冻结态先解冻（同 stop——
+    冻结进程收不到 SIGTERM，硬 restart 会拖到 SIGKILL、丢会话）。"""
     agent = get_agent_or_404(agent_id)
     if systemdctl.unit_state(_unit(agent)) == "active":
+        if systemdctl.main_stopped(_unit(agent)):
+            try:
+                systemdctl.kill_signal(_unit(agent), "SIGCONT")
+            except systemdctl.SystemdError:
+                pass
         systemdctl.restart(_unit(agent))
     else:
         _spawn_unit(agent)
@@ -499,24 +505,26 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
         hot["note"] = str(changes["note"])
 
     next_rec = {**agent, **hot}
-    if "port" in changes and int(changes["port"]) != int(agent["port"]):
-        ports.allocate(int(changes["port"]))   # 检验可用（含 not-in-use）
-        next_rec["port"] = int(changes["port"])
-        need_restart = True
-    if "expose" in changes and bool(changes["expose"]) != bool(agent.get("expose")):
-        next_rec["expose"] = bool(changes["expose"])
-        need_restart = True
+    # 换端口时「检验可用 → 注册表落盘」与 create 的分配窗口互斥（ports.ALLOC_LOCK）
+    with ports.ALLOC_LOCK:
+        if "port" in changes and int(changes["port"]) != int(agent["port"]):
+            ports.allocate(int(changes["port"]))   # 检验可用（含 not-in-use）
+            next_rec["port"] = int(changes["port"])
+            need_restart = True
+        if "expose" in changes and bool(changes["expose"]) != bool(agent.get("expose")):
+            next_rec["expose"] = bool(changes["expose"])
+            need_restart = True
 
-    if hot:
-        brains.write_agent_config(_home(next_rec), next_rec["mission"],
-                                  next_rec["brains"], next_rec.get("budgets"))
-    updates = dict(hot)
-    if next_rec.get("port") != agent.get("port"):
-        updates["port"] = next_rec["port"]
-    if next_rec.get("expose") != agent.get("expose"):
-        updates["expose"] = next_rec["expose"]
-    if updates:
-        registry.update_agent(agent_id, updates)
+        if hot:
+            brains.write_agent_config(_home(next_rec), next_rec["mission"],
+                                      next_rec["brains"], next_rec.get("budgets"))
+        updates = dict(hot)
+        if next_rec.get("port") != agent.get("port"):
+            updates["port"] = next_rec["port"]
+        if next_rec.get("expose") != agent.get("expose"):
+            updates["expose"] = next_rec["expose"]
+        if updates:
+            registry.update_agent(agent_id, updates)
 
     restarted = False
     if need_restart and apply_restart:
@@ -528,9 +536,15 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
 
 
 def _respawn(agent: dict) -> None:
-    """换监听参数的重启：stop 旧瞬态单元 → 以新 host/port 重新拉起。"""
+    """换监听参数的重启：stop 旧瞬态单元 → 以新 host/port 重新拉起。
+    冻结态先解冻（同 stop——冻结进程收不到 SIGTERM）。"""
     unit = _unit(agent)
     if systemdctl.unit_state(unit) == "active":
+        if systemdctl.main_stopped(unit):
+            try:
+                systemdctl.kill_signal(unit, "SIGCONT")
+            except systemdctl.SystemdError:
+                pass
         systemdctl.stop(unit)
     _spawn_unit(agent)
     wait_health(agent["port"], agent["id"])

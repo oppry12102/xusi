@@ -68,6 +68,22 @@ def get_brain(name: str) -> dict | None:
     return _load_pool().get(name)
 
 
+def validate_selection(bl: list[str]) -> None:
+    """校验大脑选择：非空、都在密钥池里、都有 key。失败抛 ValueError（带用户可读信息）。
+
+    create / patch / restore 共用同一份断言——恢复侧原先手抄了一份等价检查，
+    两处会各自漂移，收敛到这里。"""
+    if not bl:
+        raise ValueError("至少选择一家大脑")
+    pool = {b["name"]: b for b in pool_summary()}
+    unknown = [b for b in bl if b not in pool]
+    if unknown:
+        raise ValueError(f"密钥池中没有这些大脑：{', '.join(unknown)}")
+    no_key = [b for b in bl if not pool[b]["has_key"]]
+    if no_key:
+        raise ValueError(f"这些大脑没配 api_key（etc/brains.toml）：{', '.join(no_key)}")
+
+
 def _q(s: Any) -> str:
     """TOML 基本字符串：JSON 字符串转义规则与 TOML 兼容。"""
     return json.dumps(str(s), ensure_ascii=False)
@@ -83,6 +99,10 @@ def extract_foreign_sections(text: str) -> str:
     文本级抽取（非 parse→re-serialize）：段头（含 [[array]]）到下一个段头之间的
     全部行原样保留——键、注释、空行、书写顺序一个不动。顶层键区与墟司自己的段
     （[brain]/[brains.*]/[agent]）不抽（那些本就该被重渲染覆盖）。
+
+    已知边界：多行字符串里出现形如段头的行会被误切。当前内核段（如
+    [capabilities]）是扁平 k=v、无多行字符串，假设成立；内核若引入多行字符串
+    需要同步这里（改 tomllib round-trip 或按语法跳过字符串体）。
     """
     blocks: list[str] = []
     cur: list[str] = None  # type: ignore[assignment]

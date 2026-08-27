@@ -10,9 +10,15 @@ from __future__ import annotations
 
 import socket
 import subprocess
+import threading
 
 from . import registry
 from .config import get_config
+
+# 分配互斥：create / patch / restore 的「allocate → 注册表落盘」窗口必须持锁。
+# 三重检验挡不住本进程内的 TOCTOU——create 的窗口隔着 init（分钟级），两个并发
+# create 会拿到同一端口；内核监听检验要在进程真正起来后才看得见。
+ALLOC_LOCK = threading.Lock()
 
 
 def _kernel_listening_ports() -> set[int]:
