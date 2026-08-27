@@ -20,6 +20,7 @@ manager 对 agent 的转发只到 127.0.0.1（无论 agent 是否对外暴露）
 """
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ from fastapi import HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
-from . import agentops, peers, registry, services
+from . import agentops, apitokens, peers, registry, services
 
 # 请求侧不透传的头（httpx 自动解压请求体无意义，长度重算）
 _HOP_HEADERS = {
@@ -238,24 +239,39 @@ async def service_proxy(request: Request, agent: dict, svc: dict, sub_path: str)
                          timeout=httpx.Timeout(600.0, connect=5.0))
 
 
+def _manager_health() -> Response:
+    """管理面自身健康应答（App 的离线探测语义 = 管理面存活）。"""
+    import json as _json
+    from . import __version__, registry as _reg
+    body = _json.dumps({"ok": True, "service": "xusi", "version": __version__,
+                        "agents": len(_reg.list_agents())}, ensure_ascii=False)
+    return Response(content=body, media_type="application/json")
+
+
+def _is_health_probe(target_path: str, request: Request) -> bool:
+    """/v1/health GET——token 路由里唯一不需要绑定 agent 的端点。"""
+    return target_path.rstrip("/") == "/v1/health" and request.method == "GET"
+
+
 async def token_routed(request: Request, target_path: str) -> Response:
-    """根路径 /v1/*、/ui/*：凭 agent token 定向转发（voidhub 形态，原样透传）。"""
+    """根路径 /v1/*、/ui/*：凭 agent token 定向转发（voidhub 形态，原样透传）。
+
+    api token 不绑 agent、路由不了具体目标；但 /v1/health 探活放行（README /
+    docs/api.md 的 App 接入示例）——应答与无 token 探活同源，且顺带验了 token。"""
     tok = request.query_params.get("token")
     if not tok:
         auth = request.headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
             tok = auth[7:].strip()
     if not tok:
-        # 无 token：仅放行探活（App 的离线探测语义 = 管理面存活）
-        if target_path.rstrip("/") == "/v1/health" and request.method == "GET":
-            import json as _json
-            from . import __version__, registry as _reg
-            body = _json.dumps({"ok": True, "service": "xusi", "version": __version__,
-                                "agents": len(_reg.list_agents())}, ensure_ascii=False)
-            return Response(content=body, media_type="application/json")
+        # 无 token：仅放行探活
+        if _is_health_probe(target_path, request):
+            return _manager_health()
         raise HTTPException(401, "missing token（此入口凭 agent 观察台 token 路由）")
-    found = agent_by_agent_token(tok)
+    found = await asyncio.to_thread(agent_by_agent_token, tok)
     if not found:
+        if _is_health_probe(target_path, request) and apitokens.verify(tok):
+            return _manager_health()
         raise HTTPException(401, "unknown token（非本管理面任何 agent 的观察台 token）")
     agent, _ = found
     # 原样透传（含 Authorization 与 ?token=，agent 自行校验）
@@ -357,13 +373,19 @@ def _fanout_locate(agent_id: str, request: Request | None = None) -> dict | None
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(pls))) as ex:
         futs = {ex.submit(_peer_has_agent, p, agent_id, headers): p for p in pls}
-        for fut in concurrent.futures.as_completed(futs, timeout=10):
-            p = futs[fut]
-            try:
-                if fut.result():
-                    return p
-            except Exception:
-                continue
+        try:
+            for fut in concurrent.futures.as_completed(futs, timeout=10):
+                p = futs[fut]
+                try:
+                    if fut.result():
+                        return p
+                except Exception:
+                    continue
+        except TimeoutError:
+            # 10s 硬墙到点：未完成的 peer 一律视为"没有这个 agent"。
+            # 超时异常发在 as_completed 迭代本身（不在 fut.result()），
+            # 不接住会 500。已完成的 fut 上面已消费，丢弃即可。
+            pass
     return None
 
 

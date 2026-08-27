@@ -8,7 +8,8 @@
 - `[cluster].secret`（admin token）——管理面全权
 - 该 agent 的 `webui_tokens.json`——仅该 agent 的 /v1 /ui
 
-api token **只**进 `/px /svc /v1 /ui` 四个反代入口；`/api/*`（含本接口本身）
+api token **只**进 `/px /svc` 两个反代入口（`/v1/health` 探活也放行——
+token_routed 的例外）；`/api/*`（含本接口本身）
 一律不认（任何端点若想被 api token 通，必须显式调 `apitokens.verify()`）。
 
 token 格式：`secrets.token_urlsafe(32)`（43 字符 URL-safe base64，无 padding）。
