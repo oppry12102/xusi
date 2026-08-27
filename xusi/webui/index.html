@@ -30,6 +30,7 @@
   button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
   button.pri:hover{opacity:.9;color:#fff}
   button.danger:hover{border-color:var(--err);color:var(--err)}
+  button.mini{padding:2px 8px;font-size:11.5px;border-radius:5px}
   button:disabled{opacity:.45;cursor:not-allowed}
   /* 节点徽章 + peer 切换器（顶栏） */
   #nodebar{display:flex;align-items:center;gap:8px;margin-left:14px}
@@ -578,6 +579,15 @@ async function deletePeer(peerId, name) {
   } catch (e) { alert("删除失败：" + e.message); }
 }
 
+async function togglePeerVisibility(peerId, name, cur) {
+  const next = !cur;
+  try {
+    await api(`/api/peers/${encodeURIComponent(peerId)}/visibility`, {
+      method: "POST", body: {show_agents: next}});
+    await loadNode();   // 重拉并重渲染
+  } catch (e) { alert("切换失败：" + e.message); }
+}
+
 function renderPeerList(peers) {
   const el = $("#dnode-peers");
   if (!peers || !peers.length) {
@@ -595,6 +605,12 @@ function renderPeerList(peers) {
     const tail = p.ok ? `${p.latency_ms}ms` : esc(p.error || "不可达");
     const peerUrl = esc(p.url).replace(/\/+$/, "") + "/";
     const openHref = `${peerUrl}?mtoken=${encodeURIComponent(tok)}`;
+    const show = p.show_agents !== false;  // 后端老数据缺省补 true
+    const visBtn = meAdmin
+      ? `<button class="mini" onclick="togglePeerVisibility('${idShort}', '${name}', ${show})"
+           title="${show ? "在 fan-in 视图里隐藏该 peer 的 agents" : "在 fan-in 视图里显示该 peer 的 agents"}"
+           style="${show ? "" : "color:var(--sub)"}">${show ? "显示" : "隐藏"}</button>`
+      : "";
     const delBtn = meAdmin
       ? `<button class="danger mini" onclick="deletePeer('${idShort}', '${name}')" title="从本机 peer 名册移除">删</button>`
       : "";
@@ -604,6 +620,7 @@ function renderPeerList(peers) {
       <span class="mono">${idShort}</span>
       <a class="open" href="${openHref}" target="_blank" rel="noopener">打开</a>
       <span class="peer-latency">${tail}</span>
+      ${visBtn}
       ${delBtn}
     </div>`;
   }).join("");
