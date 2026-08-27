@@ -401,13 +401,19 @@ def restore(backup_path: Path, *, new_id: str | None = None,
     try:
         with tarfile.open(backup_path, "r:gz") as tar:
             for m in tar.getmembers():
-                # 防御：tar-slip
+                # 防御：tar-slip（显式检查 + data filter 双保险——filter 还拦
+                # 符号链接逃逸：workspace 是 agent 任意写的，包里混进指向
+                # home 之外的 symlink 再借后续成员写穿它，手工检查挡不住）
                 parts = Path(m.name).parts
                 if ".." in parts or m.name.startswith(("/", "\\")):
                     raise BackupError(f"非法包成员：{m.name}")
                 if m.name == "meta.json":
                     continue  # 不入 home
-                tar.extract(m, home)
+                try:
+                    tar.extract(m, home, filter="data")
+                except tarfile.FilterError as e:
+                    raise BackupError(
+                        f"包成员不安全，拒绝解压：{m.name}（{e}）") from None
         # 解压产物的权限恢复（tar 默认按 mtime/uid 写入）
         ct = home / "config.toml"
         if ct.is_file():
