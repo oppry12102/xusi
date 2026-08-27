@@ -562,7 +562,7 @@ Authorization: Bearer <any-token>
 {"self": {...}, "peers": []}
 ```
 
-`peers[]` 来自 Phase 2 的 `etc/peers.toml`；每个 peer 含 `id/name/url/ok/info/error/latency_ms`。
+`peers[]` 来自 Phase 2 的 `etc/peers.toml`；每个 peer 含 `id/name/url/ok/info/error/latency_ms/show_agents`。`show_agents` 控制该 peer 的 agent 是否进入本机的 `/api/agent-peers` fan-in（详见 §7c 末「节点可见性开关」）。
 
 ---
 
@@ -581,10 +581,11 @@ Authorization: Bearer <any-token>
 .venv/bin/python -m xusi peers remove <peer-id>
 
 # API（admin 写；任意 token 读）
-GET    /api/peers            → {"cluster": bool, "peers": [...]}
-POST   /api/peers            body: {"url": "http://...", "name": "..."}    → 201
-DELETE /api/peers/{peer_id}  → 200 {"removed": "..."}
-POST   /api/peers/probe      → 200 {"probed": N, "results": [...]}    # 强制重探
+GET    /api/peers                      → {"cluster": bool, "peers": [{id, name, url, ok, show_agents, ...}]}
+POST   /api/peers                      body: {"url": "http://...", "name": "...", "show_agents": true}    → 201
+DELETE /api/peers/{peer_id}            → 200 {"removed": "..."}
+POST   /api/peers/{peer_id}/visibility body: {"show_agents": true|false}                                → 200 {id, show_agents}    # 切换单 peer 行的 fan-in 可见性
+POST   /api/peers/probe                → 200 {"probed": N, "results": [...]}    # 强制重探
 ```
 
 # 集群内自收敛（每台 xusi 自动拥有全表，无需手动复制 toml）
@@ -595,6 +596,14 @@ POST   /api/internal/peers/welcome     body: {"from_id":"...", "peers":[{id,url,
 
 `POST /api/peers` 成功后**自动**做两件事：(1) 给每个已知 peer 发 `announce` 告知「新人 X 来了」；(2) 给 X 单独发 `welcome`（当前全表），让 X 一次性 idempotent 合并——announce + welcome 配对，新人立即拥有完整集群视图，不必手动 resync。
 
+**show_agents 语义**：「不是主动做的事情，不在自己 fan-in 界面显示」——
+- 手动 `add_peer` 默认 `true`（admin 主动加就是想看对端 agents）
+- `announce` / `welcome` 接收端走 `local_add_or_update(default_show_agents=False)`，被动收进来的默认 `false`
+- 本机已经有此 peer 时再次收到 announce/welcome = `skipped`，**永不降级**（保护主动意图：曾经手动加过并 toggle 成 `true` 的不会被任何远端 sync 改成 `false`）
+- `show_agents=false` 仅过滤本机 `/api/agent-peers` fan-in 视图；互联 token / `/svc/...` 鉴权 / 远端 forward 不受影响
+
+切换方式：`POST /api/peers/{peer_id}/visibility`（admin）改单行；CLI 用 `xusi peer add --no-show-agents`（添加时不显示），或在 toml 里直接改 `show_agents = false/true`（缺省 `true`，老 toml 升级时 `list_peers()` 自动补默认值，向后兼容）。
+
 bootstrap 场景：某 xusi `peers.toml` 为空时，先手动 add 一个 peer 拿到第一根线，再调 `/api/internal/peers/resync`（可指定 `from_peer_id`，缺省自动选任一可达 peer），从其 `/api/peers` 拉全表合并——一次性把全集群对齐。整个机制只走 cluster_secret 鉴权通道，不引入新协议。
 
 
@@ -604,9 +613,10 @@ bootstrap 场景：某 xusi `peers.toml` 为空时，先手动 add 一个 peer �
 id = "<peer 的 etc/node.id>"
 url = "http://10.0.16.15:8601"
 name = "vm-16-15"
+# show_agents = false   # 可选；缺省 true（老 toml 升级时自动补）
 ```
 
-`id` 字段冗余存一份（peer 自报）方便 grep；url 是事实源。
+`id` 字段冗余存一份（peer 自报）方便 grep；url 是事实源。`show_agents` 缺省 `true`——只在显式 `false` 时写出（保持老 toml 文件不被无意义字段污染）。
 
 ### 跨节点读路径
 
