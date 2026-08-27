@@ -584,7 +584,8 @@ async function togglePeerVisibility(peerId, name, cur) {
   try {
     await api(`/api/peers/${encodeURIComponent(peerId)}/visibility`, {
       method: "POST", body: JSON.stringify({show_agents: next})});
-    await loadNode();   // 重拉并重渲染
+    await refresh();   // 立即刷 fan-in：fetch /api/agents（含 _via）+ /api/cluster，
+                       // 否则要等下一个 15s 轮询周期才看到 peer 的 agents 出现/消失
   } catch (e) { alert("切换失败：" + e.message); }
 }
 
