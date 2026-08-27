@@ -221,11 +221,12 @@ async def _broadcast_peer_add(rec: dict) -> None:
             print(f"[peers] broadcast → {p['id']} 失败：{type(e).__name__}: {e}",
                   flush=True)
 
-    # 2) 迎新：把当前全表（除 self 与 rec）发给新人
+    # 2) 迎新：把当前全表（除 rec）发给新人；包括自己——否则新人
+    #    永远不知道 welcome 发送方是谁，缺这一根线 cluster 就不对称。
     welcome_rows = [
         {"id": p["id"], "url": p["url"], "name": (p.get("name") or "").strip()}
         for p in list_peers()
-        if p["id"] != rec["id"] and p["id"] != me_id
+        if p["id"] != rec["id"]
     ]
     if not welcome_rows:
         return  # 单节点 bootstrap 时不必发空 welcome
