@@ -19,6 +19,7 @@ import io
 import json
 import os
 import platform
+import shutil
 import socket
 import tarfile
 import tempfile
@@ -92,7 +93,7 @@ class LocalBackend:
         dst = self._path(key)
         # 同 key 存在时覆盖（旧包自动丢；list 时仍可见，新备份重新计时）
         tmp = dst.with_suffix(dst.suffix + ".tmp")
-        tmp.write_bytes(src_path.read_bytes())
+        shutil.copyfile(src_path, tmp)   # 流式拷贝——包体 GB 级时不整包进内存
         os.replace(tmp, dst)
         try:
             dst.chmod(0o600)
@@ -207,10 +208,6 @@ def _check_backupable(agent_id: str, grace: int) -> None:
             pass  # 解析失败不阻塞
 
 
-# 兼容旧 CLI 脚本对 _check_sleeping 的引用
-_check_sleeping = _check_backupable
-
-
 # ── 快照 ──────────────────────────────────────────────────────────────
 
 def _filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
@@ -226,8 +223,10 @@ def _filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
 
 
 def _build_meta(agent_id: str, agent: dict, reason: str,
-                tmp_size: int, home_size: int) -> dict:
-    """包内 meta.json：注册表快照 + 备份元数据。"""
+                tmp_size: int, home_size: int,
+                xuseek_version: str = "") -> dict:
+    """包内 meta.json：注册表快照 + 备份元数据。xuseek_version 由 caller 在
+    SIGSTOP 冻结前探测好传入（冻结中的 agent 不应答）。"""
     return {
         "xusi_version": __version__,
         "agent_id": agent_id,
@@ -242,18 +241,23 @@ def _build_meta(agent_id: str, agent: dict, reason: str,
         "snapshot_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "snapshot_reason": reason,
         "from_host": platform.node() or socket.gethostname(),
-        "xuseek_version": _detect_xuseek_version(agent_id),
+        "xuseek_version": xuseek_version,
         "home_size_bytes": home_size,
         "tar_size_bytes": tmp_size,
     }
 
 
 def _detect_xuseek_version(agent_id: str) -> str:
+    """/v1/status 顶层的 version（agent 自报的内核版本，如 "2.5.2"）。
+    未运行/不应答/键缺失返 ""。须在 SIGSTOP 冻结前调。"""
     try:
         st = agentops.status(agent_id)
-        return str(st.get("version", ""))
+        inner = st.get("agent_status")
+        if isinstance(inner, dict):
+            return str(inner.get("version") or "")
     except Exception:
-        return ""
+        pass
+    return ""
 
 
 def snapshot(agent_id: str, *, reason: str = "manual",
@@ -273,6 +277,8 @@ def snapshot(agent_id: str, *, reason: str = "manual",
 
     proc_active = _proc_active(agent_id)
     _check_backupable(agent_id, grace)
+    # 内核版本在冻结前探——曾放在冻结窗内调（agent 不应答），恒为空串
+    xuseek_ver = _detect_xuseek_version(agent_id)
     unit = get_config().unit_name(agent_id)
 
     # 估算 home 大小（仅 data + workspace，excluded 之后）
@@ -301,7 +307,8 @@ def snapshot(agent_id: str, *, reason: str = "manual",
                     if p.is_dir():
                         tar.add(p, arcname=sub, filter=_filter)
             tar_size = tmp_path.stat().st_size
-            meta = _build_meta(agent_id, agent, reason, tar_size, home_size)
+            meta = _build_meta(agent_id, agent, reason, tar_size, home_size,
+                               xuseek_version=xuseek_ver)
             # 第二遍：把 meta 写进包头（tarfile 不支持原地改头，整体重写；
             # 接受 ~2x 压缩成本，换 meta 内 tar_size_bytes 准确）
             with tarfile.open(tmp_path, "w:gz") as tar:
@@ -352,14 +359,16 @@ def _read_meta_from_tar(path: Path) -> dict:
 
 
 def restore(backup_path: Path, *, new_id: str | None = None,
-            port: int | None = None, host: str = "127.0.0.1",
+            port: int | None = None,
             overwrite: bool = False,
             brains: list[str] | None = None,
             note: str | None = None,
             backend: BackupBackend | None = None) -> dict:
     """从本地路径（或 backend 拉的本地路径）恢复 agent 到 instances/。
 
-    流程：解压 → versions 重建 xuseek-v2 → 写注册表 → 启动。
+    流程：解压 → versions 重建 xuseek-v2 → 写注册表 → 启动（agentops 同一条
+    拉起路径，listen host 由注册表 expose 推导——旧 host 参数已删：它只会
+    让 expose=true 的恢复「注册表说外网、实际绑 127.0.0.1」地撒谎）。
     new_id 冲突时：overwrite=True 强覆盖（先停旧），否则报错。
     brains / note 若非 None，覆盖备份 meta 里的同名字段（克隆对话框用：大脑不是
     备份项目，备注自动写"从备份克隆于 …"）。
@@ -429,63 +438,57 @@ def restore(backup_path: Path, *, new_id: str | None = None,
     if not (src_dir / "xuseek.sh").exists():
         sv = meta.get("source_version") or ""
         if not sv or sv == "main":
+            shutil.rmtree(home, ignore_errors=True)
             raise BackupError(
                 f"备份的 source_version={sv!r} 是过渡期字段；请管理员在 versions/"
                 f"投放对应版本包或显式选可用版本（GET /api/versions）。")
         try:
             versions.extract(sv, src_dir)
         except versions.VersionError as e:
-            import shutil
             shutil.rmtree(home, ignore_errors=True)
             raise BackupError(f"恢复失败：{e}") from None
 
-    # 4. 写注册表（端口优先级：用户显式 > overwrite 沿用旧端口 > 自动分配）
-    if port is not None:
-        pass                            # 用户传的优先
-    elif preserved_port is not None and ports.port_free(preserved_port):
-        port = preserved_port
-    else:
-        port = ports.allocate(None)
+    # 4. 写注册表（端口优先级：用户显式 > overwrite 沿用旧端口 > 自动分配）。
+    # 「分配 → 落盘」与 create/patch 互斥（ports.ALLOC_LOCK，防 TOCTOU 撞端口）。
+    # 大脑校验与 create/patch 共用 brains.validate_selection（原先这里手抄了
+    # 一份等价检查，会漂移）。不重渲染 config——config.toml 已从包里拷来含
+    # 正确 key，重渲染会覆盖恢复的一致性。
     now = registry.now_iso()
-    rec = {
-        "id": agent_id,
-        "name": meta.get("agent_name", agent_id),
-        "mission": meta.get("mission", ""),
-        "brains": brains if isinstance(brains, list) and brains else meta.get("brains", []),
-        "budgets": meta.get("budgets") or {},
-        "expose": bool(meta.get("expose", False)),
-        "port": port,
-        "desired_state": "running",
-        "note": note if isinstance(note, str) else meta.get("note", ""),
-        "source_version": meta.get("source_version", ""),
-        "created_at": meta.get("created_at", now),
-        "updated_at": now,
-        "tokens": [],
-    }
-    # 注册大脑（pool 校验交给 agentops.create_agent；但这里只恢复，不重渲染 config——
-    # config.toml 已从包里拷过来含正确 key；create_agent 会重渲染覆盖，破坏恢复一致性）
-    # → 改：直接 add + 不触发 spawn，再单独 spawn。
-    if not all(b in {p["name"] for p in _brains_mod.pool_summary()} for b in rec["brains"]):
-        import shutil
-        shutil.rmtree(home, ignore_errors=True)
-        raise BackupError(f"大脑池缺失：{rec['brains']}")
-    no_key = [b for b in rec["brains"]
-              if not next((p for p in _brains_mod.pool_summary() if p["name"] == b), {}).get("has_key")]
-    if no_key:
-        import shutil
-        shutil.rmtree(home, ignore_errors=True)
-        raise BackupError(f"大脑缺 key：{no_key}")
-    registry.add_agent(rec)
+    with ports.ALLOC_LOCK:
+        if port is not None:
+            pass                            # 用户传的优先
+        elif preserved_port is not None and ports.port_free(preserved_port):
+            port = preserved_port
+        else:
+            port = ports.allocate(None)
+        rec = {
+            "id": agent_id,
+            "name": meta.get("agent_name", agent_id),
+            "mission": meta.get("mission", ""),
+            "brains": brains if isinstance(brains, list) and brains else meta.get("brains", []),
+            "budgets": meta.get("budgets") or {},
+            "expose": bool(meta.get("expose", False)),
+            "port": port,
+            "desired_state": "running",
+            "note": note if isinstance(note, str) else meta.get("note", ""),
+            "source_version": meta.get("source_version", ""),
+            "created_at": meta.get("created_at", now),
+            "updated_at": now,
+            "tokens": [],
+        }
+        try:
+            _brains_mod.validate_selection(rec["brains"])
+        except ValueError as e:
+            shutil.rmtree(home, ignore_errors=True)
+            raise BackupError(f"大脑池校验失败：{e}") from None
+        registry.add_agent(rec)
 
-    # 5. spawn
+    # 5. 拉起 + 健康验收（与 create 同一条路径：源码副本 / listen host 都按
+    # 注册表推导——不再自带一份 systemdctl.spawn_agent 绕开 agentops）
     try:
-        from . import systemdctl as _sc
-        _sc.spawn_agent(cfg.unit_name(agent_id),
-                        source_dir=str(src_dir), home=str(home),
-                        host=host, port=port)
+        agentops.spawn_and_verify(rec)
     except Exception as e:
         # 启动失败回滚
-        import shutil
         try:
             systemdctl.stop(cfg.unit_name(agent_id))
         except Exception:
@@ -495,9 +498,9 @@ def restore(backup_path: Path, *, new_id: str | None = None,
         raise BackupError(f"spawn 失败：{e}") from e
 
     # 6. 签发新观察台 token（webui_tokens.json 备份时被排除；新 agent 启动时
-    # 不会自带，需调 xuseek CLI 现场 mint + 记注册表）
+    # 不会自带，需调 xuseek CLI 现场 mint + 记注册表——token_new 与 create 共用）
     try:
-        agentops._mint_token(agent_id, "restored")
+        agentops.token_new(agent_id, "restored")
     except Exception as e:
         # token 签发失败不阻塞恢复——管理员可后续补签
         rec_token_err = str(e)

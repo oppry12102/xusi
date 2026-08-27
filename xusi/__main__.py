@@ -353,7 +353,6 @@ def cmd_restore(args) -> int:
         bp,
         new_id=args.new_id,
         port=args.port,
-        host=args.host,
         overwrite=args.overwrite,
     )
     print(f"  restored id     : {out['id']}")
@@ -452,8 +451,7 @@ def main() -> int:
     rs_ = sub.add_parser("restore", help="从备份包恢复 agent（可跨主机）")
     rs_.add_argument("--from", dest="from_path", required=True, help="备份 tar.gz 路径")
     rs_.add_argument("--new-id", default=None, help="恢复后用新 id（避免冲突）")
-    rs_.add_argument("--port", type=int, default=None, help="恢复后端口（默认自动分配）")
-    rs_.add_argument("--host", default="127.0.0.1", help="监听 host")
+    rs_.add_argument("--port", type=int, default=None, help="恢复后端口（默认自动分配；listen host 由注册表 expose 推导）")
     rs_.add_argument("--overwrite", action="store_true", help="覆盖同名已存在 agent")
     rs_.set_defaults(fn=cmd_restore)
 

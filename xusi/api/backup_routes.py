@@ -98,5 +98,5 @@ def api_restore(req: RestoreReq, _rec: dict = Depends(require_admin)) -> dict:
     else:
         raise HTTPException(400, "需要 key 或 from_path 之一")
     return backup.restore(
-        bp, new_id=req.new_id, port=req.port, host=req.host,
+        bp, new_id=req.new_id, port=req.port,
         overwrite=req.overwrite, brains=req.brains, note=req.note)

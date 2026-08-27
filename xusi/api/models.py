@@ -50,8 +50,7 @@ class RestoreReq(BaseModel):
     from_path: str | None = Field(None, description="备份 tar.gz 本机路径（CLI 用）")
     key: str | None = Field(None, description="备份 key（WebUI 用：从 LocalBackend 取，免下载）")
     new_id: str | None = Field(None, description="恢复后用新 id（避免冲突）")
-    port: int | None = Field(None, description="恢复后端口（默认自动分配）")
-    host: str = Field("127.0.0.1", description="监听 host")
+    port: int | None = Field(None, description="恢复后端口（默认自动分配；listen host 由注册表 expose 推导）")
     overwrite: bool = Field(False, description="覆盖同名已存在 agent")
     brains: list[str] | None = Field(None, description="覆盖备份 meta.brains；克隆对话框用，"
                                                   "让用户从 xusi 大脑池显式选，而不是沿用 meta")
