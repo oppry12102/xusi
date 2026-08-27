@@ -12,6 +12,9 @@ etc/brains.toml
 # 管理面 token（admin/user）——明文 PLAIN + 历史残留 JWT
 # 丢了只能重新签，调用方（WebUI / curl / voidhub）需同步替换
 etc/tokens.json
+# 智能体互联 token（同集群 agent ↔ agent 互调 /svc 的入场券，每 xusi 一把）
+# revoke 后所有 agent 互调立即中断，需重新签发并通告 agent 重读 /api/agent-peers
+etc/inter_agent_tokens.json
 # 注册表（含各 agent 的观察台 token）
 etc/agents.json
 # 管理操作审计

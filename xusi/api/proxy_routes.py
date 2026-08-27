@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
-from .. import agentops, apitokens, authtok, proxy, registry, services
+from .. import agentops, apitokens, authtok, inter_agent_tokens, proxy, registry, services
 from .auth import require_auth
 from fastapi import Depends
 
@@ -19,11 +19,13 @@ router = APIRouter()
 
 
 def _svc_px_auth(request: Request, agent: dict) -> None:
-    """/px 与 /svc 共用鉴权（三档，任一通过即放行）：
+    """/px 与 /svc 共用鉴权（四档，任一通过即放行）：
     ① 管理面 token（cluster_secret——admin 通配所有 agent）；
     ② 反代入口 api token（etc/tokens.json——admin 签发、签给外部反代服务用，
        仅这一档能跨过 /px /svc /v1 /ui，/api/* 一律不认）；
-    ③ 该 agent 自己的观察台 token（让 agent 自带页面/仅持观察台 token 的
+    ③ 智能体互联 token（etc/inter_agent_tokens.json——本 xusi 一把，集群内
+       agent 互调 /svc 时用；不验目标，与 api token 同语义"持票即登机"）；
+    ④ 该 agent 自己的观察台 token（让 agent 自带页面/仅持观察台 token 的
        外部客户端如 voidhub App 也能通行）。"""
     tok = request.query_params.get("mtoken")
     auth = request.headers.get("authorization", "")
@@ -34,8 +36,10 @@ def _svc_px_auth(request: Request, agent: dict) -> None:
         return   # 管理面 token 通过——admin 通配所有 agent
     if tok and apitokens.verify(tok):
         return   # api token 通过——仅进反代入口，与 admin 完全隔离
+    if tok and inter_agent_tokens.verify(tok):
+        return   # 互联 token 通过——同集群 agent 互调 /svc 的入场券
     if not tok or tok not in agentops.read_agent_tokens(agent):
-        raise HTTPException(401, "missing or invalid token（管理面 token、api token 或该 agent 的观察台 token）")
+        raise HTTPException(401, "missing or invalid token（管理面 token、api token、互联 token 或该 agent 的观察台 token）")
 
 
 @router.api_route("/px/{agent_id}/{sub_path:path}",
@@ -97,8 +101,9 @@ async def _forward_passthrough(peer: dict, request: Request, target_path: str) -
 def svc_discover(request: Request, probe: bool = False) -> dict:
     """服务发现：凭 token 找到服务入口，无需预知 agent-id / 服务名
     （App 形态只有 IP+端口+token，正是这个入口的受众）。
-    agent 观察台 token → 仅该 agent；管理面 token / api token → 全部 agent
-    （admin 通配；api token 不绑 agent，给外部反代服务发现用）。
+    agent 观察台 token → 仅该 agent；管理面 token / api token / 互联 token → 全部 agent
+    （admin 通配；api token 不绑 agent，给外部反代服务发现用；互联 token
+    不绑 agent，给同集群其他 agent 发现用）。
     条目脱敏（不含 token_file 路径）。"""
     tok = request.query_params.get("mtoken")
     auth = request.headers.get("authorization", "")
@@ -128,7 +133,9 @@ def svc_discover(request: Request, probe: bool = False) -> dict:
             return {"agents": [_entry(a) for a in registry.list_agents()]}
         if apitokens.verify(tok):
             return {"agents": [_entry(a) for a in registry.list_agents()]}
-    raise HTTPException(401, "missing or invalid token（管理面 token、api token 或 agent 观察台 token）")
+        if inter_agent_tokens.verify(tok):
+            return {"agents": [_entry(a) for a in registry.list_agents()]}
+    raise HTTPException(401, "missing or invalid token（管理面 token、api token、互联 token 或 agent 观察台 token）")
 
 
 @router.api_route("/svc/{agent_id}/{svc_name}/{sub_path:path}",

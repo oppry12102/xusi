@@ -397,17 +397,24 @@ def _peer_has_agent(peer: dict, agent_id: str, headers: dict) -> bool:
 
 async def fetch_json(peer: dict, path: str, *,
                      request: Request | None = None,
+                     token: str | None = None,
                      timeout: float = 5.0) -> Any:
-    """透传 caller `Authorization` 头向 peer 发 GET，返回 parsed JSON。
-    失败抛 PeerUnreachable。
+    """向 peer 发 GET，返回 parsed JSON。失败抛 PeerUnreachable。
 
-    request：callers 的 Request——`Authorization` 头原样透传；未传则不带鉴权
-    （peer 端 401，本地多数路径会降级为"peer 没有"）。"""
+    鉴权二选一（token 显式给定时优先）：
+    - request：callers 的 Request——`Authorization` 头原样透传；
+    - token：显式给定的 token 串（如 cluster_secret，用于 fan-in 时
+      用本机 admin 代替 caller 的 agent token——后者跨节点验不了）。
+
+    都未传则不带鉴权头（peer 端 401，本地多数路径会降级为"peer 没有"）。"""
     url = f"{peer['url'].rstrip('/')}{path}"
     headers: dict[str, str] = {}
-    auth = _auth_from_request(request) if request is not None else ""
-    if auth:
-        headers["authorization"] = auth
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    elif request is not None:
+        auth = _auth_from_request(request)
+        if auth:
+            headers["authorization"] = auth
     try:
         r = await client().get(url, headers=headers, timeout=timeout)
     except httpx.HTTPError as e:

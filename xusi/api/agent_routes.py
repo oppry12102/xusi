@@ -17,7 +17,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import agentops, capabilities, node, peers, proxy, services
+from .. import agentops, apitokens, authtok, capabilities, inter_agent_tokens, node, peers, proxy, registry, services
 from .auth import require_admin, require_agent_or_remote, require_agent_or_remote_admin, require_auth
 from .models import CreateAgentReq, MailReq, PatchAgentReq, TokenNewReq
 
@@ -196,6 +196,103 @@ async def api_agent_mail(request: Request, req: MailReq,
     if target.kind == "local":
         return JSONResponse(agentops.mail(target.agent["id"], req.text))
     return await proxy.forward_to_peer(target.peer, request, request.url.path)
+
+
+# ── 智能体互发现：懒查询，按需拿 peer 列表（最小信息）───────────────────
+
+@router.get("/api/agent-peers")
+async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
+    """智能体互发现：列出当前可联系的其他 agent 的最小信息
+    （id / name / node_id / inter_agent_token）。
+
+    四档 token 任一通过：admin / api token / 互联 token / 任意 agent 观察台 token。
+    - admin / api / 互联 token：不返回 self 字段（caller 没有"自己"的概念）
+    - agent 观察台 token：返回除自己外的全部 peer + self 字段
+
+    互联 token（每 xusi 一把）同集群 agent ↔ agent 互调 /svc 时用——
+    本机这枚对本地 peer 行有效，远端 xusi 那枚随 fan-in 一并返回。peer
+    行里缺这字段表示对方 xusi 还没签发互联 token。
+
+    cluster 模式 fan-in：跨节点 agent 一并聚合（轻量版——不探活，只读
+    id+name+token）。fan-out 路径传 local_only=1 防止递归（peer 端看到该
+    标志停止 fan-in）。鉴权用本机 cluster_secret 代替 caller token——后者
+    是 agent webui token，跨节点验不了。
+    """
+    tok = request.query_params.get("mtoken")
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        tok = auth[7:].strip() or tok
+    if not tok:
+        raise HTTPException(401, "missing token（管理面 token / api token / 互联 token / agent 观察台 token）")
+
+    src_id: str | None = None  # caller 的 agent id；admin/api/互联 token → None
+    if authtok.verify(tok):
+        src_id = None
+    elif apitokens.verify(tok):
+        src_id = None
+    elif inter_agent_tokens.verify(tok):
+        src_id = None  # 互联 token 不绑 agent 身份，caller 不可识别
+    else:
+        pair = proxy.agent_by_agent_token(tok)
+        if pair:
+            src_id = pair[0]["id"]
+        else:
+            raise HTTPException(401, "invalid token")
+
+    me_node_id = node.info()["id"]
+    my_inter_token = inter_agent_tokens.get_token()  # None if not minted
+
+    # 本节点 agent
+    rows: list[dict] = []
+    for a in registry.list_agents():
+        if a["id"] == src_id:
+            continue
+        row = {
+            "id": a["id"],
+            "name": (a.get("name") or a["id"]).strip() or a["id"],
+            "node_id": me_node_id,
+        }
+        if my_inter_token:
+            row["inter_agent_token"] = my_inter_token
+        rows.append(row)
+
+    # cluster fan-in
+    if not local_only and peers.is_cluster():
+        from ..config import get_config
+        admin_tok = get_config().cluster_secret
+        pls = [p for p in peers.list_peers() if p["id"] != me_node_id]
+        if pls and admin_tok:
+            async def _one(p: dict) -> None:
+                try:
+                    r = await proxy.fetch_json(
+                        p, "/api/agent-peers?local_only=1",
+                        token=admin_tok, timeout=5)
+                    peer_rows = r.get("peers", []) if isinstance(r, dict) else []
+                    for row in peer_rows:
+                        if isinstance(row, dict) and row.get("id") != src_id:
+                            new_row = {
+                                "id": row["id"],
+                                "name": (row.get("name") or row["id"]).strip() or row["id"],
+                                "node_id": p["id"],
+                            }
+                            # 远端 xusi 自带它那把互联 token（若未签发则无字段）
+                            remote_tok = row.get("inter_agent_token")
+                            if remote_tok:
+                                new_row["inter_agent_token"] = remote_tok
+                            rows.append(new_row)
+                except proxy.PeerUnreachable:
+                    pass
+                except proxy.PeerHttpError:
+                    pass
+            await asyncio.gather(*[_one(p) for p in pls])
+
+    out: dict = {
+        "access_pattern": "/svc/{peer_id}/{service_name}/*",
+        "peers": rows,
+    }
+    if src_id is not None:
+        out["self"] = {"id": src_id}
+    return out
 
 
 # ── 观察台 token（agent 自家事，与管理面 cluster_secret 无关）────────────

@@ -76,6 +76,8 @@ class XusiConfig:
     @property
     def tokens_file(self) -> Path: return self.etc_dir / "tokens.json"
     @property
+    def inter_agent_tokens_file(self) -> Path: return self.etc_dir / "inter_agent_tokens.json"
+    @property
     def audit_file(self) -> Path: return self.etc_dir / "audit.jsonl"
     @property
     def backup_dir(self) -> Path: return self.root / "etc" / "backups"

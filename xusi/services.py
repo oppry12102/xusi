@@ -193,6 +193,35 @@ def seed_playbook(workspace: Path) -> bool:
         return False
 
 
+# ── 对端发现与联系 playbook：创建 agent 时种进 workspace 根（被动文档）──
+
+PEER_FIND_MD = r"""# 对端发现与联系（提醒）
+
+集群内有其他 agent。
+
+- 想找谁能联系：`GET /api/agent-peers`，用**你自己的 webui token**（`data/webui_tokens.json` 里那把）作 Bearer；返回 `peers[]` 每行带 `inter_agent_token`
+- 想联系某个对端：用**那一行 peer 的 `inter_agent_token`** 作 Bearer，调 `/svc/<peer_id>/<service>/*`（service 名取自对端的 `services.json`）
+- 想被联系：往自己的 `services.json` 加一条服务声明并监听端口即可
+
+其余——你定。
+"""
+
+
+def seed_peer_find_playbook(workspace: Path) -> bool:
+    """把对端发现与联系 playbook 播种进 workspace/playbook/。已存在则不动
+    （agent 可能已自行修改）；返回是否新写入。"""
+    d = workspace / "playbook"
+    p = d / "对端发现与联系.md"
+    if p.exists():
+        return False
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        p.write_text(PEER_FIND_MD, encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
 def manifest_paths(agent: dict) -> list[Path]:
     """清单候选路径（顺序即优先级：后面的覆盖前面）。"""
     home = get_config().instance_home(agent["id"])

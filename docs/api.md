@@ -10,23 +10,28 @@
 
 ---
 
-## 1. 鉴权：三档 token
+## 1. 鉴权：四档 token
 
 | 层 | 用途 | 形态 | 获取 |
 |---|---|---|---|
 | **管理面 token**（admin） | 任何 `/api/*` + 反代入口 | `Authorization: Bearer <token>` 或 `?mtoken=<token>`（浏览器用，会进访问日志，勿外发） | 管理员在服务器签发（见 §8） |
 | **api token** | **只**进 `/px /svc /v1 /ui`（反代入口），**任何 `/api/*` 都拒** | 同上（Bearer / `?mtoken=` / `?token=`） | `POST /api/tokens`（admin 签发，明文只返一次） |
+| **互联 token** | **只**进 `/svc`（同集群 agent 互调） | `Authorization: Bearer <token>` 或 `?mtoken=<token>` | `POST /api/inter-agent-tokens`（admin 签发，明文只返一次） |
 | **agent 观察台 token** | 仅该 agent 的 `/v1 /ui /px` | `Authorization: Bearer <token>` 或 `?token=<token>` | `GET /api/agents/{id}/tokens`（经管理面认证后获取） |
 
-三档凭证**互不相通**：
+四档凭证**互不相通**：
 
 - admin token 走任何端点（管理面 + 反代）——唯一能调 `/api/*` 写端点
 - api token 只能进反代入口——**不能**调 `GET /api/tokens` 自己，更不能调 `DELETE`
+- 互联 token 只能进 `/svc`——**不能**调任何 `/api/*` 写端点；与 api token 完全隔离，
+  revoke 互不影响（一个影响外部服务、一个仅影响集群内 agent 互通信）
 - agent webui token 仅对所属 agent 的 `/v1 /ui /px` 有效
 
-**为什么分出 api token**：admin token 太重要（管理员私用），不应暴露给外部
-反代服务（手机 App / 第三方客户端 / 浏览器扩展）。把这些外部场景搬到 api token
-后，admin token 完全留在 admin 世界，泄露面收窄到管理面本身。详见 §3.6。
+**为什么分出 api / 互联 两档**：
+- **admin token** 太重要（管理员私用），不暴露给任何外部/集群场景
+- **api token** 给外部反代服务（手机 App / 第三方客户端）——revoke 影响外部所有调用方
+- **互联 token** 给本集群 agent 互调用——revoke 只影响集群内 agent ↔ agent 通信，
+  不影响外部服务、不影响 admin、不影响各 agent 自己的观察台。blast radius 最小。
 
 管理面 token **统一为 admin**：全权（创建/删除/改参/启停/签发 token）。
 
@@ -40,7 +45,7 @@ HTTP/1.1 401 Unauthorized
 ```
 
 管理面 token 通过后一律放行——不再有 403 Forbidden（用户场景已删除）。
-api token 通过也放行（仅限反代入口）；不带 / 无效在反代入口 → 401，
+api / 互联 token 通过也放行（仅限反代入口）；不带 / 无效在反代入口 → 401，
 在 `/api/*` → 一律 401（连 401 都跟 admin token 走同一条，不会暴露路由存在性）。
 
 ---
@@ -231,6 +236,47 @@ curl -s $B "http://SERVER:8601/api/agents/{id}/logs?limit=200"     # 进程日�
 `agent_status.daemon.state`（`running_session` 呼吸中 / `sleeping` 休眠 / `parked` 驻留 / `stopped`）、
 `agent_status.daemon.mailbox_pending`（待收信）、`process.auto_restarts`（掉线自动拉起次数）。
 
+### 对端发现（agent 互通信入口）
+
+agent 想找其他 agent 时调一次——懒查询，**不推送**、不写 agent home：
+
+```bash
+# 用 agent 自己的观察台 token 调（最常见）
+curl -s -H "Authorization: Bearer $AGENT_TOKEN" \
+     http://SERVER:8601/api/agent-peers
+# → {"self":{"id":"agent-X"},
+#    "access_pattern":"/svc/{peer_id}/{service_name}/*",
+#    "peers":[
+#      {"id":"agent-A","name":"Astronomy","node_id":"node-1",
+#       "inter_agent_token":"<本 xusi 那把互联 token>"},
+#      {"id":"agent-B","name":"Bio","node_id":"node-2",
+#       "inter_agent_token":"<node-2 那把互联 token>"}
+#    ]}
+```
+
+admin / api / 互联 token 调用也可以（这时不返回 `self`，且能看到自己所在的 peer 行）。
+cluster 模式自动跨节点 fan-in；远端 peer 行带的是该远端 xusi 自己的互联 token
+（若远端尚未签发则该字段缺省）。
+
+拿到 peer 行后直接用它带的 `inter_agent_token` 调 `/svc/<peer_id>/<service_name>/...`：
+
+```bash
+curl -s -H "Authorization: Bearer $PEER_INTER_TOKEN" \
+     http://SERVER:8601/svc/agent-A/inbox/...
+# 走 node-1 xusi 的 /svc，node-1 验互联 token 合法后透传给 agent-A 的 inbox 服务
+```
+
+**为什么这样做**：
+- xusi **不下发 peers.json 到 agent home**——写 agent 工作目录会越界，且几百 agent 时维护成本高
+- xusi **不开新鉴权**——已有四档 token（admin / api / 互联 / agent webui）都接受
+- 实际通信走 `/svc/<peer_id>/<service_name>/*`——见 §7.3 自建服务反代，由对端在
+  `workspace/data/services.json` 里声明 inbox 服务（建议命名 `inbox` / `contact`），
+  xusi 不替 agent 决定通信格式、鉴权、是否广播入口
+- 互联 token 是同集群 agent 互调用的专用凭证，跟 api token 隔离——revoke 一个不影响另一个
+- agent 之间怎么协商（要不要广播 token / 要不要互信）由 agent 自己决定
+
+agent 创建时已自动种一份"对端发现与联系" playbook 条目进 `workspace/playbook/对端发现与联系.md`。
+
 ### 投信（影响大脑的唯一通道，admin 调用）
 
 ```bash
@@ -255,6 +301,44 @@ curl -s -X POST -H "Authorization: Bearer $T" -H "Content-Type: application/json
 # 撤销（前缀 ≥8 位，立即生效）
 curl -s -X DELETE -H "Authorization: Bearer $T" http://SERVER:8601/api/agents/{id}/tokens/AbCdEf12
 ```
+
+---
+
+## 6b. 互联 token（admin 签发，每 xusi 一把）
+
+互联 token 是同集群 agent ↔ agent 互调 `/svc` 时用的"入场券"。每 xusi
+**只持 0 或 1 把**——本 xusi 上所有 agent 公用；不绑 agent 身份，跟 api token
+同构但作用域更窄（只 `/svc`）。
+
+```bash
+# 签发：若已存在则返现有那条（不重发——避免覆盖正在用的）
+curl -s -X POST -H "Authorization: Bearer $T" \
+     http://SERVER:8601/api/inter-agent-tokens
+# → {"id":"iat_abc123","token":"...","label":"inter-agent","created_at":"..."}
+
+# 列出（admin 视角，含明文）
+curl -s -H "Authorization: Bearer $T" http://SERVER:8601/api/inter-agent-tokens
+# [{"id":"iat_abc123","token":"...","label":"inter-agent","created_at":"..."}]
+
+# 撤销（按 id，agent 之间立即失去 /svc 互调能力）
+curl -s -X DELETE -H "Authorization: Bearer $T" \
+     http://SERVER:8601/api/inter-agent-tokens/iat_abc123
+# → {"revoked":"iat_abc123"}
+```
+
+轮换：先 DELETE 旧的那把（agent 之间互调立即中断），再 POST 拿新 token，
+最后用某种方式把新 token 通告给所有 agent（通常是 LLM 重新调用一次
+`/api/agent-peers` 拿最新值）。
+
+为什么需要这一档：
+
+- **api token 给外部服务**（手机 App 等）——revoke 影响所有外部调用方，blast radius 大
+- **互联 token 只给本集群 agent**——revoke 只影响集群内互通信，不影响外部、不影响 admin
+- 两档完全隔离：互联 token 泄了，吊销它外部服务不受影响；api token 泄了，吊销它 agent
+  互通信不受影响
+
+agent 拿到互联 token 的途径：调 `/api/agent-peers`，peer 行里就有（每 peer 标注
+它所在 xusi 那把）。
 
 ---
 
