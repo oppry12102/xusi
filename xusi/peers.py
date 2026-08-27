@@ -346,8 +346,12 @@ async def resync_from_peer(peer: dict) -> dict:
     for row in rows:
         if not (isinstance(row, dict) and row.get("id") and row.get("url")):
             continue
+        # 显式传 source 的 show_agents：local_add_or_update 在 rec 显式带
+        # show_agents 时以 rec 为准（参见该函数 docstring）；不带则走
+        # default_show_agents=False。已有 peer 不被覆盖（不降级策略生效）。
         s = local_add_or_update({"id": row["id"], "url": row["url"],
-                                 "name": row.get("name", "")})
+                                 "name": row.get("name", ""),
+                                 "show_agents": row.get("show_agents")})
         if s == "added":
             added += 1
         elif s == "skipped":
