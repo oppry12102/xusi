@@ -117,6 +117,28 @@ def restart(unit: str) -> None:
     _run(["systemctl", "--user", "restart", unit], timeout=60)
 
 
+def main_stopped(unit: str) -> bool:
+    """单元主进程是否处于 SIGSTOP 冻结态（/proc State: T）。
+
+    暂停（pause）与备份冻结窗都表现为主进程 T 态；systemd 层完全看不出
+    （ActiveState 仍 active、SubState 仍 running），只有 /proc 说真话。
+    manager 崩溃可能把 agent 永久留在这个态（见 reconcile 的 sigcont-rescue）。
+    只读 /proc，不改任何状态。"""
+    pid = unit_brief(unit).get("main_pid")
+    if not pid:
+        return False
+    try:
+        with open(f"/proc/{pid}/status", "rb") as f:
+            for line in f:
+                if line.startswith(b"State:"):
+                    # 形如 "State:\tT (stopped)"；T=停止，t=跟踪停止
+                    state = line.split(b":", 1)[1].strip().split()[0]
+                    return state in (b"T", b"t")
+    except (OSError, IndexError):
+        return False
+    return False
+
+
 def kill_signal(unit: str, sig: str) -> None:
     """给单元主进程发信号（SIGSTOP/SIGCONT 用于暂停/续跑）。"""
     _run(["systemctl", "--user", "kill", unit, "--signal", sig, "--kill-who", "main"],

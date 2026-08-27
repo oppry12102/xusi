@@ -386,9 +386,11 @@ def start(agent_id: str) -> dict:
 
 def stop(agent_id: str) -> dict:
     """优雅停（SIGTERM → xuseek 轮边界落盘；TimeoutStopSec 兜底）。
-    暂停态先解冻：SIGSTOP 中的进程收不到 SIGTERM，直接停会拖到 SIGKILL、丢会话。"""
+    冻结进程收不到 SIGTERM——先探主进程实况（/proc T 态），SIGSTOP 中先
+    SIGCONT 解冻再停（否则拖到 SIGKILL、丢会话）。覆盖 desired=paused 与
+    「冻结孤儿」（registry 说 running、进程实际被冻）两种态。"""
     agent = get_agent_or_404(agent_id)
-    if agent.get("desired_state") == "paused":
+    if systemdctl.main_stopped(_unit(agent)):
         try:
             systemdctl.kill_signal(_unit(agent), "SIGCONT")
         except systemdctl.SystemdError:
@@ -706,6 +708,12 @@ def reconcile() -> list[dict]:
                         _spawn_unit(agent)
                         wait_health(agent["port"], agent["id"], timeout=60)
                         action = "respawned"
+                elif systemdctl.main_stopped(unit):
+                    # 冻结孤儿：manager 在备份冻结窗 / pause 中途崩掉留下的态
+                    # （期望 running 却被 SIGSTOP——systemd 层 state 仍 active，
+                    # 单纯比对期望态发现不了）。SIGCONT 幂等，恢复呼吸。
+                    systemdctl.kill_signal(unit, "SIGCONT")
+                    action = "sigcont-rescue"
             elif desired == "paused":
                 if state != "active":
                     _spawn_unit(agent)
