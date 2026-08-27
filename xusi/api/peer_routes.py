@@ -21,7 +21,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from .. import peers
 from .auth import require_admin, require_auth
-from .models import AddPeerReq, AnnouncePeerReq
+from .models import AddPeerReq, AnnouncePeerReq, WelcomePeersReq
 
 router = APIRouter()
 
@@ -117,6 +117,20 @@ def api_peers_announce(req: AnnouncePeerReq,
     status = peers.local_add_or_update({"id": req.id, "url": req.url,
                                         "name": req.name})
     return {"ok": True, "status": status, "id": req.id}
+
+
+@router.post("/api/internal/peers/welcome")
+async def api_peers_welcome(req: WelcomePeersReq,
+                            _rec: dict = Depends(require_admin)) -> dict:
+    """迎新接收端：通告方把自己的全表（除 self 与新人）一次性发给新人做合并。
+
+    与 announce 配对：announce 通告单条 peer，welcome 是整张表。新人拿到
+    welcome 后立即拥有完整集群视图，不必再手动调 resync。
+
+    典型链路：A 加 peer X → A 给所有已知 peer 发 announce "X 来了" → A
+    给 X 发 welcome（当前全表）；announce + welcome 同步进行，结果对称。"""
+    summary = await peers.welcome_peers(req.from_id, req.peers)
+    return {"ok": True, **summary}
 
 
 @router.post("/api/internal/peers/resync")

@@ -80,3 +80,13 @@ class AnnouncePeerReq(BaseModel):
     id: str = Field(min_length=1)
     url: str = Field(min_length=1)
     name: str = Field("")
+
+
+class WelcomePeersReq(BaseModel):
+    """迎新包：通告方把自己的全表（除 self 与新人）发给新人做一次性合并。
+
+    与 announce 配对：announce 单条告诉别人"新人 X 来了"，welcome 是把
+    当前全表塞给 X 让它自己 idempotent 合并。两次合并后集群对称。"""
+    from_id: str = Field(min_length=1, description="通告方自己的 node_id（仅日志用）")
+    peers: list[dict] = Field(default_factory=list,
+                              description="[{id, url, name}, ...]；除 self 与被迎新者")

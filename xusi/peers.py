@@ -189,16 +189,22 @@ def local_add_or_update(rec: dict) -> str:
 
 
 async def _broadcast_peer_add(rec: dict) -> None:
-    """add_peer 成功后 fire-and-forget 通知每个已知 peer（admin 鉴权通道）。
+    """add_peer 成功后 fire-and-forget 做两件事：
 
-    失败仅记日志，不抛——本地已落盘，远端不通下次 resync 也会拉齐。
-    跳过 self（自己通告自己无意义）与被通告的 rec 本身。"""
+    1) 给每个已知 peer（除 self 与 rec）发 announce：告诉"新人 X 来了"
+    2) 给 rec 这个新人发 welcome：把当前全表（除 self 与 rec）发给它
+       —— 否则 rec 那边名册是空的，要它手动 resync 才能补齐
+
+    失败均仅记日志，不抛——本地已落盘，远端不通下次 resync 也会拉齐。
+    """
     cfg = get_config()
     if not cfg.cluster_secret:
         return
     me_id = cfg.node_id
     payload = {"id": rec["id"], "url": rec["url"],
                "name": (rec.get("name") or "").strip()}
+
+    # 1) 通告：新人 X 来了
     for p in list_peers():
         if p["id"] == rec["id"] or p["id"] == me_id:
             continue
@@ -214,6 +220,52 @@ async def _broadcast_peer_add(rec: dict) -> None:
         except Exception as e:
             print(f"[peers] broadcast → {p['id']} 失败：{type(e).__name__}: {e}",
                   flush=True)
+
+    # 2) 迎新：把当前全表（除 self 与 rec）发给新人
+    welcome_rows = [
+        {"id": p["id"], "url": p["url"], "name": (p.get("name") or "").strip()}
+        for p in list_peers()
+        if p["id"] != rec["id"] and p["id"] != me_id
+    ]
+    if not welcome_rows:
+        return  # 单节点 bootstrap 时不必发空 welcome
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as cli:
+            r = await cli.post(
+                f"{rec['url'].rstrip('/')}/api/internal/peers/welcome",
+                json={"from_id": me_id, "peers": welcome_rows},
+                headers={"authorization": f"Bearer {cfg.cluster_secret}"})
+        if r.status_code >= 400:
+            print(f"[peers] welcome → {rec['id']} HTTP {r.status_code}",
+                  flush=True)
+    except Exception as e:
+        print(f"[peers] welcome → {rec['id']} 失败：{type(e).__name__}: {e}",
+              flush=True)
+
+
+async def welcome_peers(from_id: str, peers_list: list) -> dict:
+    """迎新接收端：把对方发来的全表合并入本地（idempotent）。
+
+    与 announce 的差别：announce 是单条 peer；welcome 是整张表一次性合并，
+    给刚加进来的新人用它做"快速 bootstrap"——之前只有 announce 的话，新人
+    自己还是空名册，要它手动 resync 才行。
+
+    返回 {from_id, total, added, skipped, skipped_conflict}。"""
+    added = skipped = skipped_conflict = 0
+    for row in peers_list or []:
+        if not (isinstance(row, dict) and row.get("id") and row.get("url")):
+            continue
+        s = local_add_or_update({"id": row["id"], "url": row["url"],
+                                 "name": row.get("name", "")})
+        if s == "added":
+            added += 1
+        elif s == "skipped":
+            skipped += 1
+        elif s == "skipped_conflict":
+            skipped_conflict += 1
+    return {"from_id": from_id, "total": len(peers_list or []),
+            "added": added, "skipped": skipped,
+            "skipped_conflict": skipped_conflict}
 
 
 async def resync_from_peer(peer: dict) -> dict:

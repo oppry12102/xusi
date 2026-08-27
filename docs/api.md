@@ -590,9 +590,10 @@ POST   /api/peers/probe      → 200 {"probed": N, "results": [...]}    # 强制
 # 集群内自收敛（每台 xusi 自动拥有全表，无需手动复制 toml）
 POST   /api/internal/peers/announce   body: {"id":"...", "url":"...", "name":"..."}  → 200 {ok,status,id}
 POST   /api/internal/peers/resync[?from_peer_id=...]                       → 200 {ok,from,total,added,skipped,...}
+POST   /api/internal/peers/welcome     body: {"from_id":"...", "peers":[{id,url,name}, ...]}  → 200 {ok,from_id,total,added,...}
 ```
 
-`POST /api/peers` 成功后**自动** fire-and-forget 通知每个已知 peer 调 `/api/internal/peers/announce`——接收端 idempotent 入册（id 命中 + url 一致 = 跳过；id 未见 = 入册；id 命中但 url 冲突 = 保留本地不动）。
+`POST /api/peers` 成功后**自动**做两件事：(1) 给每个已知 peer 发 `announce` 告知「新人 X 来了」；(2) 给 X 单独发 `welcome`（当前全表），让 X 一次性 idempotent 合并——announce + welcome 配对，新人立即拥有完整集群视图，不必手动 resync。
 
 bootstrap 场景：某 xusi `peers.toml` 为空时，先手动 add 一个 peer 拿到第一根线，再调 `/api/internal/peers/resync`（可指定 `from_peer_id`，缺省自动选任一可达 peer），从其 `/api/peers` 拉全表合并——一次性把全集群对齐。整个机制只走 cluster_secret 鉴权通道，不引入新协议。
 
