@@ -579,13 +579,14 @@ async function deletePeer(peerId, name) {
   } catch (e) { alert("删除失败：" + e.message); }
 }
 
-async function togglePeerVisibility(peerId, name, cur) {
-  const next = !cur;
+async function togglePeerVisibility(peerId, curShow) {
+  const next = !curShow;
   try {
     await api(`/api/peers/${encodeURIComponent(peerId)}/visibility`, {
       method: "POST", body: JSON.stringify({show_agents: next})});
-    await refresh();   // 立即刷 fan-in：fetch /api/agents（含 _via）+ /api/cluster，
-                       // 否则要等下一个 15s 轮询周期才看到 peer 的 agents 出现/消失
+    await refresh();    // 刷 fan-in：fetch /api/agents（主 UI cards）
+    await loadNode();   // 刷节点对话框 peer 名册——refresh() 不 fetch /api/cluster，
+                        // 否则按钮文案保持旧值，下一次点击基于 stale 值 toggle
   } catch (e) { alert("切换失败：" + e.message); }
 }
 
@@ -607,13 +608,18 @@ function renderPeerList(peers) {
     const peerUrl = esc(p.url).replace(/\/+$/, "") + "/";
     const openHref = `${peerUrl}?mtoken=${encodeURIComponent(tok)}`;
     const show = p.show_agents !== false;  // 后端老数据缺省补 true
+    // 按钮文案 = 动作（不是状态）：当前显示着 → 「隐藏」（点了会隐藏）；
+    // 当前隐藏着 → 「显示」（点了会显示）。data-* + addEventListener 取代
+    // inline onclick 内嵌参数——后者会被 HTML 实体解码（esc 把 ' 转 &#39;）
+    // 破坏 JS 字面量，peer 名带单引号就 syntax error。
     const visBtn = meAdmin
-      ? `<button class="mini" onclick="togglePeerVisibility('${idShort}', '${name}', ${show})"
+      ? `<button class="mini vis-toggle" data-peer-id="${idShort}" data-show="${show}"
            title="${show ? "在 fan-in 视图里隐藏该 peer 的 agents" : "在 fan-in 视图里显示该 peer 的 agents"}"
-           style="${show ? "" : "color:var(--sub)"}">${show ? "显示" : "隐藏"}</button>`
+           style="${show ? "" : "color:var(--sub)"}">${show ? "隐藏" : "显示"}</button>`
       : "";
     const delBtn = meAdmin
-      ? `<button class="danger mini" onclick="deletePeer('${idShort}', '${name}')" title="从本机 peer 名册移除">删</button>`
+      ? `<button class="danger mini del-peer" data-peer-id="${idShort}" data-name="${name}"
+           title="从本机 peer 名册移除">删</button>`
       : "";
     return `<div class="peer-row">
       <span class="dot ${dot}" title="${p.ok ? "可达" : "不可达"}"></span>
@@ -625,6 +631,14 @@ function renderPeerList(peers) {
       ${delBtn}
     </div>`;
   }).join("");
+  // 事件代理：避免 inline onclick 内嵌参数被 HTML 实体解码破坏 JS 字面量
+  el.querySelectorAll(".vis-toggle").forEach(b => {
+    b.addEventListener("click", () => togglePeerVisibility(
+      b.dataset.peerId, b.dataset.show === "true"));
+  });
+  el.querySelectorAll(".del-peer").forEach(b => {
+    b.addEventListener("click", () => deletePeer(b.dataset.peerId, b.dataset.name));
+  });
 }
 
 function openNodeDialog() {
