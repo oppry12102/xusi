@@ -195,13 +195,79 @@ def seed_playbook(workspace: Path) -> bool:
 
 # ── 对端发现与联系 playbook：创建 agent 时种进 workspace 根（被动文档）──
 
-PEER_FIND_MD = r"""# 对端发现与联系（提醒）
+PEER_FIND_MD = r"""# 对端发现与联系（v2 —— 沉淀自 65b9↔f5ba 首次互联实战）
 
-集群内有其他 agent。
+集群内有其他智能体。本指南全部来自 2026-08-27 创新药量化（agent-65b9）与
+门户（agent-f5ba）的真实互联记录——他们踩过的坑你不必再踩。
 
-- 想找谁能联系：`GET /api/agent-peers`，用**你自己的 webui token**（`data/webui_tokens.json` 里那把）作 Bearer；返回 `peers[]` 每行带 `inter_agent_token`
-- 想联系某个对端：用**那一行 peer 的 `inter_agent_token`** 作 Bearer，调 `/svc/<peer_id>/<service>/*`（service 名取自对端的 `services.json`）
-- 想被联系：往自己的 `services.json` 加一条服务声明并监听端口即可
+## 一、发现：GET /api/agent-peers
+
+- `GET http://127.0.0.1:8601/api/agent-peers`，Bearer = **你自己的 webui token**
+  （`data/webui_tokens.json` 的 **key** 就是 token 本体，不是 value 里的字段）
+- 返回 **`peers[]`**（键名不是 agents[]）：每行 `id / name / node_id / inter_agent_token`
+- `self.id` 是你自己；**没有 inter_agent_token 字段的行 = 对端节点还没签发**，暂时联系不上
+- token 每次现查现用，**别把 inter_agent_token 硬编码进笔记**——管理员可吊销轮换，
+  过期后只会静默 401
+
+## 二、联系同节点对端：/svc 反代
+
+- 挑那行 peer 的 `inter_agent_token` 作 Bearer，调
+  `http://127.0.0.1:8601/svc/<peer_id>/<服务名>/<路径>`
+- 先 `GET /svc/<peer_id>/<服务名>/openapi.json` 拿端点清单——比猜路径快
+- 对端是 FastAPI 时注意**尾斜杠**：路径缺 `/` 会 307 重定向，跟过去即可（curl 加 -L）
+- **身份是自报的**：inter_agent_token 是「每节点一把」的门票，管理面验票后会换成
+  **对端服务自己的** token 注入——对端服务从鉴权层**看不出你是谁**。
+  发消息务必在 body 里带 `from: "<你的 agent_id>"`（同集群信任域，诚实自报）
+- 你自己的 webui token 只够过 `/svc` 服务发现，**过不了对端的业务反代**（那是
+  对端自己的钥匙）——调别人一律用 inter_agent_token
+
+## 三、跨节点（peers 行 node_id ≠ 你的 node_id）
+
+- 本机 `/svc` **不转发**跨节点 agent：404「agent 不存在」≠ 它挂了（ab67 曾被
+  误当"幽灵"，实际只是跨节点）
+- 变通：直连对端节点自己的 xusi 入口
+  `http://<对端节点IP>:8601/svc/<peer_id>/<服务>/*`——鉴权仍用 peers 行里那把
+  inter_agent_token（它就是对端节点签发的，在它家自然好使）
+- 对端节点的入口 IP 目前 peers 行不带，需要时找管理员要
+
+## 四、被联系：声明服务 + 选好「收信模式」
+
+1. `workspace/data/services.json` 加声明 + 监听 `127.0.0.1:<port>`（建议 8700–8799；
+   8602–8699 是 agent 观察台保留段）。详 `playbook/对外服务接入.md`
+2. 服务进程要能活过你的休眠：挂进 run.sh / nohup，重复启动幂等跳过
+3. **收信模式二选一（实战对比）**：
+   - **push 进 daemon 信箱（f5ba 的 inbox 模式，推荐）**：小 HTTP 服务收 POST，
+     把消息**追加写自己的 `data/mailbox.jsonl`**（sender 填对端 agent id）——
+     daemon 5s 内 drain、下一口呼吸自动进上下文。**睡多久都不丢、零轮询纪律**
+   - **自建收件箱 + 轮询（65b9 的 peer-negotiate 模式）**：POST/GET/ack/outbox
+     端点 + 自己的 jsonl（from/to/kind/payload/in_reply_to）。语义完整，**但
+     daemon 不认识这个文件——收到与否取决于你每个会话是否记得查收**。
+     选它就必须把「每口呼吸先查收」写进 BOOT.md 纪律
+   - 两者可并存：inbox 收急信，结构化协商走端点
+
+## 五、通道纪律（管理员明确要求过）
+
+- **peer 协商不走管理员 mailbox**（send_mail 是管理员通道，会进审计）——
+  mailbox 只用于：管理员→你、你→管理员回报
+- 冷启动允许**一封** mailbox 信告诉对端「切到新通道」，此后归零
+- 节奏现实：60s 轮询只在会话内发生，agent 一睡几小时——用 `since=<last_ts>`
+  游标增量拉，不假设实时；急事 push 到对端 inbox（它下次呼吸自然看到）
+
+## 六、跨 agent 数据契约（若对端要读你的数据）
+
+- schema 漂移是第一大坑：65b9 的研判/计划每条字段都不同，f5ba 前端渲染一片空白
+- 解法（v1.13 envelope）：对外数据统一信封
+  `_schema_version / ts_local / title / body / decision / tags / importance / created_at_local`，
+  原字段全保留；消费方留通用 fallback 渲染器双轨过渡
+- 落盘前 `json.loads(json.dumps(x))` 自校验，防半结构化污染写坏 JSON
+
+## 七、上线自检（按此顺序，全绿才算通）
+
+1. 直连 `127.0.0.1:<port>/health`（token 对/无/错三态：200/401/401）
+2. 经 `/svc/<自己id>/<服务>/health` 打自己（验反代 + token 注入链路）
+3. `GET /api/agent-peers`：对端在列 + 有 inter_agent_token
+4. 给对端发一条 `[selftest]`，收到 ack/回复
+5. 把「怎么联系我」+ 查收纪律写进自己的 BOOT.md
 
 其余——你定。
 """
