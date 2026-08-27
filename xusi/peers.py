@@ -28,6 +28,7 @@ HTTPException——上层（api.py）按上下文决定码（404/400/502）。
 """
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -35,6 +36,10 @@ import httpx
 import tomllib
 
 from .config import get_config
+
+# 名册读改写互斥：announce / welcome / resync 可能从不同线程并发到达
+# （sync 路由跑线程池、CLI 另进程），不锁会互相覆盖丢更新。
+_LOCK = threading.Lock()
 
 
 class PeerUnreachable(Exception):
@@ -78,6 +83,8 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
+    """原子写。schema 固定为 id/url/name/show_agents 四键——toml 里手工加的
+    其它键或注释会在下次写盘时被裁掉（名册归本模块管，别手编）。"""
     f = get_config().peers_file
     f.parent.mkdir(parents=True, exist_ok=True)
     # 手工 toml 写出（无 tomli_w 依赖；schema 简单）
@@ -151,27 +158,29 @@ def add_peer(url: str, name: str = "", show_agents: bool = True) -> dict:
     if not info["ok"]:
         raise PeerUnreachable(f"peer 不可达：{info['error']}")
     pid = info["info"]["id"]
-    data = _load()
-    for p in data["peers"]:
-        if p["id"] == pid:
-            raise PeerRefused(f"peer {pid} 已存在")
-        if p["url"].rstrip("/") == url:
-            raise PeerRefused(f"peer url {url} 已存在")
-    rec = {"id": pid, "url": url,
-           "name": (name or info["info"].get("name", "")).strip(),
-           "show_agents": bool(show_agents)}
-    data["peers"].append(rec)
-    _save(data)
+    with _LOCK:
+        data = _load()
+        for p in data["peers"]:
+            if p["id"] == pid:
+                raise PeerRefused(f"peer {pid} 已存在")
+            if p["url"].rstrip("/") == url:
+                raise PeerRefused(f"peer url {url} 已存在")
+        rec = {"id": pid, "url": url,
+               "name": (name or info["info"].get("name", "")).strip(),
+               "show_agents": bool(show_agents)}
+        data["peers"].append(rec)
+        _save(data)
     return rec
 
 
 def remove_peer(peer_id: str) -> bool:
-    data = _load()
-    before = len(data["peers"])
-    data["peers"] = [p for p in data["peers"] if p["id"] != peer_id]
-    if len(data["peers"]) == before:
-        return False
-    _save(data)
+    with _LOCK:
+        data = _load()
+        before = len(data["peers"])
+        data["peers"] = [p for p in data["peers"] if p["id"] != peer_id]
+        if len(data["peers"]) == before:
+            return False
+        _save(data)
     return True
 
 
@@ -180,15 +189,16 @@ def update_peer_visibility(peer_id: str, show_agents: bool) -> dict | None:
 
     用于"节点页面打开"——admin 把某个被动收进来的 peer 改成可见，或反过来。
     不影响其他字段；show_agents 持久化到 toml。"""
-    data = _load()
-    for p in data["peers"]:
-        if p["id"] == peer_id:
-            old = p.get("show_agents", True)
-            if old == show_agents:
-                return p  # 没变化，不写盘
-            p["show_agents"] = show_agents
-            _save(data)
-            return p
+    with _LOCK:
+        data = _load()
+        for p in data["peers"]:
+            if p["id"] == peer_id:
+                old = p.get("show_agents", True)
+                if old == show_agents:
+                    return p  # 没变化，不写盘
+                p["show_agents"] = show_agents
+                _save(data)
+                return p
     return None
 
 
@@ -215,15 +225,16 @@ def local_add_or_update(rec: dict, default_show_agents: bool = False) -> str:
     rec_show = rec.get("show_agents")
     if rec_show is None:
         rec_show = default_show_agents
-    data = _load()
-    for p in data["peers"]:
-        if p["id"] == new_id:
-            if p["url"].rstrip("/") == new_url:
-                return "skipped"  # 已有：不动（包括 show_agents）
-            return "skipped_conflict"
-    data["peers"].append({"id": new_id, "url": new_url, "name": new_name,
-                          "show_agents": rec_show})
-    _save(data)
+    with _LOCK:
+        data = _load()
+        for p in data["peers"]:
+            if p["id"] == new_id:
+                if p["url"].rstrip("/") == new_url:
+                    return "skipped"  # 已有：不动（包括 show_agents）
+                return "skipped_conflict"
+        data["peers"].append({"id": new_id, "url": new_url, "name": new_name,
+                              "show_agents": rec_show})
+        _save(data)
     return "added"
 
 
