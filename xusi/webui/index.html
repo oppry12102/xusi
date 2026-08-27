@@ -760,16 +760,19 @@ function renderCards(list) {
   if (!list.length) { el.innerHTML = `<div class="hint" style="grid-column:1/-1">还没有 agent —— 点右上角「新建 agent」创建第一个。</div>`; return; }
   el.innerHTML = list.map(a => {
     const ds = a.desired_state, run = (a.process || {}).active === "active";
-    // 按钮方案（防误删 + 语义去重）：运行中只有 暂停/停止；暂停中 续跑/停止；
-    // 停止态才有 启动 和 删除。重启不进界面（改参换端口时后端自动重启；脚本走 /restart）。
+    // 按钮方案（防误删 + 语义去重）：运行中 暂停/停止/重启；暂停中 续跑/停止/重启；
+    // 停止态才有 启动 和 删除。重启进界面（confirm 防误触）：改端口「仅保存」后
+    // 靠它生效——此前只能 停止→启动 两步绕。
     // 远端 agent：写按钮也开——caller Authorization 头会透传给 peer，peer
     // 端用同一 cluster_secret verify 后由 peer 自己执行；这是单凭证体系的核心。
     const acts = [];
     if (ds === "paused") {
       acts.push(`<button onclick="act('${a.id}','resume')">▶ 续跑</button>`);
+      acts.push(`<button onclick="act('${a.id}','restart')">⟳ 重启</button>`);
       acts.push(`<button onclick="act('${a.id}','stop')">■ 停止</button>`);
     } else if (run) {
       acts.push(`<button onclick="act('${a.id}','pause')">⏸ 暂停</button>`);
+      acts.push(`<button onclick="act('${a.id}','restart')">⟳ 重启</button>`);
       acts.push(`<button onclick="act('${a.id}','stop')">■ 停止</button>`);
     } else {
       acts.push(`<button onclick="act('${a.id}','start')">▶ 启动</button>`);
@@ -784,7 +787,7 @@ function renderCards(list) {
         <div class="ov-menu" id="${ovId}" hidden>
           <button onclick="backupOne('${a.id}')">📦 备份</button>
           <button onclick="openRestore('${a.id}')">↺ 回滚</button>
-          <button class="ov-danger" onclick="del('${a.id}','${a.name.replace(/'/g, "")}')">🗑 删除</button>
+          <button class="ov-danger ov-del" data-id="${a.id}" data-name="${esc(a.name)}">🗑 删除</button>
         </div></span>`);
     }
     return `<div class="card">
@@ -820,6 +823,22 @@ function ovToggle(id, ev) {
 }
 document.addEventListener("click", () => {
   document.querySelectorAll(".ov-menu").forEach(m => m.hidden = true);
+});
+
+/* 看板事件代理：动态重渲的按钮（大脑切换 / 删除）经 data-* 传参——
+   inline onclick 内嵌 esc() 后的自由文本会被实体解码破坏 JS 字面量 */
+$("#cards").addEventListener("click", e => {
+  const bsw = e.target.closest(".bsw");
+  if (bsw) { switchBrain(bsw.dataset.agent, bsw.dataset.brain); return; }
+  const delBtn = e.target.closest(".ov-del");
+  if (delBtn) { del(delBtn.dataset.id, delBtn.dataset.name); }
+});
+/* 详情面板事件代理：服务行的探索 / 文档按钮——服务名允许单引号，同样不能 inline */
+$("#pane").addEventListener("click", e => {
+  const xp = e.target.closest(".svc-xp");
+  if (xp) { openExplorer(xp.dataset.id, xp.dataset.name); return; }
+  const doc = e.target.closest(".svc-doc");
+  if (doc) { svcDocs(doc.dataset.id, doc.dataset.name); }
 });
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -862,7 +881,9 @@ function setPane(html) {
   }
 }
 
-/* 大脑徽章：当前默认（列表首位）加粗高亮；admin 可点其他徽章切默认（热生效） */
+/* 大脑徽章：当前默认（列表首位）加粗高亮；admin 可点其他徽章切默认（热生效）。
+   bsw 用 data-* 传参（事件代理见下方 #cards 监听）——inline onclick 内嵌 esc()
+   后的值会被 HTML 实体解码（' → '），名字带引号就 SyntaxError */
 function brainChips(a) {
   const bs = a.brains || [];
   return bs.map((b, i) => {
@@ -871,7 +892,7 @@ function brainChips(a) {
     if (me?.role !== "admin")
       return `<span class="chip">${esc(b)}</span>`;
     return `<span class="chip bsw" title="点击切换为默认大脑（热生效：下一口呼吸起用）"
-              onclick="switchBrain('${a.id}','${esc(b)}')">${esc(b)}</span>`;
+              data-agent="${a.id}" data-brain="${esc(b)}">${esc(b)}</span>`;
   }).join("");
 }
 
@@ -1433,7 +1454,8 @@ async function saveEdit() {
   let applyRestart = false;
   if (needRestart) {
     applyRestart = confirm("端口 / 暴露开关变了：这两项改的是进程监听参数，需要重启进程。\n\n" +
-      "「确定」= 保存并立即重启（优雅停 → 新参数拉起 → 健康验收）；「取消」= 仅保存，稍后手动重启生效。");
+      "「确定」= 保存并立即重启（优雅停 → 新参数拉起 → 健康验收）；" +
+      "「取消」= 仅保存，稍后用卡片上的「⟳ 重启」生效。");
   }
   $("#btn-edit-save").disabled = true; $("#e-err").textContent = "";
   try {
@@ -1500,8 +1522,8 @@ function svcRowHtml(id, s) {
     ${s.openapi_found == null && s.openapi_source !== "none" ? `<div class="hint" style="color:var(--warn);font-size:12px;margin-top:4px">⚠ 未探测到 OpenAPI 自描述（探索器转手填模式）</div>` : ""}
     ${s.warn ? `<div class="hint" style="color:var(--warn);font-size:12px;margin-top:4px">⚠ ${esc(s.warn)}</div>` : ""}
     <div class="acts">
-      <button class="pri" onclick="openExplorer('${id}','${esc(s.name)}')">探索 API</button>
-      <button onclick="svcDocs('${id}','${esc(s.name)}')">原生文档 ↗</button>
+      <button class="pri svc-xp" data-id="${id}" data-name="${esc(s.name)}">探索 API</button>
+      <button class="svc-doc" data-id="${id}" data-name="${esc(s.name)}">原生文档 ↗</button>
     </div></div>`;
 }
 
