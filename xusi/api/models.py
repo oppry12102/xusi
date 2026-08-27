@@ -71,3 +71,12 @@ class AddPeerReq(BaseModel):
     两端的 etc/xusi.toml，再来加 peer。"""
     url: str = Field(min_length=1, description="peer 管理面 url（如 http://10.0.16.15:8601）")
     name: str = Field("", description="显示名（缺省用 peer 自报）")
+
+
+class AnnouncePeerReq(BaseModel):
+    """集群内自收敛：另一台 xusi 加完 peer 后 fire-and-forget 通告过来。
+    接收端 idempotent 入册（id 命中 + url 一致 = 跳过；id 命中 url 冲突 = 保留本地；
+    id 未见 = 入册）。"""
+    id: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+    name: str = Field("")

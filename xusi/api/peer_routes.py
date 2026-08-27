@@ -1,17 +1,27 @@
-"""peer 名册路由（Phase 2 集群）：CRUD + 强制重探。
+"""peer 名册路由（Phase 2 集群）：CRUD + 强制重探 + 集群内自收敛。
 
 加/减 peer 走标准三段：add 探活拿 id（验证两端 `[cluster].secret` 一致
 后才能互信）；remove 直接改 toml。新节点引导走 `xusi init --cluster-secret <A的secret>`
 → `xusi peer add http://B:8601`（不再用 invitation JWT / join.sh 脚本）。
 
+集群内自收敛（每台 xusi 自动拥有全表）：
+- POST /api/peers 成功后 fire-and-forget 通知每个已知 peer 调
+  /api/internal/peers/announce（idempotent 入册）
+- bootstrap 场景：某 xusi peers.toml 为空时，先手动 add 一个 peer，再调
+  /api/internal/peers/resync（任选 from_peer_id，缺省 = 任一可达 peer），
+  从其 /api/peers 拉全表合并
+
 跨节点跳转走前端：peer 行「打开」直接拼 `${peer.url}/?mtoken=<tok>` 跳到
 peer——浏览器一次性到 peer，省一次本机中转 round-trip + admin token 不在
-本机 server access log 留痕。"""
-from fastapi import APIRouter, Depends, HTTPException
+本机 server access log 留痕。
+"""
+import asyncio
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from .. import peers
 from .auth import require_admin, require_auth
-from .models import AddPeerReq
+from .models import AddPeerReq, AnnouncePeerReq
 
 router = APIRouter()
 
@@ -38,12 +48,18 @@ def api_peers_list(_rec: dict = Depends(require_auth)) -> dict:
 
 
 @router.post("/api/peers", status_code=201)
-def api_peers_add(req: AddPeerReq,
-                  _rec: dict = Depends(require_admin)) -> dict:
-    """注册一个 peer：先探活（拿 id），落 etc/peers.toml。
+async def api_peers_add(req: AddPeerReq,
+                        bg: BackgroundTasks,
+                        _rec: dict = Depends(require_admin)) -> dict:
+    """注册一个 peer：先探活（拿 id），落 etc/peers.toml，广播给其他已知 peer。
     失败：peer 不可达 → 502 PeerUnreachable；本地拒绝（cluster_secret 为空 /
-    重名 / url 坏）→ 400 PeerRefused。"""
+    重名 / url 坏）→ 400 PeerRefused。
+
+    广播是 fire-and-forget：失败仅记日志，不影响本次 add 的 201 响应。"""
     rec = peers.add_peer(req.url, name=req.name)  # 抛异常被全局 handler 接住
+    # BackgroundTasks 在响应送出后跑；用 asyncio.create_task 包一层
+    # 让 _broadcast_peer_add 的 async 协程能被驱动
+    bg.add_task(_run_broadcast, rec)
     r = peers.probe_peer(rec)
     return {
         **rec,
@@ -52,6 +68,15 @@ def api_peers_add(req: AddPeerReq,
         "info": r.get("info") if r["ok"] else None,
         "error": r.get("error") if not r["ok"] else None,
     }
+
+
+def _run_broadcast(rec: dict) -> None:
+    """BackgroundTasks 调用的同步包装：在新事件循环里跑异步广播。
+    失败仅记日志——本次 add 已落盘，远端不通可下次 resync 拉齐。"""
+    try:
+        asyncio.run(peers._broadcast_peer_add(rec))
+    except Exception as e:
+        print(f"[peers] broadcast 包装失败：{type(e).__name__}: {e}", flush=True)
 
 
 @router.delete("/api/peers/{peer_id}")
@@ -73,3 +98,56 @@ def api_peers_probe_all(_rec: dict = Depends(require_admin)) -> dict:
                     "ok": r["ok"], "latency_ms": r.get("latency_ms"),
                     "error": r.get("error", "") if not r["ok"] else ""})
     return {"probed": len(out), "results": out}
+
+
+# ── 集群内自收敛：announce / resync ────────────────────────────────
+
+@router.post("/api/internal/peers/announce")
+def api_peers_announce(req: AnnouncePeerReq,
+                       _rec: dict = Depends(require_admin)) -> dict:
+    """集群内自收敛：另一台 xusi add_peer 成功后 fire-and-forget 通告过来。
+
+    接收端 idempotent 入册（见 `peers.local_add_or_update`）：
+    - id 未见 → 入册，status='added'
+    - id 命中 + url 一致 → 跳过，status='skipped'
+    - id 命中 + url 冲突 → 保留本地，status='skipped_conflict'（不信任
+      单方面通告去改 peer 地址——要改走 remove_peer + add_peer）
+
+    返回 `{ok, status, id}` 给 sender 做日志/可观测性。"""
+    status = peers.local_add_or_update({"id": req.id, "url": req.url,
+                                        "name": req.name})
+    return {"ok": True, "status": status, "id": req.id}
+
+
+@router.post("/api/internal/peers/resync")
+async def api_peers_resync(from_peer_id: str | None = Query(
+        None, description="从哪个 peer 拉全表；缺省 = 任一可达的已知 peer"),
+        _rec: dict = Depends(require_admin)) -> dict:
+    """bootstrap 助手：从已知 peer 拉 /api/peers 全表合并入本地。
+
+    适用：
+    - 新节点加入集群：先手动 add 一个 peer 拿到第一根线，再调本端点把全表
+      拉齐（避免手动复制 4 个 [[peers]] 块）
+    - 集群拓扑剧变后手动收敛
+
+    鉴权：admin（cluster_secret）。
+    """
+    pls = peers.list_peers()
+    if not pls:
+        raise HTTPException(400, "本地无 peer；先 add 一个再 resync")
+
+    src = None
+    if from_peer_id:
+        src = next((p for p in pls if p["id"] == from_peer_id), None)
+        if not src:
+            raise HTTPException(404, f"peer {from_peer_id} 不在名册")
+    else:
+        for p in pls:
+            if peers.probe_peer(p)["ok"]:
+                src = p
+                break
+        if not src:
+            raise HTTPException(502, "没有可达 peer 可供 resync")
+
+    summary = await peers.resync_from_peer(src)
+    return {"ok": True, **summary}

@@ -1,4 +1,4 @@
-"""peer 名册：etc/peers.toml 持久化 + 实时探活。
+"""peer 名册：etc/peers.toml 持久化 + 实时探活 + 集群内自收敛。
 
 加 peer = 探活拿 id 写 toml；列 peer = 读 toml；探活 = hit
 {peer.url}/api/peer/id（不鉴权，握手用）。前端 refresh 周期 15s，频率
@@ -13,6 +13,15 @@ peer 让它自己 verify。前代 invitation JWT（带 sid / 一次性消费 /
     B：xusi init --cluster-secret <secret>   # 同步
     A：xusi peer add http://B:8601
     B：xusi peer add http://A:8601
+
+peer 名册自收敛（每台 xusi 都知道全集群）：
+- add_peer 成功后 fire-and-forget 通知每个已知 peer（`POST /api/internal/peers/announce`）
+- 接收端 idempotent 入册（id 命中则保留本地，跳过覆盖——>防止远程通告
+  把已对齐的本地数据踢回旧值；首次见到才入）
+- bootstrap：某 xusi 名册为空时调 `POST /api/internal/peers/resync`
+  从已知 peer 拉 /api/peers 全表合并（手动触发一次即可）
+- 整个机制用唯一的 cluster HTTP 通道（read-only GET 已用于 fan-in；
+  POST 只多了 announce / resync 两个端点，纯集群内部事务）
 
 fail-soft 原则：所有错误都从函数签名表达（返回 dict 含 ok/error），不抛
 HTTPException——上层（api.py）按上下文决定码（404/400/502）。
@@ -35,6 +44,14 @@ class PeerUnreachable(Exception):
 class PeerRefused(Exception):
     """本地拒绝——cluster_secret 未设（无集群模式）、url 格式坏、id 重名等
     不是网络问题。"""
+
+
+class PeerHttpError(Exception):
+    """peer 返了 4xx——与 PeerUnreachable 区分；按 HTTP 码透传给 caller。"""
+    def __init__(self, status: int, body):
+        self.status = status
+        self.body = body
+        super().__init__(f"peer HTTP {status}")
 
 
 def is_cluster() -> bool:
@@ -141,6 +158,113 @@ def remove_peer(peer_id: str) -> bool:
         return False
     _save(data)
     return True
+
+
+# ── 集群内自收敛（announce / resync）───────────────────────────
+
+def local_add_or_update(rec: dict) -> str:
+    """接收端 idempotent 入册：远端 /api/internal/peers/announce 调用此函数。
+
+    语义：
+    - 本地无此 id → 入册，返 'added'
+    - 本地有此 id 且 url 相同 → 跳过，返 'skipped'（防覆盖已对齐数据）
+    - 本地有此 id 且 url 不一致 → 保留本地，返 'skipped_conflict'（不信任
+      单方面通告去改 peer 地址——要改走 remove_peer + add_peer）
+
+    与 `add_peer` 区分：add_peer 对重复主动报错（admin 显式意图），这里
+    对重复容忍（集群内自收敛的常态）。"""
+    if not (isinstance(rec, dict) and rec.get("id") and rec.get("url")):
+        raise PeerRefused(f"announce 字段不全: {rec}")
+    new_id, new_url = rec["id"], rec["url"].rstrip("/")
+    new_name = (rec.get("name") or "").strip()
+    data = _load()
+    for p in data["peers"]:
+        if p["id"] == new_id:
+            if p["url"].rstrip("/") == new_url:
+                return "skipped"
+            return "skipped_conflict"
+    data["peers"].append({"id": new_id, "url": new_url, "name": new_name})
+    _save(data)
+    return "added"
+
+
+async def _broadcast_peer_add(rec: dict) -> None:
+    """add_peer 成功后 fire-and-forget 通知每个已知 peer（admin 鉴权通道）。
+
+    失败仅记日志，不抛——本地已落盘，远端不通下次 resync 也会拉齐。
+    跳过 self（自己通告自己无意义）与被通告的 rec 本身。"""
+    cfg = get_config()
+    if not cfg.cluster_secret:
+        return
+    me_id = cfg.node_id
+    payload = {"id": rec["id"], "url": rec["url"],
+               "name": (rec.get("name") or "").strip()}
+    for p in list_peers():
+        if p["id"] == rec["id"] or p["id"] == me_id:
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as cli:
+                r = await cli.post(
+                    f"{p['url'].rstrip('/')}/api/internal/peers/announce",
+                    json=payload,
+                    headers={"authorization": f"Bearer {cfg.cluster_secret}"})
+            if r.status_code >= 400:
+                print(f"[peers] broadcast → {p['id']} HTTP {r.status_code}",
+                      flush=True)
+        except Exception as e:
+            print(f"[peers] broadcast → {p['id']} 失败：{type(e).__name__}: {e}",
+                  flush=True)
+
+
+async def resync_from_peer(peer: dict) -> dict:
+    """从指定 peer 拉 /api/peers 全表，合并入本地。
+
+    用于 bootstrap：某 xusi peers.toml 为空时，先手动 add 一个 peer，然后
+    调一次 resync，全表对齐。也用于集群拓扑发生剧变后的手动收敛。
+
+    返回 {from, total, added, skipped, skipped_conflict}——上层路由用此组装响应，
+    函数本身只抛 PeerUnreachable / PeerRefused / PeerHttpError。"""
+    cfg = get_config()
+    if not cfg.cluster_secret:
+        raise PeerRefused("无集群模式，resync 无意义")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as cli:
+            r = await cli.get(f"{peer['url'].rstrip('/')}/api/peers",
+                              headers={"authorization": f"Bearer {cfg.cluster_secret}"})
+    except httpx.HTTPError as e:
+        raise PeerUnreachable(f"peer {peer['id']} 不可达：{type(e).__name__}: {e}") from e
+    if r.status_code == 401:
+        raise PeerRefused(f"peer {peer['id']} 拒绝：cluster_secret 不一致")
+    if r.status_code != 200:
+        try:
+            body = r.json()
+        except Exception:
+            body = {"detail": r.text[:200]}
+        raise PeerHttpError(r.status_code, body)
+
+    try:
+        body = r.json()
+    except Exception as e:
+        raise PeerUnreachable(f"peer {peer['id']} 返回非 JSON：{e}") from e
+    rows = body.get("peers") if isinstance(body, dict) else None
+    if not isinstance(rows, list):
+        raise PeerRefused(f"peer {peer['id']} /api/peers 返回格式坏：{body!r}")
+
+    added = skipped = skipped_conflict = 0
+    for row in rows:
+        if not (isinstance(row, dict) and row.get("id") and row.get("url")):
+            continue
+        s = local_add_or_update({"id": row["id"], "url": row["url"],
+                                 "name": row.get("name", "")})
+        if s == "added":
+            added += 1
+        elif s == "skipped":
+            skipped += 1
+        elif s == "skipped_conflict":
+            skipped_conflict += 1
+    return {"from": peer["id"], "total": len(rows),
+            "added": added, "skipped": skipped,
+            "skipped_conflict": skipped_conflict}
 
 
 # ── 探活 ───────────────────────────────────────────────────────────

@@ -397,6 +397,13 @@ def cmd_peers_add(args) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
     print(f"  ✓ {rec['id']}  {rec.get('name', '')}  {rec['url']}")
+    # 集群模式时同步广播给其他已知 peer（fire-and-forget）
+    if peers.is_cluster():
+        import asyncio as _aio
+        try:
+            _aio.run(peers._broadcast_peer_add(rec))
+        except Exception as e:
+            print(f"  ! broadcast 失败：{type(e).__name__}: {e}", file=sys.stderr)
     return 0
 
 

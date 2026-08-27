@@ -270,14 +270,7 @@ async def token_routed(request: Request, target_path: str) -> Response:
 # exceptions 在 peers.py 定义；re-export 方便上层 import
 PeerUnreachable = peers.PeerUnreachable
 PeerRefused = peers.PeerRefused
-
-
-class PeerHttpError(Exception):
-    """peer 返了 4xx——跟 PeerUnreachable 区分；按 HTTP 码透传给 caller。"""
-    def __init__(self, status: int, body: Any):
-        self.status = status
-        self.body = body
-        super().__init__(f"peer HTTP {status}")
+PeerHttpError = peers.PeerHttpError
 
 
 # ── 目标 ────────────────────────────────────────────────────────────

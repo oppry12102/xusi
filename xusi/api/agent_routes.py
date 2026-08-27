@@ -288,6 +288,11 @@ async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
 
     out: dict = {
         "access_pattern": "/svc/{peer_id}/{service_name}/*",
+        "cluster": {
+            "node_id": me_node_id,
+            "is_cluster": peers.is_cluster(),
+            "peers_known": len(peers.list_peers()),
+        },
         "peers": rows,
     }
     if src_id is not None:
