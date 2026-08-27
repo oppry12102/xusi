@@ -583,7 +583,7 @@ async function togglePeerVisibility(peerId, name, cur) {
   const next = !cur;
   try {
     await api(`/api/peers/${encodeURIComponent(peerId)}/visibility`, {
-      method: "POST", body: {show_agents: next}});
+      method: "POST", body: JSON.stringify({show_agents: next})});
     await loadNode();   // 重拉并重渲染
   } catch (e) { alert("切换失败：" + e.message); }
 }
