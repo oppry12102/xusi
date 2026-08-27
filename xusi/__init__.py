@@ -6,4 +6,4 @@
 与 agent 之间只有三条通道，绝不 import xuseek 代码：
 进程与信号（systemd）、只读 HTTP GET、文件（config.toml / mailbox / token 文件）。
 """
-__version__ = "1.2.0"
+__version__ = "1.2.1"

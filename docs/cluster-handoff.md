@@ -144,7 +144,7 @@ journalctl --user -u xusi --since "1 min ago" | grep '/api/agents'
 
 ```bash
 curl -s http://<对端>:8601/api/health | jq .version
-# 当前是 "1.2.0"；具体 commit 通过 git log 核对
+# 当前是 "1.2.1"；具体 commit 通过 git log 核对
 ```
 
 ## 5. Phase 2 v1 范围限定（写路径未做）
@@ -182,7 +182,7 @@ curl -s http://<对端>:8601/api/health | jq .version
 ```bash
 curl -s http://<对端>:8601/api/peer/id
 # 期望：{"id": "...", "name": "...", "role": "worker",
-#        "version": "1.2.0", "url": "<对端外网入口>"}
+#        "version": "1.2.1", "url": "<对端外网入口>"}
 ```
 
 `url` 字段必须是**外网入口**——不是内网 IP。

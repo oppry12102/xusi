@@ -442,7 +442,7 @@ UI 顶栏点节点名即可改名（admin only）。id / role 不让改（API �
 GET /api/peer/id
 → 200
 {"id":"abc123","name":"北京·主服务器","role":"worker",
- "version":"1.2.0","url":"http://10.0.0.1:8601"}
+ "version":"1.2.1","url":"http://10.0.0.1:8601"}
 ```
 
 不鉴权——peer 之间在建立信任之前就要先拿到对方自报。仅返回公开字段，**永不返回 secret / token**。
