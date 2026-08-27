@@ -1,7 +1,7 @@
 """api token 管理端点：admin-only。
 
-POST   /api/tokens        签发（返明文一次 + 完整记录）
-GET    /api/tokens        列（id/label/created_at，不含 hash / 明文）
+POST   /api/tokens        签发（返明文 + 完整记录）
+GET    /api/tokens        列（admin 视角，含明文——token 明文存盘于 etc/tokens.json）
 DELETE /api/tokens/{id}   吊销（按 id）
 
 被 api token 自己访问时：401（管理面写端点一律不认 api token，仅 admin）。
@@ -25,7 +25,6 @@ def api_tokens_new(req: ApiTokenNewReq,
                    _rec: dict = Depends(require_admin)) -> dict:
     token, rec = apitokens.mint(req.label)
     agentops.audit("token.new", id=rec["id"], label=rec["label"])
-    # 明文只在本次响应里出现一次——落盘记录不含 token 字面量。
     return {**rec, "token": token}
 
 

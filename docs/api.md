@@ -15,7 +15,7 @@
 | 层 | 用途 | 形态 | 获取 |
 |---|---|---|---|
 | **管理面 token**（admin） | 任何 `/api/*` + 反代入口 | `Authorization: Bearer <token>` 或 `?mtoken=<token>`（浏览器用，会进访问日志，勿外发） | 管理员在服务器签发（见 §8） |
-| **api token** | **只**进 `/px /svc /v1 /ui`（反代入口），**任何 `/api/*` 都拒** | 同上（Bearer / `?mtoken=` / `?token=`） | `POST /api/tokens`（admin 签发，明文只返一次） |
+| **api token** | **只**进 `/px /svc`（`/v1` 仅 `health` 探活），**任何 `/api/*` 都拒** | 同上（Bearer / `?mtoken=` / `?token=`） | `POST /api/tokens`（admin 签发，返明文） |
 | **互联 token** | **只**进 `/svc`（同集群 agent 互调） | `Authorization: Bearer <token>` 或 `?mtoken=<token>` | `POST /api/inter-agent-tokens`（admin 签发，明文只返一次） |
 | **agent 观察台 token** | 仅该 agent 的 `/v1 /ui /px` | `Authorization: Bearer <token>` 或 `?token=<token>` | `GET /api/agents/{id}/tokens`（经管理面认证后获取） |
 
@@ -93,21 +93,21 @@ curl -s -H "Authorization: Bearer $T" "http://SERVER:8601/api/ports/available?co
 
 ## 3b. api token 管理（admin-only）
 
-反代入口凭证：admin 签发、admin 吊销，存 sha256（明文只在签发响应里出现一次）。
-**api token 只能进 `/px /svc /v1 /ui`，调任何 `/api/*` 一律 401**——保护 admin
-token 不外泄给外部反代服务。详见 §1（鉴权）和 §10（安全说明）。
+反代入口凭证：admin 签发、admin 吊销，明文存盘（`etc/tokens.json`，600；admin 视角）。
+**api token 只能进 `/px /svc`（`/v1` 仅放行 `health` 探活），调任何 `/api/*` 一律 401**
+——保护 admin token 不外泄给外部反代服务。详见 §1（鉴权）和 §10（安全说明）。
 
 ```bash
 # 签发：admin 鉴权，label 可选（不传 = 空字符串）
 curl -s -X POST -H "Authorization: Bearer $ADMIN" -H "Content-Type: application/json" \
      -d '{"label":"voidhub-bridge"}' \
      http://SERVER:8601/api/tokens
-# → 201 {"id":"tk_xxxxxx","hash":"sha256:...","label":"voidhub-bridge",
-#       "created_at":"2026-08-25T07:47:56Z","token":"<明文，只此一次>"}
+# → 201 {"id":"tk_xxxxxx","token":"<明文>","label":"voidhub-bridge",
+#       "created_at":"2026-08-25T07:47:56Z"}
 
-# 列出：脱敏（id/label/created_at），不含 hash / 明文
+# 列出：admin 视角，含明文（token 明文存盘于 etc/tokens.json，600）
 curl -s -H "Authorization: Bearer $ADMIN" http://SERVER:8601/api/tokens
-# → [{"id":"tk_xxxxxx","label":"voidhub-bridge","created_at":"..."}]
+# → [{"id":"tk_xxxxxx","token":"...","label":"voidhub-bridge","created_at":"..."}]
 
 # 吊销
 curl -s -X DELETE -H "Authorization: Bearer $ADMIN" http://SERVER:8601/api/tokens/tk_xxxxxx
@@ -121,6 +121,9 @@ curl -s -H "Authorization: Bearer $API" http://SERVER:8601/svc
 curl -s -H "Authorization: Bearer $API" http://SERVER:8601/px/<agent-id>/v1/health
 curl -s "http://SERVER:8601/v1/health?token=$API"
 ```
+
+`/v1` 入口对 api token 只放行 `health` 探活——api token 不绑 agent，路由不了
+具体目标；`/v1/* /ui/*` 的完整功能凭 agent 观察台 token（§5）。
 
 **集群语义**：api token 不跨节点同步（每节点一份 `etc/tokens.json`，外部服务
 绑定到具体入口）。跨节点时在每台各签发一次。审计落 `etc/audit.jsonl` 的
@@ -697,8 +700,8 @@ cd /home/htao/work/xusi
 ## 10. 安全说明
 
 - 管理面监听 `0.0.0.0:8601`，是**唯一**需要放行的对外端口；agent 默认仅 `127.0.0.1`，自建服务也建议仅 `127.0.0.1`。
-- 三档凭证互不相通：admin token（`[cluster].secret`）管 `/api/*` + 反代入口；api token（`etc/tokens.json`，存 sha256）**只**进反代入口 `/px /svc /v1 /ui`，调 `/api/*` 一律 401；agent webui token 仅该 agent 有效。外部反代服务（手机 App / 第三方客户端）只拿 api token，admin token 永不外泄。
-- api token 的明文仅签发响应里出现一次，文件存 hash（sha256）；600 权限。吊销即时生效（删记录即拒）。
+- 三档凭证互不相通：admin token（`[cluster].secret`）管 `/api/*` + 反代入口；api token（`etc/tokens.json`，明文存盘）**只**进反代入口 `/px /svc`（`/v1` 仅 `health` 探活），调 `/api/*` 一律 401；agent webui token 仅该 agent 有效。外部反代服务（手机 App / 第三方客户端）只拿 api token，admin token 永不外泄。
+- api token 明文存盘（`etc/tokens.json`，600；admin 视角——服务端注入"对外接入说明"要读它）。吊销即时生效（删记录即拒）。
 - LLM api_key 由管理面代持（`etc/brains.toml`，600），签发给用户的 token 只授予观察台权限，接触不到 key。
 - `/svc` 反代里客户端的 `Authorization` 绝不透传给 agent 自建服务（声明 `token_file` 则服务端替换注入，否则删除）。
 - `?mtoken=`（管理面 / api token）与 `?token=`（观察台 / api token）会进访问日志，仅建议浏览器一次性使用；脚本/App 一律用 Bearer 头。

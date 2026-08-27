@@ -30,13 +30,14 @@ python3 -m xusi doctor       # 环境自检
 | 凭证 | 文件 / 位置 | 谁签发 | 用途 |
 |---|---|---|---|
 | **admin token** | `etc/xusi.toml` 的 `[cluster].secret` | `xusi install` / `xusi init` | 管理面全权（任何 `/api/*` 端点 + 反代入口） |
-| **api token** | `etc/tokens.json`（明文不落盘，存 sha256） | `POST /api/tokens`（admin） | **只**进反代入口（`/px /svc /v1 /ui`），给外部反代服务用 |
+| **api token** | `etc/tokens.json`（明文存盘，600；admin 视角） | `POST /api/tokens`（admin） | **只**进反代入口（`/px /svc`，及 `/v1/health` 探活），给外部反代服务用 |
 | **agent webui token** | `instances/<id>/data/webui_tokens.json` | agent CLI（`xuseek token new`） | 仅该 agent 的 `/v1 /ui /px` |
 
 **admin token** 与 **api token** 的关键边界：
 
 - admin token → 任何 `/api/*` 端点（写操作只有它能进）+ 反代入口
-- api token → **只**进 `/px /svc /v1 /ui`；**任何 `/api/*` 都拒**（含
+- api token → **只**进 `/px /svc`（`/v1` 仅放行 `health` 探活——api token
+  不绑 agent，路由不了具体目标）；**任何 `/api/*` 都拒**（含
   `GET /api/tokens` 自己）；不能让外部服务借它篡改管理面
 - agent webui token → 跟具体 agent 绑死，不能跨 agent
 
@@ -53,7 +54,7 @@ api token 不跨节点同步（每节点一份 `tokens.json`，外部服务绑�
 要跨节点请在每台各签发一次。
 
 **没有 JWT、没有 invitation**。`etc/tokens.json` 在 2026-08-25 起重启用，
-**新 schema**（对象含 `tokens` 数组，存 hash）。老格式（顶层 list 含 admin
+**新 schema**（对象含 `tokens` 数组，明文存盘）。老格式（顶层 list 含 admin
 token）启动时一次性迁移：把第一条 PLAIN admin token 接管成 `cluster_secret`，
 老文件改名 `.migrated.*`——这条迁移在新格式落盘后**自动跳过**（migration
 run 看见顶层是对象就 no-op）。
@@ -69,11 +70,11 @@ curl -X POST http://xusi:8601/api/tokens \
      -H "Authorization: Bearer <admin token>" \
      -H "Content-Type: application/json" \
      -d '{"label": "voidhub-bridge"}'
-# → {"id":"tk_xxx","hash":"sha256:...","label":"...","created_at":"...","token":"<明文，只此一次>"}
+# → {"id":"tk_xxx","token":"<明文>","label":"...","created_at":"..."}
 ```
 
 ```bash
-# 列出（不含 hash / 明文）
+# 列出（admin 视角，含明文——token 明文存盘于 etc/tokens.json，600）
 curl http://xusi:8601/api/tokens -H "Authorization: Bearer <admin token>"
 
 # 吊销
@@ -86,6 +87,9 @@ curl http://xusi:8601/svc -H "Authorization: Bearer <api token>"
 curl http://xusi:8601/px/<agent-id>/v1/health -H "Authorization: Bearer <api token>"
 curl 'http://xusi:8601/v1/health?token=<api token>'
 ```
+
+（`/v1` 入口对 api token 只放行 `health` 探活——api token 不绑 agent，
+路由不了具体目标；`/v1/* /ui/*` 的完整功能凭 agent 观察台 token。）
 
 ## 集群 / peer 名册
 
@@ -150,7 +154,7 @@ xusi/
 │   └── webui/           单文件管理页
 ├── etc/
 │   ├── xusi.toml        监听/端口段/源码路径 + [cluster].secret（admin token）
-│   ├── tokens.json      反代入口凭证（api token，存 hash；admin 签发/吊销）
+│   ├── tokens.json      反代入口凭证（api token，明文存盘 600；admin 签发/吊销）
 │   ├── brains.toml      主密钥池（管理员维护；600，模板见 brains.toml.example）
 │   ├── agents.json      注册表（agent 档案 + 期望态 + token 记录）
 │   ├── peers.toml       peer 名册（[[peers]]，两边各管自己的）
