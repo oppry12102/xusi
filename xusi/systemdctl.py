@@ -96,10 +96,6 @@ def unit_load_state(unit: str) -> str:
         return "not-found"
 
 
-def start(unit: str) -> None:
-    _run(["systemctl", "--user", "start", unit])
-
-
 def stop(unit: str) -> None:
     """停止单元。已消失（not-found）视为成功——stop 语义本就幂等。"""
     if unit_load_state(unit) == "not-found":

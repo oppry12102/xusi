@@ -128,13 +128,3 @@ def drop_token(agent_id: str, token_prefix: str) -> int:
 def used_ports() -> dict[int, str]:
     """注册表里已被占用的端口 → agent_id（分配时避开）。"""
     return {int(a["port"]): a["id"] for a in list_agents() if a.get("port")}
-
-
-def ids() -> list[str]:
-    return [a["id"] for a in list_agents()]
-
-
-def next_seq() -> int:
-    """自增序号（agent 编号展示用）。"""
-    with _LOCK:
-        return len(_load()["agents"]) + 1

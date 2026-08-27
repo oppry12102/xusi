@@ -24,6 +24,7 @@ token 格式：secrets.token_urlsafe(32)（43 字符 URL-safe base64，无 paddi
 """
 from __future__ import annotations
 
+import hmac
 import json
 import secrets
 import string
@@ -90,11 +91,13 @@ def _save(rows: list[dict]) -> None:
 # ── 验证 / 查询 ──────────────────────────────────────────────────────
 
 def verify(token: str) -> dict | None:
-    """凭 token 验真：匹配返回 rec，不匹配返回 None。"""
+    """凭 token 验真：匹配返回 rec，不匹配返回 None。
+    比较走 bytes 的 compare_digest（与 authtok 同款——非 ASCII 也稳）。"""
     if not token:
         return None
     for rec in load():
-        if rec.get("token") and rec["token"] == token:
+        tok = rec.get("token")
+        if tok and hmac.compare_digest(tok.encode("utf-8"), token.encode("utf-8")):
             return rec
     return None
 

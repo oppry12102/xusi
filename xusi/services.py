@@ -469,9 +469,9 @@ def find_openapi(agent: dict, svc: dict) -> tuple[str | None, str]:
 
 def auto_services(agent: dict, *, http_check: bool = True) -> list[dict]:
     """完全未声明的监听端口 → 候补服务条目（auto-{port}）。http_check 时并发探测
-    全部端口（池（池（池（pool.submit + wait(2.0) 硬墙，避开 httpx 「对端不死等响应」死等
-    反代路由路径省略（省网络开销，服务死活由转发结果自然反映）。agent 日后
-    在清单声明同端口即被清单条目接管。"""
+    全部端口（探测池 submit + wait(2.0) 总超时硬墙，避开 httpx「对端 accept 后
+    不响应」的死等）；反代路由路径省略探测（省网络开销，服务死活由转发结果自然
+    反映）。agent 日后在清单声明同端口即被清单条目接管。"""
     ports = sorted(agent_extra_ports(agent))
     out: list[dict] = []
     if not http_check or not ports:

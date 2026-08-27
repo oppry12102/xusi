@@ -16,6 +16,7 @@ token 格式：`secrets.token_urlsafe(32)`（43 字符 URL-safe base64，无 pad
 """
 from __future__ import annotations
 
+import hmac
 import json
 import secrets
 import string
@@ -79,11 +80,13 @@ def _save(rows: list[dict]) -> None:
 # ── 验证 / 管理 ──────────────────────────────────────────────────────
 
 def verify(token: str) -> dict | None:
-    """反代入口凭 token 验真：匹配返回 rec，不匹配返回 None。"""
+    """反代入口凭 token 验真：匹配返回 rec，不匹配返回 None。
+    比较走 bytes 的 compare_digest（与 authtok 同款——非 ASCII 也稳）。"""
     if not token:
         return None
     for rec in load():
-        if rec.get("token") and rec["token"] == token:
+        tok = rec.get("token")
+        if tok and hmac.compare_digest(tok.encode("utf-8"), token.encode("utf-8")):
             return rec
     return None
 
@@ -142,26 +145,3 @@ def latest_token() -> str | None:
         if r.get("token"):
             return r["token"]
     return None
-
-
-def seed(token: str, label: str) -> dict:
-    """预置一条已知 token（如已对外服务的旧 token 迁移进来）。重复时拒绝。
-    返回写入的记录。"""
-    token = (token or "").strip()
-    label = (label or "").strip()[:64]
-    if not token:
-        raise ValueError("token 不能为空")
-    for _ in range(8):
-        new_id = _id4()
-        if not any(r.get("id") == new_id for r in load()):
-            break
-    else:
-        raise RuntimeError("api token id 冲突 8 次——请重试")
-    rec = {"id": new_id, "token": token, "label": label, "created_at": _stamp()}
-    with _LOCK:
-        rows = load()
-        if any(r.get("token") == token for r in rows):
-            raise ValueError("该 token 已存在")
-        rows.append(rec)
-        _save(rows)
-    return rec
