@@ -15,8 +15,6 @@
 peer——浏览器一次性到 peer，省一次本机中转 round-trip + admin token 不在
 本机 server access log 留痕。
 """
-import asyncio
-
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from .. import peers
@@ -55,11 +53,11 @@ async def api_peers_add(req: AddPeerReq,
     失败：peer 不可达 → 502 PeerUnreachable；本地拒绝（cluster_secret 为空 /
     重名 / url 坏）→ 400 PeerRefused。
 
-    广播是 fire-and-forget：失败仅记日志，不影响本次 add 的 201 响应。"""
+    广播是 fire-and-forget：失败仅记日志，不影响本次 add 的 201 响应。
+    BackgroundTasks 直接 await 异步协程（不再套 asyncio.run——后者在已有
+    event loop 里 RuntimeError，被 catch 吞了导致静默失败）。"""
     rec = peers.add_peer(req.url, name=req.name)  # 抛异常被全局 handler 接住
-    # BackgroundTasks 在响应送出后跑；用 asyncio.create_task 包一层
-    # 让 _broadcast_peer_add 的 async 协程能被驱动
-    bg.add_task(_run_broadcast, rec)
+    bg.add_task(peers._broadcast_peer_add, rec)   # async 协程；FastAPI 自动 await
     r = peers.probe_peer(rec)
     return {
         **rec,
@@ -68,15 +66,6 @@ async def api_peers_add(req: AddPeerReq,
         "info": r.get("info") if r["ok"] else None,
         "error": r.get("error") if not r["ok"] else None,
     }
-
-
-def _run_broadcast(rec: dict) -> None:
-    """BackgroundTasks 调用的同步包装：在新事件循环里跑异步广播。
-    失败仅记日志——本次 add 已落盘，远端不通可下次 resync 拉齐。"""
-    try:
-        asyncio.run(peers._broadcast_peer_add(rec))
-    except Exception as e:
-        print(f"[peers] broadcast 包装失败：{type(e).__name__}: {e}", flush=True)
 
 
 @router.delete("/api/peers/{peer_id}")
