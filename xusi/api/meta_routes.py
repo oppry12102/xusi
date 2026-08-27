@@ -67,7 +67,8 @@ def api_cluster(_rec: dict = Depends(require_auth)) -> dict:
             continue  # 排除自递归
         r = peers.probe_peer(p)  # 实时探活；前端 15s 轮询无穿透压力
         entry: dict = {"id": p["id"], "name": p.get("name", ""),
-                       "url": p["url"], "ok": r["ok"]}
+                       "url": p["url"], "ok": r["ok"],
+                       "show_agents": p.get("show_agents", True)}
         if r.get("latency_ms") is not None:
             entry["latency_ms"] = r["latency_ms"]
         if r["ok"]:
