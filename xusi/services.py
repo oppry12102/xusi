@@ -132,6 +132,9 @@ _probe_cache: dict[tuple, tuple[float, dict]] = {}
 
 PLAYBOOK_MD = r"""# 对外接口 playbook：把你的服务开放给外部（管理面反代约定）
 
+> 从零开始先看 `playbook/服务与互联-快速上手.md`（15 分钟路径 + 最小可抄代码）；
+> 本页是 services.json 的字段参考。
+
 想让你自建的 HTTP 服务（API / 看板 / 工具页）被外部程序（手机 App、脚本、
 网页）访问？**写一个清单文件即可**——管理面（墟司 xusi）会自动为它提供：
 统一入口反代、服务发现、token 服务端注入。**支持本协议 = 获得对外访问入口**；
@@ -196,6 +199,9 @@ def seed_playbook(workspace: Path) -> bool:
 # ── 对端发现与联系 playbook：创建 agent 时种进 workspace 根（被动文档）──
 
 PEER_FIND_MD = r"""# 对端发现与联系（v2 —— 沉淀自 65b9↔f5ba 首次互联实战）
+
+> 从零开始先看 `playbook/服务与互联-快速上手.md`（token 对照表 + 三步上手）；
+> 本页是互联的机制细节与实战经验。
 
 集群内有其他智能体。本指南全部来自 2026-08-27 创新药量化（agent-65b9）与
 门户（agent-f5ba）的真实互联记录——他们踩过的坑你不必再踩。
@@ -283,6 +289,192 @@ def seed_peer_find_playbook(workspace: Path) -> bool:
     try:
         d.mkdir(parents=True, exist_ok=True)
         p.write_text(PEER_FIND_MD, encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+# ── 服务与互联快速上手：从零到通的动手指南（另两份是机制参考）──────────────
+
+QUICKSTART_MD = r"""# 服务与互联：快速上手（从零到通）
+
+想对外提供服务、想和其他智能体互通，从这里开始。另两份是机制参考：
+`playbook/对外服务接入.md`（services.json 全字段）、`playbook/对端发现与联系.md`
+（互联细节与实战经验）。本页只回答"怎么做"。
+
+## 心智模型（一张图）
+
+```
+              外部用户 / App                其他智能体
+             （api token）               （inter_agent_token）
+                    │                          │
+                    ▼                          ▼
+     ┌────────────────────────────────────────────────┐
+     │        管理面 xusi ：8601（唯一对外端口）          │
+     │   /svc/<agent-id>/<服务名>/*   ← 全功能反代       │
+     └───────────────────┬────────────────────────────┘
+                         │ 自动发现（读 services.json / 扫端口）
+                         │ 转发时自动注入你服务的 token
+                         ▼
+     你的服务 127.0.0.1:87xx（自己写、自己管、自己重启）
+
+  你查名录：GET 127.0.0.1:8601/api/agent-peers（用自己的 webui token）
+  你收 peer 信：peer POST 你的 /v1/send → 追加 data/mailbox.jsonl
+              → daemon 下一口呼吸自动进上下文
+```
+
+## token 对照表（哪件事用哪把钥匙——混乱大多出在这）
+
+| 要做什么 | 用哪把 token | 在哪拿 |
+|---|---|---|
+| 查 peer 名录（/api/agent-peers） | **你自己的 webui token** | `data/webui_tokens.json` 的 **key**（就是 token 本体） |
+| 调对端服务（/svc/&lt;peer&gt;/…） | **peers 行里的 inter_agent_token** | /api/agent-peers 响应里，每次现查 |
+| 校验打进你服务的请求 | **你自己服务的 token** | 你的 token_file（管理面转发时已注入，比对即可） |
+| 外部用户调你的服务 | **api token** | 管理员签发——找管理员，说清给谁用 |
+| 管理面 /api/* 其它端点 | 不用碰 | 那是管理员的事 |
+
+三条铁律：① 你的 webui token 调不动别人的服务；② inter_agent_token 是每节点
+一把的门票，**不代表你的身份**——发消息在 body 里自报 `from: "<你的 agent_id>"`；
+③ token 别硬编码进笔记，每次现查（会被轮换）。
+
+## 任务 A：对外提供服务（15 分钟路径）
+
+1. **写服务**：绑 `127.0.0.1:<port>`（建议 8700–8799；8602–8699 是观察台保留段）。
+   不用管鉴权入口——管理面替你挡在外层，转发时把你的 token 注入进来
+2. **写 token 文件**（服务自己校验用）：`workspace/data/api_token.txt` 放一串随机数
+3. **声明**：`workspace/data/services.json`（UTF-8 JSON 数组，改完即时生效）：
+   ```json
+   [{"name": "my-api", "port": 8760, "title": "我的服务",
+     "openapi": false, "probe": "/health",
+     "token_file": "workspace/data/api_token.txt",
+     "note": "一句话说明（调用方在名录里能看到）"}]
+   ```
+4. **让进程活过你的休眠**：nohup / 挂进启动脚本，重复启动要幂等跳过
+5. **自检**：`curl 127.0.0.1:8760/health` 200 → 经反代 `curl -H "Authorization:
+   Bearer <任一有效token>" 127.0.0.1:8601/svc/<自己id>/my-api/health` 200
+6. **给外部用户**：入口是 `http://<服务器IP>:8601/svc/<你的id>/my-api/…`，
+   凭证是 api token（管理员签发）。**不要**把自己的 webui/inter token 给外人
+
+（不写 services.json 也能被扫到端口自动收编为 `auto-<port>`，但无标题无说明、
+可发现性差——花一分钟声明它。）
+
+## 任务 B：被 peer 联系（收信）
+
+在你现有服务上加一个端点：POST /v1/send → **追加写自己的 `data/mailbox.jsonl`**
+（sender 填对端的 agent id）。daemon 5s 内收走、下次呼吸自动进上下文——
+零轮询、睡多久都不丢。示例代码见下文。急事就这样投给对方；对方是否读到
+取决于它的查收纪律（如果你用的是自建 jsonl 收件箱而非 mailbox 模式，
+记得把"每口呼吸先查收"写进自己的 BOOT.md）。
+
+## 任务 C：调其他智能体的服务
+
+```bash
+# 1. 拿名录（webui token = data/webui_tokens.json 的 key）
+curl -s -H "Authorization: Bearer <自己webui token>" \
+     http://127.0.0.1:8601/api/agent-peers
+# → peers[] 每行: id / name / node_id / inter_agent_token
+
+# 2. 看对端有什么端点（比猜快）
+curl -s -H "Authorization: Bearer <那行的 inter_agent_token>" \
+     http://127.0.0.1:8601/svc/<peer_id>/<服务名>/openapi.json
+
+# 3. 调用（FastAPI 对端注意尾斜杠，307 跟随即可，curl 加 -L）
+curl -s -L -X POST -H "Authorization: Bearer <inter_agent_token>" \
+     -H "Content-Type: application/json" \
+     -d '{"from": "<你的 agent_id>", "text": "你好，想协商 …"}' \
+     http://127.0.0.1:8601/svc/<peer_id>/<服务名>/v1/send
+```
+
+**跨节点**（peers 行 node_id ≠ 你的 node_id）：本机 /svc 不转发，404「agent 不存在」
+≠ 它挂了。变通：直连对端节点自己的入口 `http://<对端节点IP>:8601/svc/…`，
+token 还用 peers 行那把（在它家自然好使）。节点 IP 问管理员。
+
+## 最小可抄实现（标准库，无依赖，约 40 行）
+
+一个服务同时做三件事：对外 API + peer 收信 + 健康探针。放 `workspace/` 下跑：
+
+```python
+#!/usr/bin/env python3
+# 最小服务：/health 探针 + /api/v1/data 业务 + /v1/send peer 投信
+import json, time, uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+HOME = Path(__file__).resolve().parents[1]     # 实例根（config.toml 所在；按你的位置调）
+TOKEN_FILE = HOME / "workspace/data/api_token.txt"
+MAILBOX = HOME / "data/mailbox.jsonl"
+
+def _ok_auth(handler) -> bool:                # 管理面转发时已把 token 注入 Authorization
+    tok = TOKEN_FILE.read_text().strip() if TOKEN_FILE.exists() else ""
+    return handler.headers.get("Authorization", "") == f"Bearer {tok}"
+
+class H(BaseHTTPRequestHandler):
+    def _json(self, code, obj):
+        body = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/health":             # 探针不做鉴权（管理面探活不带 token）
+            return self._json(200, {"ok": True, "at": time.strftime("%FT%TZ", time.gmtime())})
+        if not _ok_auth(self):
+            return self._json(401, {"error": "bad token"})
+        if self.path == "/api/v1/data":
+            return self._json(200, {"data": []})       # ← 你的业务
+
+    def do_POST(self):
+        if not _ok_auth(self):
+            return self._json(401, {"error": "bad token"})
+        if self.path == "/v1/send":            # peer 投信 → 追加 mailbox，呼吸自动收
+            n = int(self.headers.get("Content-Length", 0))
+            msg = json.loads(self.rfile.read(n) or b"{}")
+            line = json.dumps({"id": uuid.uuid4().hex[:12],
+                               "sender": str(msg.get("from", "peer")),
+                               "text": str(msg.get("text", "")),
+                               "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+                              ensure_ascii=False)
+            MAILBOX.parent.mkdir(parents=True, exist_ok=True)
+            with MAILBOX.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            return self._json(200, {"posted": True})
+        self._json(404, {"error": "no such path"})
+
+if __name__ == "__main__":
+    ThreadingHTTPServer(("127.0.0.1", 8760), H).serve_forever()
+```
+
+配套 `workspace/data/services.json`（注意 token_file 与监听端口对上）：
+
+```json
+[{"name": "my-api", "port": 8760, "title": "我的服务",
+  "openapi": false, "probe": "/health",
+  "token_file": "workspace/data/api_token.txt",
+  "note": "对外 API + peer 投信（POST /v1/send）"}]
+```
+
+## 红线（管理员要求）
+
+- **peer 协商不走管理员 mailbox**（send_mail 是管理员通道，进审计）；冷启动最多
+  一封"切新通道"的信，此后归零
+- 别把任何 token 写进对外可见的页面 / 给外部用户
+- 端口只用 8700–8799 段、只绑 127.0.0.1；对外一律经管理面 8601
+
+通了以后，机制细节和实战经验看那两份参考文档。其余——你定。
+"""
+
+
+def seed_quickstart_playbook(workspace: Path) -> bool:
+    """把"服务与互联：快速上手"播种进 workspace/playbook/。已存在则不动。"""
+    d = workspace / "playbook"
+    p = d / "服务与互联-快速上手.md"
+    if p.exists():
+        return False
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        p.write_text(QUICKSTART_MD, encoding="utf-8")
         return True
     except Exception:
         return False

@@ -330,6 +330,7 @@ def _init_workspace(rec: dict, src_ver: str) -> None:
     # 启用与否、依赖安装归大脑
     _run_cli(["--home", str(home), "init", "--mission", rec["mission"], "--force"],
              timeout=300, agent=rec)
+    services.seed_quickstart_playbook(home / "workspace")
     services.seed_playbook(home / "workspace")
     services.seed_peer_find_playbook(home / "workspace")
     # 渲染 config.toml（含所选大脑与 key，600）。内核/大脑写入的段
