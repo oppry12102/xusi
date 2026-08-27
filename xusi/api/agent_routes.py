@@ -45,8 +45,11 @@ async def api_agents_list(request: Request,
     if not local_only and peers.is_cluster():
         # 排除自己——peer 列表来自共享 etc/peers.toml，集群模式下自己的 id
         # 也可能在里头（多机器各自 git pull 同一份 toml）；fan-in 到自己 = 自递归。
+        # show_agents=false 的 peer 跳过：节点对话框关掉的 peer，主 UI fan-in 也不带它
+        # 的 agents 进来——这是 show_agents 唯一的渲染开关。
         me_id = node.info()["id"]
-        pls = [p for p in peers.list_peers() if p["id"] != me_id]
+        pls = [p for p in peers.list_peers()
+               if p["id"] != me_id and p.get("show_agents", True)]
         if pls:
             async def _one(p: dict) -> list[dict]:
                 try:
