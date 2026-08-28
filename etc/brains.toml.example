@@ -16,7 +16,7 @@ model = "deepseek-v4-flash"
 [brains.glm]
 api_key = ""
 base_url = "https://api.z.ai/api/coding/paas/v4"
-model = "glm-5.2"
+model = "glm-5.3"
 
 # Kimi：仅允许服务端默认 temperature → temperature = "default"（请求不带该参数）
 [brains.kimi]
