@@ -31,7 +31,7 @@ from fastapi import HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
-from . import agentops, apitokens, peers, registry, services
+from . import agentops, apitokens, authtok, peers, registry, services
 
 # 请求侧不透传的头（httpx 自动解压请求体无意义，长度重算）
 _HOP_HEADERS = {
@@ -357,19 +357,20 @@ def _fanout_locate(agent_id: str, request: Request | None = None) -> dict | None
     排除自己：peer 列表来自共享 etc/peers.toml，集群模式下自己的 id
     也可能在里头（多机器各自 git pull 同一份 toml）；fan-out 到自己 = 自递归。
 
-    request：调方的 Request——`Authorization` 头原样透传给 peer（cluster_secret
-    互通，省去 JWT 包装）；未传则不带任何鉴权头（peer 端 verify 失败 401，
-    本地视为没找到这个 agent）。"""
+    鉴权用**本机 cluster_secret**，不透传 caller 的 Authorization——定位探查
+    是节点间管道行为，caller 的实际鉴权在最终端点完成（peer 端 _svc_px_auth
+    四档）。caller 常是 agent（持互联/观察台 token），这些 token 过不了
+    peer /api/agents 的 require_auth（仅管理面 token）——透传它们会让定位
+    永远 401 → 404，跨节点转发死在第一跳（/svc/{id} 远端转发的目标受众
+    正是它们）。/api/agent-peers 的 fan-in 同款处理。request 参数保留仅为
+    签名兼容，已不参与鉴权。"""
     from . import node
     me_id = node.info()["id"]
     pls = [p for p in peers.list_peers() if p["id"] != me_id]
     if not pls:
         return None
 
-    headers: dict[str, str] = {}
-    auth = _auth_from_request(request) if request is not None else ""
-    if auth:
-        headers["authorization"] = auth
+    headers: dict[str, str] = {"authorization": f"Bearer {authtok.cluster_secret()}"}
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(pls))) as ex:
         futs = {ex.submit(_peer_has_agent, p, agent_id, headers): p for p in pls}
