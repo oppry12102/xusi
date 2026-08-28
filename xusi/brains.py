@@ -142,6 +142,11 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
                         display_timezone: str | None = None) -> str:
     """渲染 agent 的 config.toml 全文（注册表数据 → 配置文件，单向渲染）。
 
+    ⚠ brains 列表顺序即语义：chosen[0] 渲染为 [brain] default——它既是主
+    回路首选脑，也是预算推导（同档取最小）与故障转移分档的锚点。管理员
+    调换 brains 顺序 = 静默换默认大脑（PATCH brains 原样写回也会重渲染换锚），
+    换锚后预算随新档重算。
+
     budgets 为 None 且 default 大脑的同类（tier 相同，未打标签视同 power）都
     未声明 context_window 时，[agent] 预算段一个键都不写（内核默认 = 全不限）；
     否则只写给出的/推导出的键（0 = 不限）。"""
