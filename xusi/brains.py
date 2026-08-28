@@ -50,10 +50,24 @@ def _load_pool() -> dict[str, dict]:
         if isinstance(spec, dict):
             spec = dict(spec)
             # context_window 类型归一："190000" → 190000。字符串会让护栏推导
-            # 静默跳过，而内核侧仍按 int 解析——管理面与内核两套规则必须同源
+            # 静默跳过，而内核侧仍按 int 解析——管理面与内核两套规则必须同源。
+            # 接受正整数串（含 "+190000" / " 190000 "），以及小数位全 0 / 科学计数
+            # 表示的整数（"190000.0" / "1.9e5"）；非整数浮点串（"190000.5"）拒绝——按
+            # 整数语义，避免静默丢精度。
             w = spec.get("context_window")
-            if isinstance(w, str) and w.strip().isdigit():
-                spec["context_window"] = int(w)
+            if isinstance(w, str):
+                s = w.strip()
+                try:
+                    i = int(s)
+                    if i > 0:
+                        spec["context_window"] = i
+                except ValueError:
+                    try:
+                        f = float(s)
+                        if f > 0 and f.is_integer():
+                            spec["context_window"] = int(f)
+                    except (ValueError, OverflowError):
+                        pass
             out[str(name)] = spec
     return out
 
@@ -236,6 +250,15 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
                 lines.append(f"{k} = {int(b[k])}")
         if cap > 0:
             lines.append(f"# 物理护栏参考：default 同档最小窗口 ≈ {cap}（context_window 推导，扣 8k 余量）")
+            # 显式 max_context_tokens 超过物理窗口：渲染里给醒目告警。
+            # 真要收紧：把 b[k] 改写成 min(int(b[k]), cap)，并在 #4
+            # 那段设计注释里去掉"硬墙由内核按脑预检兜底"那一句。
+            explicit_mct = b.get("max_context_tokens")
+            if isinstance(explicit_mct, (int, float)) and int(explicit_mct) > cap:
+                lines.append(
+                    f"# ⚠ max_context_tokens={int(explicit_mct)} 超过 default 物理护栏 {cap}，"
+                    f"按设计不收紧；硬墙依赖内核按脑预检，若预检未生效会超窗 400。"
+                )
         lines.append("")
     return "\n".join(lines)
 

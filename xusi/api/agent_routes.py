@@ -49,7 +49,10 @@ async def api_agents_list(request: Request,
         # show_agents 不在此过滤：它仅是 webui 节点对话框的显隐开关，fan-in
         # 数据面始终完整——互联发现依赖全量名录，过滤会掐断 agent 直连链路。
         me_id = node.info()["id"]
-        pls = [p for p in peers.list_peers() if p["id"] != me_id]
+        # 无 url 的残缺行整条跳过——fetch_json 与 node_url 都要它，缺了只
+        # 会 KeyError 500（同行 api_agent_peers 已用同款过滤）
+        pls = [p for p in peers.list_peers()
+               if p["id"] != me_id and p.get("url")]
         if pls:
             async def _one(p: dict) -> list[dict]:
                 try:
