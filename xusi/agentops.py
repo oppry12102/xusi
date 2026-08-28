@@ -127,6 +127,25 @@ def _spawn_unit(agent: dict) -> None:
                            str(_home(agent)), _listen_host(agent), agent["port"])
 
 
+# 默认 PyPI 镜像：本机直连 pypi.org 不可达（DNS 通但 TCP/TLS 握手挂死，
+# 参见 memory xusi-pip-mirror），xuseek init 经启动器自愈安装依赖时会卡
+# 在网络层分钟级。xusi 在所有 xuseek 子进程 spawn 时统一注入 UV_INDEX_URL
+# ——保证新建 agent 的 venv 装包秒级完成，不让 webui 端点同步等待挂死。
+# 覆盖：env XUSI_UV_INDEX_URL（也同步设 PIP_INDEX_URL 兜底 pip 回落路径）。
+# 设空串 = 关镜像，回退到 pypi.org（不保证可达）。
+DEFAULT_UV_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+
+def _pip_env() -> dict[str, str]:
+    """xuseek 子进程的 env：继承父进程 + 注入 PyPI 镜像 URL。"""
+    import os
+    env = os.environ.copy()
+    url = os.environ.get("XUSI_UV_INDEX_URL", DEFAULT_UV_INDEX_URL)
+    env["UV_INDEX_URL"] = url
+    env["PIP_INDEX_URL"] = url
+    return env
+
+
 def _run_cli(args: list[str], timeout: float = 120, *, agent: dict | None = None) -> str:
     """调 xuseek 公开 CLI（init / token / seed）——公开接口，非内部耦合。
     带版本创建的 agent 用它自己的源码副本跑 CLI。注意 CLI 经启动器跑，开了
@@ -134,7 +153,7 @@ def _run_cli(args: list[str], timeout: float = 120, *, agent: dict | None = None
     import subprocess
     try:
         r = subprocess.run([str(_xuseek_sh(agent)), *args], capture_output=True, text=True,
-                           timeout=timeout)
+                           timeout=timeout, env=_pip_env())
     except subprocess.TimeoutExpired as e:
         raise AgentError(
             f"xuseek CLI 超时（{timeout:.0f}s）：{' '.join(args[:3])} ——"
