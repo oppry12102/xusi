@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from .. import agentops, apitokens, authtok, capabilities, inter_agent_tokens, node, peers, proxy, registry, services
+from ..config import get_config
 from .auth import require_admin, require_agent_or_remote, require_agent_or_remote_admin, require_auth
 from .models import CreateAgentReq, MailReq, PatchAgentReq, TokenNewReq
 
@@ -45,11 +46,10 @@ async def api_agents_list(request: Request,
     if not local_only and peers.is_cluster():
         # 排除自己——peer 列表来自共享 etc/peers.toml，集群模式下自己的 id
         # 也可能在里头（多机器各自 git pull 同一份 toml）；fan-in 到自己 = 自递归。
-        # show_agents=false 的 peer 跳过：节点对话框关掉的 peer，主 UI fan-in 也不带它
-        # 的 agents 进来——这是 show_agents 唯一的渲染开关。
+        # show_agents 不在此过滤：它仅是 webui 节点对话框的显隐开关，fan-in
+        # 数据面始终完整——互联发现依赖全量名录，过滤会掐断 agent 直连链路。
         me_id = node.info()["id"]
-        pls = [p for p in peers.list_peers()
-               if p["id"] != me_id and p.get("show_agents", True)]
+        pls = [p for p in peers.list_peers() if p["id"] != me_id]
         if pls:
             async def _one(p: dict) -> list[dict]:
                 try:
@@ -221,8 +221,10 @@ async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
     """智能体互发现：列出当前可联系的其他 agent 的最小信息
     （id / name / node_id / inter_agent_token）。
 
-    四档 token 任一通过：admin / api token / 互联 token / 任意 agent 观察台 token。
-    - admin / api / 互联 token：不返回 self 字段（caller 没有"自己"的概念）
+    三档 token 任一通过：admin / 互联 token / 任意 agent 观察台 token。
+    api token（反代入口凭证）显式 401——auth.py 明文承诺 api token 不进任何
+    /api/*，此前例外是越权口子（外部反代凭证可拿全集群互联 token）。
+    - admin / 互联 token：不返回 self 字段（caller 没有"自己"的概念）
     - agent 观察台 token：返回除自己外的全部 peer + self 字段
 
     互联 token（每 xusi 一把）同集群 agent ↔ agent 互调 /svc 时用——
@@ -239,13 +241,13 @@ async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
     if auth.lower().startswith("bearer "):
         tok = auth[7:].strip() or tok
     if not tok:
-        raise HTTPException(401, "missing token（管理面 token / api token / 互联 token / agent 观察台 token）")
+        raise HTTPException(401, "missing token（管理面 token / 互联 token / agent 观察台 token）")
 
     src_id: str | None = None  # caller 的 agent id；admin/api/互联 token → None
     if authtok.verify(tok):
         src_id = None
     elif apitokens.verify(tok):
-        src_id = None
+        raise HTTPException(401, "api token 不能调用 /api/*（仅 /px /svc 反代入口）")
     elif inter_agent_tokens.verify(tok):
         src_id = None  # 互联 token 不绑 agent 身份，caller 不可识别
     else:
@@ -260,10 +262,10 @@ async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
     me_node_id = node.info()["id"]
     my_inter_token = inter_agent_tokens.get_token()  # None if not minted
     # 本节点入口地址：优先用 peers.toml 里自己的行（与集群视图同源），
-    # 缺行时兜底本机回环——同节点 caller 本来就走 127.0.0.1:8601。
+    # 缺行时兜底 cfg.public_url（[node].public_url / 出站 IP 探测）。
     me_url = next((p.get("url") for p in peers.list_peers()
                    if p["id"] == me_node_id and p.get("url")),
-                  "http://127.0.0.1:8601")
+                  get_config().public_url)
 
     # 本节点 agent
     rows: list[dict] = []
@@ -282,12 +284,11 @@ async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
 
     # cluster fan-in
     if not local_only and peers.is_cluster():
-        from ..config import get_config
         admin_tok = get_config().cluster_secret
-        # show_agents=false 的 peer 跳过：被动收进来的默认不显示
-        # （详见 peers.local_add_or_update 的语义说明）
+        # show_agents 不在此过滤（仅 webui 节点对话框显隐）；无 url 的残缺行
+        # 整条跳过——fetch_json 与 node_url 都要它，缺了只会 KeyError 500。
         pls = [p for p in peers.list_peers()
-               if p["id"] != me_node_id and p.get("show_agents", True)]
+               if p["id"] != me_node_id and p.get("url")]
         if pls and admin_tok:
             async def _one(p: dict) -> None:
                 try:
