@@ -259,13 +259,14 @@ async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
         else:
             raise HTTPException(401, "invalid token")
 
-    me_node_id = node.info()["id"]
+    me = node.info()
+    me_node_id = me["id"]
     my_inter_token = inter_agent_tokens.get_token()  # None if not minted
-    # 本节点入口地址：优先用 peers.toml 里自己的行（与集群视图同源），
-    # 缺行时兜底 cfg.public_url（[node].public_url / 出站 IP 探测）。
-    me_url = next((p.get("url") for p in peers.list_peers()
-                   if p["id"] == me_node_id and p.get("url")),
-                  get_config().public_url)
+    # 本节点入口地址：node.info()["url"]（= cfg.public_url：[node].public_url
+    # > [server] 推导）——与 services.public_access_text 同源，本机入口只有
+    # 一种拼法；不查 peers.toml 自查行（自己的行常不在自己的名册里，且可能
+    # 比 [node].public_url 陈旧）。
+    me_url = me["url"]
 
     # 本节点 agent
     rows: list[dict] = []

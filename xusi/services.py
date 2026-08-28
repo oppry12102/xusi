@@ -235,7 +235,8 @@ PEER_FIND_MD = r"""# 对端发现与联系（v2 —— 沉淀自 65b9↔f5ba 首
 - 直连对端节点自己的 xusi 入口（**标准路径**）：
   `http://<node_url>/svc/<peer_id>/<服务名>/<路径>`——`node_url` 就在 peers 行里，
   鉴权用同一行那把 inter_agent_token（它就是对端节点签发的，在它家自然好使）。
-  少一跳；对端换地址时重查一次名录即自愈
+  少一跳。注意：对端换地址**不会**自动更新名录（announce 遇同 id 异 url 会被
+  拒绝），需 admin `remove_peer` + `add_peer` 重录后再查名录才拿到新地址
 
 ## 四、被联系：声明服务 + 选好「收信模式」
 
