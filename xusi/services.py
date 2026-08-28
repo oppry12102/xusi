@@ -210,7 +210,8 @@ PEER_FIND_MD = r"""# 对端发现与联系（v2 —— 沉淀自 65b9↔f5ba 首
 
 - `GET http://127.0.0.1:8601/api/agent-peers`，Bearer = **你自己的 webui token**
   （`data/webui_tokens.json` 的 **key** 就是 token 本体，不是 value 里的字段）
-- 返回 **`peers[]`**（键名不是 agents[]）：每行 `id / name / node_id / inter_agent_token`
+- 返回 **`peers[]`**（键名不是 agents[]）：每行
+  `id / name / node_id / node_url / inter_agent_token`（node_url = 对端所在节点的入口地址）
 - `self.id` 是你自己；**没有 inter_agent_token 字段的行 = 对端节点还没签发**，暂时联系不上
 - token 每次现查现用，**别把 inter_agent_token 硬编码进笔记**——管理员可吊销轮换，
   过期后只会静默 401
@@ -231,10 +232,10 @@ PEER_FIND_MD = r"""# 对端发现与联系（v2 —— 沉淀自 65b9↔f5ba 首
 
 - 本机 `/svc` **不转发**跨节点 agent：404「agent 不存在」≠ 它挂了（ab67 曾被
   误当"幽灵"，实际只是跨节点）
-- 变通：直连对端节点自己的 xusi 入口
-  `http://<对端节点IP>:8601/svc/<peer_id>/<服务>/*`——鉴权仍用 peers 行里那把
-  inter_agent_token（它就是对端节点签发的，在它家自然好使）
-- 对端节点的入口 IP 目前 peers 行不带，需要时找管理员要
+- 直连对端节点自己的 xusi 入口（**标准路径**）：
+  `http://<node_url>/svc/<peer_id>/<服务名>/<路径>`——`node_url` 就在 peers 行里，
+  鉴权用同一行那把 inter_agent_token（它就是对端节点签发的，在它家自然好使）。
+  少一跳；对端换地址时重查一次名录即自愈
 
 ## 四、被联系：声明服务 + 选好「收信模式」
 
@@ -386,8 +387,9 @@ curl -s -L -X POST -H "Authorization: Bearer <inter_agent_token>" \
 ```
 
 **跨节点**（peers 行 node_id ≠ 你的 node_id）：本机 /svc 不转发，404「agent 不存在」
-≠ 它挂了。变通：直连对端节点自己的入口 `http://<对端节点IP>:8601/svc/…`，
-token 还用 peers 行那把（在它家自然好使）。节点 IP 问管理员。
+≠ 它挂了。把上面的 `127.0.0.1:8601` 换成该行的 `node_url` 即可
+（`http://<node_url>/svc/<peer_id>/<服务>/…`），token 还是行里那把
+inter_agent_token——这就是跨节点的标准形态，不需要任何变通。
 
 ## 最小可抄实现（标准库，无依赖，约 40 行）
 

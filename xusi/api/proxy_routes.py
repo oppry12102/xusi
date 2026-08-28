@@ -151,11 +151,11 @@ async def svc(request: Request, agent_id: str, svc_name: str, sub_path: str = ""
     浏览器 CORS 预检（OPTIONS + Access-Control-Request-Method）本地应答——
     预检发不出 Authorization，真实请求照常鉴权。
 
-    集群模式：agent 可能在 peer xusi 上。本机 registry 查不到时 fan-out 找归属
-    peer，整段请求透传过去（Authorization + ?mtoken= 一并保留），由 peer 端
-    _svc_px_auth 自己验、peer 自己查 services.json、自己注 token。互发
-    /api/agent-peers 拿到的 per-peer inter_agent_token 就是为了走这条路径——
-    没有这条转发，agent 间互通就只剩直接拼 URL 拼对端 IP 这一条路。
+    集群模式：本机 /svc **只服务本机 agent**（跨节点 id 一律 404「agent 不
+    存在」，≠ 它挂了）。跨节点调用直连对端节点的 /svc——地址与凭证都在发现
+    接口里（/api/agent-peers 行内 node_url + inter_agent_token，qwen-api 同款
+    形态）。不做本机中转：peer 本就是唯一鉴权点（转发分支本机不验票，不增加
+    安全，只增加跳数、双计审计与未认证者的 agent-id 存在性探测面）。
     """
     if (request.method == "OPTIONS"
             and request.headers.get("access-control-request-method")):
@@ -165,23 +165,9 @@ async def svc(request: Request, agent_id: str, svc_name: str, sub_path: str = ""
             "access-control-allow-headers": "Authorization, Content-Type",
             "access-control-max-age": "86400",
         })
-    # 解析 agent 所在地：本地优先；不命中 cluster fan-out（30s 命中 / 5s 未命中缓存）
-    target = await asyncio.to_thread(proxy.resolve, agent_id, request=request)
-    if target is None:
+    agent = registry.get_agent(agent_id)
+    if not agent:
         raise HTTPException(404, f"agent 不存在: {agent_id}")
-    # 远端：透传整段请求；peer 端 _svc_px_auth 自己验、find_service 查自己的
-    # services.json、service_proxy 注自己的 token。本机只审计 + 透传转发。
-    if target.kind == "remote":
-        if request.method not in ("GET", "HEAD", "OPTIONS"):
-            # 本机审计带 via_peer 便于回溯"哪台机中转"；peer 端会再审计一次
-            # （peer 看到的就是普通 /svc 请求，不知道是被转发的）——双计但
-            # 利于分布式 forensics；不加 marker header 保持简单。
-            agentops.audit("svc.write", agent=agent_id, service=svc_name,
-                           method=request.method, path="/" + sub_path,
-                           via_peer=target.peer["id"], status="forwarded")
-        return await _forward_passthrough(target.peer, request, request.url.path)
-    # 本机：原行为不变
-    agent = target.agent
     _svc_px_auth(request, agent)
     # find_service / service_names 走清单文件 + cgroup/proc 扫描（自动发现）——
     # 线程池跑；这是 /svc 反代热路径，每个请求都要过

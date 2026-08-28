@@ -259,6 +259,11 @@ async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
 
     me_node_id = node.info()["id"]
     my_inter_token = inter_agent_tokens.get_token()  # None if not minted
+    # 本节点入口地址：优先用 peers.toml 里自己的行（与集群视图同源），
+    # 缺行时兜底本机回环——同节点 caller 本来就走 127.0.0.1:8601。
+    me_url = next((p.get("url") for p in peers.list_peers()
+                   if p["id"] == me_node_id and p.get("url")),
+                  "http://127.0.0.1:8601")
 
     # 本节点 agent
     rows: list[dict] = []
@@ -269,6 +274,7 @@ async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
             "id": a["id"],
             "name": (a.get("name") or a["id"]).strip() or a["id"],
             "node_id": me_node_id,
+            "node_url": me_url,
         }
         if my_inter_token:
             row["inter_agent_token"] = my_inter_token
@@ -295,6 +301,7 @@ async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
                                 "id": row["id"],
                                 "name": (row.get("name") or row["id"]).strip() or row["id"],
                                 "node_id": p["id"],
+                                "node_url": p["url"],
                             }
                             # 远端 xusi 自带它那把互联 token（若未签发则无字段）
                             remote_tok = row.get("inter_agent_token")
@@ -308,7 +315,7 @@ async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
             await asyncio.gather(*[_one(p) for p in pls])
 
     out: dict = {
-        "access_pattern": "/svc/{peer_id}/{service_name}/*",
+        "access_pattern": "/svc/{peer_id}/{service_name}/*（跨节点用行内 node_url 直连）",
         "cluster": {
             "node_id": me_node_id,
             "is_cluster": peers.is_cluster(),
