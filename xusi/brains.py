@@ -20,7 +20,13 @@ from typing import Any
 from .config import get_config
 
 # 渲染进 agent config.toml 时允许透传的可选字段（v2 config 认识的）
-_OPTIONAL_FIELDS = ("temperature", "timeout", "tier", "price_prompt", "price_completion")
+_OPTIONAL_FIELDS = ("temperature", "timeout", "tier", "price_prompt", "price_completion",
+                    "context_window")
+
+# 上下文护栏的输出余量（tokens）：vLLM 对 prompt == max_model_len 直接 400，
+# 内核「超顶优雅结束」又按上次成功调用的 prompt_tokens 事后判定——不留余量
+# 的话护栏永远晚一步。预留 8k 让 80% 提醒/优雅收尾先于硬错触发。
+_CONTEXT_RESERVE_TOKENS = 8_192
 
 # config.toml 里墟司拥有（每次渲染重写）的段；其余段一律保真回传。
 # "" = 顶层键（mission/display_timezone）。[brains.*] 用前缀匹配（大脑名动态）。
@@ -89,6 +95,16 @@ def _q(s: Any) -> str:
     return json.dumps(str(s), ensure_ascii=False)
 
 
+def _failover_class(spec: dict) -> str:
+    """大脑的经济分档（[brains.X] tier；未打标签 = 最贵档 premium）。
+
+    内核事实（xuseek-v2 llm.py）：主循环故障转移是**全池**粘滞轮转，不按档
+    分——跨档也会自动接盘，超窗 400 被当作该脑不可用跳过；llm_call(tier=)
+    子任务通道才是同档内转移。预算按 default 同档取最小是管理面策略：跨档
+    小窗脑接不住胖会话（只会被跳过），不该反过来拖累大窗脑的会话上限。"""
+    return str(spec.get("tier") or "premium")
+
+
 def _owned(section: str) -> bool:
     return section in _OWNED_SECTIONS or section.startswith(_OWNED_PREFIXES)
 
@@ -121,14 +137,35 @@ def extract_foreign_sections(text: str) -> str:
 
 def render_agent_config(mission: str, brains: list[str], budgets: dict | None = None,
                         display_timezone: str | None = None) -> str:
-    """渲染 agent 的 config.toml 全文（注册表数据 → 配置文件，单向渲染）。"""
+    """渲染 agent 的 config.toml 全文（注册表数据 → 配置文件，单向渲染）。
+
+    budgets 为 None 且 default 大脑的同类（tier 相同，未打标签 = 最贵档）都
+    未声明 context_window 时，[agent] 预算段一个键都不写（内核默认 = 全不限）；
+    否则只写给出的/推导出的键（0 = 不限）。"""
     pool = _load_pool()
     chosen = [b for b in brains if b in pool]
     if not chosen:
         raise ValueError("密钥池中没有任何可用的大脑（etc/brains.toml）")
     cfg = get_config()
     tz = display_timezone or cfg.display_timezone
-    b = budgets or {}
+    b = dict(budgets or {})
+
+    # 上下文护栏：内核缺省 max_context_tokens=1M，小于此的服务（如 190k 级
+    # 自托管 vLLM）会在护栏触发前撞硬错。取 default 同档（tier 相同，未打
+    # 标签 = 最贵档）已声明 context_window 的最小值，扣输出余量折进预算——
+    # 只算同档是策略选择：主循环故障转移虽是全池的，但跨档小窗脑接不住胖
+    # 会话（超窗 400 被内核当该脑不可用跳过），不该拖累大窗脑；人工换档走
+    # PATCH 重渲染，预算随新 default 重算。显式预算更严则尊重；同档都没
+    # 声明则不动。
+    cls = _failover_class(pool[chosen[0]])
+    declared = [int(pool[n]["context_window"]) for n in chosen
+                if _failover_class(pool[n]) == cls
+                and isinstance(pool[n].get("context_window"), (int, float))
+                and int(pool[n]["context_window"]) > 0]
+    cap = min(declared) - _CONTEXT_RESERVE_TOKENS if declared else 0
+    if cap > 0:
+        b["max_context_tokens"] = (min(int(b["max_context_tokens"]), cap)
+                                   if b.get("max_context_tokens") else cap)
 
     lines = [
         "# ═══════════════════════════════════════════════════════════════════",
@@ -147,6 +184,20 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     for name in chosen:
         spec = pool[name]
         lines.append(f"[brains.{name}]")
+        # 面向智能体的使用提示（渲染注释通道，内核解析值不受影响）：note 是
+        # 该脑特有事实（如"免费（自托管）"）；economy 档再补一条档位通用提示
+        # （上下文受限、子 agent/批量任务优先）。"免费"不是档位的定义，各家
+        # 脑用 note 自述，代码不替它说。
+        note = spec.get("note")
+        if isinstance(note, str) and note.strip():
+            for ln in note.strip().splitlines():
+                lines.append(f"# {ln.strip()}")
+        if str(spec.get("tier") or "") == "economy":
+            win = spec.get("context_window")
+            lim = (f"（上限 {int(win)} tokens）"
+                   if isinstance(win, (int, float)) and int(win) > 0 else "")
+            lines.append(f"# 经济档（tier=economy）：上下文受限{lim}。")
+            lines.append("# 子 agent 与批量粗活（摘要/分类/记忆分析）优先走这家；长会话主回路不适合。")
         lines.append(f"api_key = {_q(spec.get('api_key', ''))}")
         lines.append(f"base_url = {_q(spec.get('base_url', ''))}")
         lines.append(f"model = {_q(spec.get('model', ''))}")
@@ -156,7 +207,7 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
                 lines.append(f"{k} = {_q(v)}" if isinstance(v, str) else f"{k} = {v}")
         lines.append("")
     # 预算段：缺省一个都不写（xuseek 自身默认 = 全不限，LLM 完全自主）；
-    # 仅当显式给 budgets 时写出，且只写给出的键（0 = 不限）
+    # 仅写给出的键（0 = 不限）。max_context_tokens 可能来自上面的物理护栏推导
     if b:
         lines.append("# 探索回路安全网（仅管理面显式指定的键；0 = 不限；热重载即时生效）")
         lines.append("[agent]")
