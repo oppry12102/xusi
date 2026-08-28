@@ -248,31 +248,46 @@ agent 想找其他 agent 时调一次——懒查询，**不推送**、不写 ag
 curl -s -H "Authorization: Bearer $AGENT_TOKEN" \
      http://SERVER:8601/api/agent-peers
 # → {"self":{"id":"agent-X"},
-#    "access_pattern":"/svc/{peer_id}/{service_name}/*",
+#    "access_pattern":"/svc/{peer_id}/{service_name}/*（跨节点用行内 node_url 直连）",
 #    "cluster":{"node_id":"本机","is_cluster":true,"peers_known":4},
 #    "peers":[
 #      {"id":"agent-A","name":"Astronomy","node_id":"node-1",
+#       "node_url":"http://<node-1 入口>:8601",
 #       "inter_agent_token":"<本 xusi 那把互联 token>"},
 #      {"id":"agent-B","name":"Bio","node_id":"node-2",
+#       "node_url":"http://<node-2 入口>:8601",
 #       "inter_agent_token":"<node-2 那把互联 token>"}
 #    ]}
 ```
 
-admin / api / 互联 token 调用也可以（这时不返回 `self`，且能看到自己所在的 peer 行）。
+admin / 互联 token 调用也可以（这时不返回 `self`，且能看到自己所在的 peer 行）。
+api token（反代入口凭证）不能调本端点——它不进任何 `/api/*`。
 cluster 模式自动跨节点 fan-in；远端 peer 行带的是该远端 xusi 自己的互联 token
 （若远端尚未签发则该字段缺省）。
 
 拿到 peer 行后直接用它带的 `inter_agent_token` 调 `/svc/<peer_id>/<service_name>/...`：
 
+同节点（agent-A 与你在同一 xusi 上）：
+
 ```bash
 curl -s -H "Authorization: Bearer $PEER_INTER_TOKEN" \
-     http://SERVER:8601/svc/agent-A/inbox/...
-# 走 node-1 xusi 的 /svc，node-1 验互联 token 合法后透传给 agent-A 的 inbox 服务
+     http://127.0.0.1:8601/svc/agent-A/inbox/...
+# 本机 xusi 验互联 token 后透传给 agent-A 的 inbox 服务
+```
+
+跨节点（agent-A 在 node-1、你在别的节点）——**直连**，把 host 换成该行的 `node_url`：
+
+```bash
+curl -s -H "Authorization: Bearer $PEER_INTER_TOKEN" \
+     http://<peers 行里的 node_url>/svc/agent-A/inbox/...
+# 直接打 node-1 的 xusi（本机 /svc 对非本机 id 是 404「agent 不存在」，不转发
+# ≠ 对端挂了）；inter_agent_token 就是同一 peers 行里那把（对端签发，在它家
+# 自然好使）
 ```
 
 **为什么这样做**：
 - xusi **不下发 peers.json 到 agent home**——写 agent 工作目录会越界，且几百 agent 时维护成本高
-- xusi **不开新鉴权**——已有四档 token（admin / api / 互联 / agent webui）都接受
+- xusi **不开新鉴权**——三档 token（admin / 互联 / agent webui）都接受
 - 实际通信走 `/svc/<peer_id>/<service_name>/*`——见 §7.3 自建服务反代，由对端在
   `workspace/data/services.json` 里声明 inbox 服务（建议命名 `inbox` / `contact`），
   xusi 不替 agent 决定通信格式、鉴权、是否广播入口

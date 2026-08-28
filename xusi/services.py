@@ -374,7 +374,7 @@ QUICKSTART_MD = r"""# 服务与互联：快速上手（从零到通）
 # 1. 拿名录（webui token = data/webui_tokens.json 的 key）
 curl -s -H "Authorization: Bearer <自己webui token>" \
      http://127.0.0.1:8601/api/agent-peers
-# → peers[] 每行: id / name / node_id / inter_agent_token
+# → peers[] 每行: id / name / node_id / node_url / inter_agent_token
 
 # 2. 看对端有什么端点（比猜快）
 curl -s -H "Authorization: Bearer <那行的 inter_agent_token>" \
