@@ -310,13 +310,14 @@ _loc_cache: dict[str, tuple[float, AgentTarget | None]] = {}
 _loc_lock = threading.Lock()
 
 
-def resolve(agent_id: str, request: Request | None = None) -> AgentTarget | None:
+def resolve(agent_id: str) -> AgentTarget | None:
     """找 agent 在哪。本地优先；都不命中返回 None（404）。
 
     缓存策略：30s 命中 / 5s 未命中。cluster 模式未启用时永远走本地分支（peer 列表为空）。
 
-    request：caller 的 FastAPI Request——仅在 fan-out 时被读 `Authorization` 头
-    原样透传给 peer（peer 端再 verify 同一 cluster_secret）。本地命中时不需要。"""
+    凭证不出本机：fan-out 用**本机 cluster_secret**（定位是节点间管道行为），
+    caller 的实际鉴权在最终端点完成（peer 端 _svc_px_auth 四档 / require_auth）。
+    消费者：/px（proxy_routes）与 /api/agent-* 的远端解析（auth.py）。"""
     now = time.monotonic()
     with _loc_lock:
         cached = _loc_cache.get(agent_id)
@@ -339,7 +340,8 @@ def resolve(agent_id: str, request: Request | None = None) -> AgentTarget | None
         _put_cache(agent_id, None)
         return None
 
-    # fan-out：并发问每个 peer 的 /api/agents（透传 caller Authorization 让 peer 鉴权通过）
+    # fan-out：并发问每个 peer 的 /api/agents（本机 cluster_secret 鉴权——caller
+    # 凭证不参与，定位是节点间管道行为）
     found_peer = _fanout_locate(agent_id, request)
     target = AgentTarget(kind="remote", agent_id=agent_id, peer=found_peer) if found_peer else None
     _put_cache(agent_id, target)
@@ -351,7 +353,7 @@ def _put_cache(agent_id: str, target: AgentTarget | None) -> None:
         _loc_cache[agent_id] = (time.monotonic(), target)
 
 
-def _fanout_locate(agent_id: str, request: Request | None = None) -> dict | None:
+def _fanout_locate(agent_id: str) -> dict | None:
     """并发打所有 peer 的 /api/agents，返回含目标 agent_id 的第一个 peer 记录。
 
     排除自己：peer 列表来自共享 etc/peers.toml，集群模式下自己的 id
@@ -361,9 +363,7 @@ def _fanout_locate(agent_id: str, request: Request | None = None) -> dict | None
     是节点间管道行为，caller 的实际鉴权在最终端点完成（peer 端 _svc_px_auth
     四档）。caller 常是 agent（持互联/观察台 token），这些 token 过不了
     peer /api/agents 的 require_auth（仅管理面 token）——透传它们会让定位
-    永远 401 → 404，跨节点转发死在第一跳（/svc/{id} 远端转发的目标受众
-    正是它们）。/api/agent-peers 的 fan-in 同款处理。request 参数保留仅为
-    签名兼容，已不参与鉴权。"""
+    永远 401 → 404。/api/agent-peers 的 fan-in 同款处理。"""
     from . import node
     me_id = node.info()["id"]
     pls = [p for p in peers.list_peers() if p["id"] != me_id]

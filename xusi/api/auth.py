@@ -74,7 +74,7 @@ async def require_agent_or_remote(
     from .. import proxy
     # resolve 的 fan-out 是线程池 + 网络探查（硬墙 10s）——丢线程池跑，
     # 不能在事件循环上同步等（否则一个未知 agent_id 的请求冻住整个管理面）
-    target = await asyncio.to_thread(proxy.resolve, agent_id, request=request)
+    target = await asyncio.to_thread(proxy.resolve, agent_id)
     if target is None:
         raise HTTPException(404, f"agent 不存在: {agent_id}")
     return target, rec
@@ -94,7 +94,7 @@ async def require_agent_or_remote_admin(
       cluster_secret（两端同一密钥即同集群，admin 自动通配）"""
     from .. import proxy
     # 同上：resolve 的 fan-out 丢线程池，别冻事件循环
-    target = await asyncio.to_thread(proxy.resolve, agent_id, request=request)
+    target = await asyncio.to_thread(proxy.resolve, agent_id)
     if target is None:
         raise HTTPException(404, f"agent 不存在: {agent_id}")
     return target, _rec
