@@ -48,7 +48,13 @@ def _load_pool() -> dict[str, dict]:
     out = {}
     for name, spec in raw.get("brains", {}).items():
         if isinstance(spec, dict):
-            out[str(name)] = dict(spec)
+            spec = dict(spec)
+            # context_window 类型归一："190000" → 190000。字符串会让护栏推导
+            # 静默跳过，而内核侧仍按 int 解析——管理面与内核两套规则必须同源
+            w = spec.get("context_window")
+            if isinstance(w, str) and w.strip().isdigit():
+                spec["context_window"] = int(w)
+            out[str(name)] = spec
     return out
 
 
@@ -81,6 +87,9 @@ def validate_selection(bl: list[str]) -> None:
     两处会各自漂移，收敛到这里。"""
     if not bl:
         raise ValueError("至少选择一家大脑")
+    dups = sorted({b for b in bl if bl.count(b) > 1})
+    if dups:
+        raise ValueError(f"大脑列表有重复（渲染会产生坏 TOML）：{', '.join(dups)}")
     pool = {b["name"]: b for b in pool_summary()}
     unknown = [b for b in bl if b not in pool]
     if unknown:
@@ -151,7 +160,9 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     未声明 context_window 时，[agent] 预算段一个键都不写（内核默认 = 全不限）；
     否则只写给出的/推导出的键（0 = 不限）。"""
     pool = _load_pool()
-    chosen = [b for b in brains if b in pool]
+    # 去重保序：重复名会渲染出两个同名段 → 坏 TOML（validate_selection 已
+    # 拦常规路径，这里防直调绕过）
+    chosen = list(dict.fromkeys(b for b in brains if b in pool))
     if not chosen:
         raise ValueError("密钥池中没有任何可用的大脑（etc/brains.toml）")
     cfg = get_config()
@@ -164,16 +175,17 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     # 内核 v2.5.4+ 故障转移同档循环，同档即全部自动接盘者；更早内核全池轮转
     # 时跨档小窗脑也接不住胖会话（超窗 400/预检被跳过）——两种情况下预算都
     # 不该被跨档小窗脑拖累。人工换档走 PATCH 重渲染，预算随新 default 重算。
-    # 显式预算更严则尊重；同档都没声明则不动。
+    # 显式预算优先（0=不限是管理员的显式意志，渲染注释承诺的语义不破坏）；
+    # 推导只补缺。显式值宽于物理窗口时不静默收紧——事实写进渲染注释，硬墙
+    # 由内核按脑预检兜底，注册表回显与实际生效值保持一致。同档都没声明则不动。
     cls = _failover_class(pool[chosen[0]])
     declared = [int(pool[n]["context_window"]) for n in chosen
                 if _failover_class(pool[n]) == cls
                 and isinstance(pool[n].get("context_window"), (int, float))
                 and int(pool[n]["context_window"]) > 0]
     cap = min(declared) - _CONTEXT_RESERVE_TOKENS if declared else 0
-    if cap > 0:
-        b["max_context_tokens"] = (min(int(b["max_context_tokens"]), cap)
-                                   if b.get("max_context_tokens") else cap)
+    if cap > 0 and "max_context_tokens" not in b:
+        b["max_context_tokens"] = cap
 
     lines = [
         "# ═══════════════════════════════════════════════════════════════════",
@@ -217,11 +229,13 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     # 预算段：缺省一个都不写（xuseek 自身默认 = 全不限，LLM 完全自主）；
     # 仅写给出的键（0 = 不限）。max_context_tokens 可能来自上面的物理护栏推导
     if b:
-        lines.append("# 探索回路安全网（仅管理面显式指定的键；0 = 不限；热重载即时生效）")
+        lines.append("# 探索回路安全网（显式键优先，0 = 不限；缺省补窗口推导；热重载即时生效）")
         lines.append("[agent]")
         for k in ("max_rounds", "max_seconds", "max_context_tokens"):
             if k in b:
                 lines.append(f"{k} = {int(b[k])}")
+        if cap > 0:
+            lines.append(f"# 物理护栏参考：default 同档最小窗口 ≈ {cap}（context_window 推导，扣 8k 余量）")
         lines.append("")
     return "\n".join(lines)
 
