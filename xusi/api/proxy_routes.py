@@ -57,7 +57,15 @@ async def px(request: Request, agent_id: str, sub_path: str = "") -> Response:
     透传给 peer，peer 端 _svc_px_auth 自己验。观察台 token 走 peer 是
     "voidhub 形态"的零改动接入前提。"""
     # resolve 的 fan-out 是线程池 + 网络探查（硬墙 10s）——线程池跑，别冻事件循环
-    target = await asyncio.to_thread(proxy.resolve, agent_id, request=request)
+    # 无凭证不 resolve：挡住未鉴权请求触发携带 cluster_secret 的节点间扇出，
+    # 以及「远端存在→转发 401 / 不存在→404」的存在性探测面（/svc 侧 08a4133
+    # 已撤转发同步收紧）。观察台 token 本机验不了（可能属于远端 agent），这里
+    # 只要求「带凭证」，真伪由 peer 端 _svc_px_auth 判——转发语义不变。
+    _tok = request.query_params.get("mtoken")
+    _auth = request.headers.get("authorization", "")
+    if not (_tok or _auth.lower().startswith("bearer ")):
+        raise HTTPException(401, "missing token")
+    target = await asyncio.to_thread(proxy.resolve, agent_id)
     if target is None:
         raise HTTPException(404, f"agent 不存在: {agent_id}")
     if target.kind == "local":
