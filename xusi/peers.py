@@ -114,7 +114,8 @@ def list_peers() -> list[dict]:
     """读 etc/peers.toml，返回 [[peers]] 列表（深拷贝）。
 
     show_agents 字段缺省补 True（老 toml 没这个字段时按"主动加的"对待——
-    升级前已存在的 peer 都是手动加的）。"""
+    升级前已存在的 peer 都是手动加的）。该字段仅控 webui 节点对话框
+    显隐，不影响 fan-in / 互联发现（见 peer_routes.visibility）。"""
     out = []
     for p in _load()["peers"]:
         if "show_agents" not in p:
@@ -208,7 +209,8 @@ def local_add_or_update(rec: dict, default_show_agents: bool = False) -> str:
     """接收端 idempotent 入册：远端 announce / welcome 调用此函数。
 
     语义：
-    - 本地无此 id → 入册，show_agents=default_show_agents（announce/welcome 默认 false）；
+    - 本地无此 id → 入册，show_agents=default_show_agents（announce/welcome
+      默认 false——被动收进来的 webui 对话框默认收起；仅显隐，不影响互联）；
       但若 rec 显式带 show_agents 字段，以 rec 的为准（主动加的不会降级）
     - 本地有此 id 且 url 相同 → 跳过，返 'skipped'——**不**改本地 show_agents
       （保护主动意图：不主动收进来的 sync，永远不能把已 true 的降为 false）

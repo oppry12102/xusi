@@ -86,13 +86,16 @@ def api_peers_remove(peer_id: str,
 def api_peers_visibility(peer_id: str,
                           req: VisibilityReq,
                           _rec: dict = Depends(require_admin)) -> dict:
-    """节点页面开关：切换某个 peer 行的 show_agents。
+    """节点页面开关：切换某个 peer 行的 show_agents——**仅 webui 节点对话框
+    的显隐**，不影响任何数据面。
 
-    show_agents=true → 该 peer 的 agents 出现在 /api/agent-peers fan-in 里
-    show_agents=false → fan-in 跳过该 peer（但 peer 行本身还在，互联 token
-    不受影响；之前缓存过的 token 仍能调 /svc/...）
+    show_agents=true → webui 节点对话框默认展开该 peer
+    show_agents=false → 对话框默认收起。fan-in（/api/agents、
+    /api/agent-peers）、互联发现、/svc 直连均不受影响——直连架构要求
+    发现数据面始终完整，过滤会掐断 agent 拿 node_url + inter_agent_token
+    的链路（历史实现曾把它当 fan-in 开关，已纠正）。
 
-    仅影响本机 fan-in 视图；不通知对端（这是本机自己的偏好）。"""
+    仅影响本机 webui 渲染；不通知对端（这是本机自己的偏好）。"""
     updated = peers.update_peer_visibility(peer_id, req.show_agents)
     if not updated:
         raise HTTPException(404, f"peer 不存在: {peer_id}")
