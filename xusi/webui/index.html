@@ -584,9 +584,9 @@ async function togglePeerVisibility(peerId, curShow) {
   try {
     await api(`/api/peers/${encodeURIComponent(peerId)}/visibility`, {
       method: "POST", body: JSON.stringify({show_agents: next})});
-    await refresh();    // 刷 fan-in：fetch /api/agents（主 UI cards）
-    await loadNode();   // 刷节点对话框 peer 名册——refresh() 不 fetch /api/cluster，
-                        // 否则按钮文案保持旧值，下一次点击基于 stale 值 toggle
+    await loadNode();   // 先刷 /api/cluster：peersById 拿到 show_agents 新值
+                        // （显隐过滤读它）+ 节点对话框按钮文案
+    await refresh();    // 再刷 cards——用新值渲染，切换即时生效
   } catch (e) { alert("切换失败：" + e.message); }
 }
 
@@ -728,11 +728,12 @@ async function refresh(first = false) {
     me = who;
     meAdmin = (who.role === "admin");
     $("#ver").textContent = "v" + h.version;
-    $("#hstate").textContent = `管理员 · ${list.length} 个 agent`;
+    const vis = visibleAgents(list);
+    $("#hstate").textContent = `管理员 · ${vis.length} 个 agent`;
     $("#btn-logout").hidden = false;
     $("#login-tip").hidden = true;
-    agentsCache = list;
-    renderCards(list);
+    agentsCache = list;      // 完整档案（详情/大脑切换）
+    renderCards(vis);        // 显示层按 show_agents 过滤
     // meAdmin 改变后重渲 peer 行——「删」按钮 admin-only；startup 时 meAdmin=false
     // 首次渲染的 HTML 没按钮，登录后才补
     if (nodeCluster && nodeCluster.peers) renderPeerList(nodeCluster.peers);
@@ -752,6 +753,13 @@ function stateBadge(a) {
   const m = {running_session: ["呼吸中", "b-run"], sleeping: ["休眠中", "b-slp"],
              parked: ["驻留", "b-pau"], init: ["启动中", "b-slp"], stopped: ["已停", "b-stop"]}[d] || [d, "b-slp"];
   return `<span class="badge ${m[1]}">${m[0]}</span>`;
+}
+
+// show_agents 仅是 webui 显隐开关（数据面 fan-in 恒完整）：渲染时滤掉
+// 「来自被收起 peer」的远端 agent，本机 agent 恒显示。agentsCache 仍存
+// 全量（详情抽屉 / 大脑切换要完整档案）——只动显示层，不动任何数据逻辑。
+function visibleAgents(list) {
+  return list.filter(a => !a._via || (peersById[a._via] || {}).show_agents !== false);
 }
 
 function renderCards(list) {
