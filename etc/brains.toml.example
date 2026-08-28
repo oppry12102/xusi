@@ -32,8 +32,8 @@ model = "MiniMax-M3"
 
 # 新增一家：再写一个 [brains.<名字>] 表（OpenAI 兼容 /chat/completions 即可）。
 # 可选字段：timeout（秒，默认 180）、tier、price_prompt / price_completion（CNY/1K tokens，观测用）、
-# context_window（tokens；各脑窗口不一致。渲染取 default 同档（tier 相同，未打标签 =
-# 最贵档）已声明窗口的最小值，扣 8k 输出余量折进 [agent] max_context_tokens——
+# context_window（tokens；各脑窗口不一致。渲染取 default 同档（tier 相同，
+# 未打标签视同 power）已声明窗口的最小值，扣 8k 输出余量折进 [agent] max_context_tokens——
 # 内核缺省 1M，窗口较小的服务会晚于硬错触发护栏）、
 # note（该脑给智能体的使用提示，渲染成 config 注释；如"免费（自托管）"）
 # tier=economy 的脑自动附档位提示（上下文受限、子 agent/批量任务优先）；

@@ -96,15 +96,16 @@ def _q(s: Any) -> str:
 
 
 def _failover_class(spec: dict) -> str:
-    """大脑的经济分档（[brains.X] tier；未打标签 = 最贵档 premium）。
+    """大脑的经济分档（[brains.X] tier；未打标签视同 power——与内核 v2.5.5+
+    的 _tier_of 同义：历史存量的未标注脑都是主力型号）。
 
-    内核事实（xuseek-v2 v2.5.4+ llm.py）：故障转移**同档循环**——主循环与
+    内核事实（xuseek-v2 v2.5.5+ llm.py）：故障转移**同档循环**——主循环与
     llm_call(tier=) 一样只在同档大脑之间转移，跨档切换走管理员（PATCH 换
-    default，重渲染即生效）；未标注 tier 的脑自成一档。更早内核（≤v2.5.3）
-    主循环是全池轮转，跨档也会接盘——但小窗脑超窗 400/预检跳过，接不住胖
-    会话。预算按 default 同档取最小对两类内核都成立：同档是全部可能接盘者，
-    且大窗脑不该被跨档小窗脑拖累。"""
-    return str(spec.get("tier") or "premium")
+    default，重渲染即生效）。更早内核（≤v2.5.3）主循环是全池轮转，跨档也会
+    接盘——但小窗脑超窗 400/预检跳过，接不住胖会话。预算按 default 同档取
+    最小对两类内核都成立：同档是全部可能接盘者，且大窗脑不该被跨档小窗脑
+    拖累。"""
+    return str(spec.get("tier") or "power")
 
 
 def _owned(section: str) -> bool:
@@ -141,7 +142,7 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
                         display_timezone: str | None = None) -> str:
     """渲染 agent 的 config.toml 全文（注册表数据 → 配置文件，单向渲染）。
 
-    budgets 为 None 且 default 大脑的同类（tier 相同，未打标签 = 最贵档）都
+    budgets 为 None 且 default 大脑的同类（tier 相同，未打标签视同 power）都
     未声明 context_window 时，[agent] 预算段一个键都不写（内核默认 = 全不限）；
     否则只写给出的/推导出的键（0 = 不限）。"""
     pool = _load_pool()
@@ -154,7 +155,7 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
 
     # 上下文护栏：内核缺省 max_context_tokens=1M，小于此的服务（如 190k 级
     # 自托管 vLLM）会在护栏触发前撞硬错。取 default 同档（tier 相同，未打
-    # 标签 = 最贵档）已声明 context_window 的最小值，扣输出余量折进预算：
+    # 标签视同 power）已声明 context_window 的最小值，扣输出余量折进预算：
     # 内核 v2.5.4+ 故障转移同档循环，同档即全部自动接盘者；更早内核全池轮转
     # 时跨档小窗脑也接不住胖会话（超窗 400/预检被跳过）——两种情况下预算都
     # 不该被跨档小窗脑拖累。人工换档走 PATCH 重渲染，预算随新 default 重算。
