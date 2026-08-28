@@ -55,3 +55,5 @@ zip -r /path/to/xusi/versions/xuseek-v2-v2.3.0.zip . \
   新建 agent 一律默认私有副本。`GET /api/versions` 的 `default_ready` 标示其是否本地就绪。
 - `main` 是保留值（显式选共享主源码），请勿用作版本号。
 - 已有 agent 不受影响。
+- **存量 agent 升级内核**（「创建后不可改」约束的是创建流程；升级是目录级操作）
+  的标准做法见 [kernel-upgrade.md](kernel-upgrade.md)。
