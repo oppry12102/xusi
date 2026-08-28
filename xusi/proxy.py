@@ -342,7 +342,7 @@ def resolve(agent_id: str) -> AgentTarget | None:
 
     # fan-out：并发问每个 peer 的 /api/agents（本机 cluster_secret 鉴权——caller
     # 凭证不参与，定位是节点间管道行为）
-    found_peer = _fanout_locate(agent_id, request)
+    found_peer = _fanout_locate(agent_id)
     target = AgentTarget(kind="remote", agent_id=agent_id, peer=found_peer) if found_peer else None
     _put_cache(agent_id, target)
     return target
