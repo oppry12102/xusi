@@ -25,15 +25,18 @@ cd <xusi 目录>
 python3 - <<'EOF'
 import sys, shutil
 sys.path.insert(0, ".")
-from xusi import systemdctl, registry, agentops, versions
+from xusi import registry, agentops, versions
 from xusi.config import get_config
 
 AID, NEW = "agent-XXXX", "v2.5.5"          # ← 只改这两处
 agent = registry.get_agent(AID)
 OLD = agent["source_version"]
-home, unit = get_config().instance_home(AID), get_config().unit_name(AID)
+home = get_config().instance_home(AID)
 
-systemdctl.stop(unit)                       # 1) 停（优雅停窗 20s，轮边界落盘）
+agentops.stop(AID)                          # 1) 优雅停（agentops.stop：冻结进程先
+                                            #    SIGCONT 解救再停，不裸调 systemdctl；
+                                            #    desired_state 落 stopped，中途死不
+                                            #    谎报，reconcile 不从半迁移目录乱拉）
 src, tmp = home / versions.SRC_DIR_NAME, home / "xuseek-v2.new"
 bak = home / f"xuseek-v2.old-{OLD}"
 for d in (tmp, bak):
