@@ -4,7 +4,7 @@
 2. 内核实际监听（ss -tlnH 解析，覆盖非本管理面起的进程）；
 3. bind 试探（0.0.0.0 与 127.0.0.1 双试，防 ss 权限盲区）。
 
-agent 启动后再以 /v1/health 验收一次（见 agentops）。
+agent 启动后以「单元 active + 端口进入监听」验收（见 agentops.wait_health）。
 """
 from __future__ import annotations
 

@@ -2,24 +2,22 @@
 
     python -m xusi serve                 # 前台跑管理面（调试用；常驻走 install）
     python -m xusi install               # 建 venv → 装 systemd 用户服务 → 启动
-    python -m xusi init                  # 首次安装 / 新节点加入集群（写 [cluster].secret）
+    python -m xusi init                  # 首次安装 / 轮换 admin token（写 [admin].secret）
     python -m xusi uninstall             # 停止并移除管理面服务（不动 agent 数据）
-    python -m xusi status                # 全部 agent 一览
+    python -m xusi status                # 全部 agent 一览（含互联标注）
     python -m xusi doctor                # 环境自检
+    python -m xusi post-upgrade-note     # 升级后向 agent 投递迁移说明信（管理邮箱）
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import re
 import secrets
 import subprocess
 import sys
-import zipfile
 from pathlib import Path
 
-from . import __version__, peers
+from . import __version__
 from .config import ROOT, get_config
 
 DEPS = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "httpx[socks]>=0.27"]
@@ -82,10 +80,9 @@ def _install_xusi_toml() -> None:
 
 def cmd_install(args) -> int:
     py = _ensure_venv()
-    # xuseek-v2 源码事实源 = versions/ 里的 zip 包。新约定：缺省从 versions 取最新
-    # 版本解压到实例私有副本，共享主源码 source_dir 已废弃；只有 versions 为空时
-    # 才回落到 source_dir（缺失时自动从 GitHub 拉取）。
-    from . import agentops, versions as _versions
+    # xuseek-v2 源码唯一事实源 = versions/ 里的 zip 包：新建 agent 一律从版本仓库
+    # 解压成实例私有副本。
+    from . import versions as _versions
     cfg = get_config()
     _install_xusi_toml()
     vs = _versions.list_versions()
@@ -93,8 +90,8 @@ def cmd_install(args) -> int:
         print(f"==> 版本仓库就位：{cfg.versions_dir}（{len(vs)} 个版本包："
               + "、".join(v['version'] for v in vs) + "）——新建 agent 将取最新版作实例私有副本")
     else:
-        src = agentops.ensure_source()
-        print(f"==> 版本仓库为空，xuseek-v2 共享主源码就位：{src}（过渡期兼容）")
+        print(f"==> 版本仓库为空：{cfg.versions_dir}——请投放 xuseek-v2-<版本号>.zip"
+              f"（见 docs/versions.md），否则无法创建 agent")
     # 密钥池起手：etc/brains.toml 不存在时从模板复制（空 key，600）——clone 后的第一步引导
     cfg = get_config()
     if not cfg.brains_file.exists():
@@ -111,21 +108,17 @@ def cmd_install(args) -> int:
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", "--now", "xusi.service"], check=True)
 
-    # 首次安装：生成 [cluster].secret（管理面 admin token + 集群互信共用）。
-    # 同 secret 的所有 xusi 同集群——admin 凭一把 token 可登任何节点。
-    # 已存在则不动（重跑 install 不轮换）。
-    if not cfg.cluster_secret:
+    # 首次安装：生成 [admin].secret（管理面 admin token）。已存在则不动
+    # （重跑 install 不轮换）。
+    if not cfg.admin_secret:
         secret = secrets.token_urlsafe(32)
         toml_path = cfg.root / "etc" / "xusi.toml"
-        from . import _bootstrap_migrate as _bm
-        _bm._write_secret(toml_path, secret)
-        cfg.cluster_secret = secret
+        from . import authtok
+        authtok.write_secret(toml_path, secret)
+        cfg.admin_secret = secret
         print("\n════════════════════════════════════════════════════")
         print(f"  管理面 admin token（仅显示一次，请保存）：\n")
         print(f"    {secret}\n")
-        print(f"  集群模式：把同一 secret 写入其它 xusi 的 etc/xusi.toml")
-        print(f"           的 [cluster].secret（先 `xusi status` 拿值，")
-        print(f"           另一台跑 `xusi init --cluster-secret <值>`）即可组集群。")
         print(f"  WebUI:  http://127.0.0.1:{cfg.port}/")
         print("════════════════════════════════════════════════════")
     subprocess.run(["systemctl", "--user", "status", "xusi.service",
@@ -155,28 +148,22 @@ def cmd_serve(args) -> int:
     uvicorn.run("xusi.api:app", host=host, port=port, log_level=args.log_level)
 
 
-# ── init（写 / 轮换 [cluster].secret）──────────────────────────────────
+# ── init（写 / 轮换 admin token）───────────────────────────────────────
 
 def cmd_init(args) -> int:
-    """首次安装 / 新节点加入集群 / 轮换 admin token。
-
-    集群互信 = 两端 [cluster].secret 同值。新 xusi 加入已有集群：
-        1) A: xusi status                # 拿现有 secret
-        2) B: xusi init --cluster-secret <A的secret>
-        3) A / B: xusi peer add <对端 URL>
-    """
+    """首次安装 / 轮换 admin token（写 etc/xusi.toml 的 [admin].secret）。"""
     cfg = get_config()
     toml_path = cfg.root / "etc" / "xusi.toml"
-    if cfg.cluster_secret and not getattr(args, "rotate", False):
-        print(f"[cluster].secret 已存在：{cfg.cluster_secret[:8]}..."
+    if cfg.admin_secret and not getattr(args, "rotate", False):
+        print(f"[admin].secret 已存在：{cfg.admin_secret[:8]}..."
               "（如要轮换，加 --rotate）")
         return 0
     secret = getattr(args, "secret", None) or secrets.token_urlsafe(32)
-    from . import _bootstrap_migrate as _bm
-    if not _bm._write_secret(toml_path, secret):
+    from . import authtok
+    if not authtok.write_secret(toml_path, secret):
         print(f"error: 无法写 {toml_path}", file=sys.stderr)
         return 1
-    print(f"[cluster].secret 已写入 {toml_path}")
+    print(f"[admin].secret 已写入 {toml_path}")
     print(f"admin token: {secret}")
     return 0
 
@@ -191,38 +178,15 @@ def cmd_status(_args) -> int:
         return 0
     for r in rows:
         proc = r.get("process", {})
-        health = "健康" if r.get("health", {}).get("ok") else "无响应"
-        daemon = (r.get("agent_status", {}) or {}).get("daemon", {}).get("state", "-")
+        ic = r.get("interconnect") or {}
+        conn = f"互联:{ic.get('port', '-')}" if ic.get("token") else "互联:未发布"
         print(f"{r['id']:28} 端口{r['port']:5} 单元:{proc.get('active', '?'):9} "
-              f"{health:4} daemon:{daemon:15} 期望:{r['desired_state']:8} {r['name']}")
+              f"期望:{r['desired_state']:8} {conn:14} {r['name']}")
     return 0
 
 
-def _zip_pack_names(zp: Path) -> list[tuple[str, str]]:
-    """zip 里有哪些能力包：走查 xuseek/capabilities/*/manifest.toml，读 [pack] 的
-    name/version（名字与目录名不一致的坏包跳过——与内核 discover 同判）。"""
-    import tomllib
-    out: list[tuple[str, str]] = []
-    try:
-        with zipfile.ZipFile(zp) as zf:
-            names = [n for n in zf.namelist()
-                     if re.fullmatch(r"(?:[^/]+/)*xuseek/capabilities/([a-z0-9-]+)/manifest\.toml", n)]
-            for n in sorted(names):
-                try:
-                    raw = tomllib.loads(zf.read(n).decode("utf-8"))
-                    p = raw.get("pack") or {}
-                    d = n.rsplit("/", 2)[-2]
-                    if str(p.get("name", "")) == d:
-                        out.append((d, str(p.get("version", ""))))
-                except Exception:
-                    continue
-    except Exception:
-        return []
-    return out
-
-
 def cmd_doctor(_args) -> int:
-    from . import brains, ports, systemdctl, versions
+    from . import brains, mailroom, ports, systemdctl, versions
     cfg = get_config()
     ok = True
 
@@ -235,39 +199,14 @@ def cmd_doctor(_args) -> int:
     print(f"墟司 doctor（v{__version__}，root={ROOT}）")
     check("systemd 用户会话", subprocess.run(
         ["systemctl", "--user", "is-system-running"], capture_output=True).returncode in (0, 1))
-    # 源码事实源 = versions/ 里的 zip（缺省建 agent 自动取最新版作实例私有副本）；
-    # source_dir 是过渡期兼容字段（仅现存 agent / 显式 "main" 用），不在 = OK
+    # xuseek-v2 源码唯一事实源 = versions/ 里的 zip（新建 agent 取最新版作实例
+    # 私有副本）；仓库为空则无法创建 agent，算 FAIL。
     vs = versions.list_versions()
-    src_ok = (cfg.source_dir / "xuseek.sh").exists()
+    check("版本仓库非空（xuseek-v2 源码事实源）", bool(vs),
+          "" if vs else f"{cfg.versions_dir} 为空——请投放 xuseek-v2-<版本号>.zip（docs/versions.md）")
     if vs:
-        # 新约定：versions/ 是事实源，source_dir 缺失属正常（已废弃）
-        print(f"  [INFO] 共享主源码 source_dir（过渡期字段）{cfg.source_dir}："
-              + ("就位" if src_ok else "未就位（已废弃——新建 agent 走 versions/）"))
-        check("xuseek 源码 venv 可用", True,
-              "venv 在每个 agent 实例的 xuseek-v2/.venv 首次启动时由 xuseek.sh 自建")
-    else:
-        # 老约定：versions 空时 source_dir 仍是唯一来源
-        check("xuseek-v2 源码（自管）", src_ok,
-              f"{cfg.source_dir}" + ("" if src_ok else f"（缺失；创建 agent 时自动从 {cfg.source_repo} 拉取）"))
-        check("xuseek 源码 venv 可用", (cfg.source_dir / ".venv" / "bin" / "python").exists()
-              or not src_ok, "首次 spawn 时由 xuseek.sh 自动构建")
-    print(f"  [INFO] 版本仓库 {cfg.versions_dir}：{len(vs)} 个版本包"
-          + (f"（{'、'.join(v['version'] for v in vs)}）" if vs else "（空——新建 agent 走共享主源码）"))
-    # 各版本 zip 的能力包资产校验（投放校验：manifest 存在才算数；只读 manifest 名，
-    # 不解析 pack 内容——契约一只许读 manifest）
-    import zipfile
-    for v in vs:
-        packs = _zip_pack_names(cfg.versions_dir / v["file"])
-        print(f"  [INFO] {v['version']} 能力包资产："
-              + ("、".join(f"{n}@{ver}" for n, ver in packs) if packs else "（无）"))
-    # HF 镜像（能力包嵌入模型首次下载走它）：软检查——离线机可忽略，不算 FAIL
-    try:
-        import httpx
-        httpx.get("https://hf-mirror.com", timeout=5, follow_redirects=True)
-        print("  [INFO] HF 镜像 hf-mirror.com 可达（能力包嵌入模型下载走它）")
-    except Exception as e:
-        print(f"  [WARN] HF 镜像 hf-mirror.com 不可达（{type(e).__name__}）——"
-              "开了带嵌入模型的能力包（如 amem）时首次下载会失败；离线部署可忽略")
+        print(f"  [INFO] 版本仓库 {cfg.versions_dir}：{len(vs)} 个版本包"
+              f"（{'、'.join(v['version'] for v in vs)}）——新建 agent 取最新版")
     pool = brains.pool_summary()
     check("密钥池至少一家可用", any(b["has_key"] for b in pool),
           f"{len(pool)} 家：{', '.join(b['name'] + ('(有key)' if b['has_key'] else '(缺key)') for b in pool)}")
@@ -276,21 +215,16 @@ def cmd_doctor(_args) -> int:
           or ports.port_free(cfg.port))
     check("agent 端口段有富余", len(ports.available_ports(5)) >= 5,
           f"可用示例 {ports.available_ports(5)}")
-    check("管理面 token 已初始化", bool(get_config().cluster_secret),
-          "[cluster].secret 缺失——`xusi init` 生成，或在 etc/xusi.toml 手填")
-    # agent 自建服务清单：坏条目不致命（逐级降级），只报数
-    from . import registry, services
-    n_svc = n_err = 0
-    for a in registry.list_agents():
-        svcs, errs = services.merge_services(a)
-        n_svc += len(svcs); n_err += len(errs)
-        for s in svcs:
-            if cfg.port_lo <= s["port"] <= cfg.port_hi:
-                print(f"  [WARN] 服务 {a['id']}/{s['name']} 端口 {s['port']} 在 agent 分配池内"
-                      f"（建议 8700-8799），可能与新 agent 冲突")
-        for e in errs:
-            print(f"  [WARN] {a['id']} services.json：{e}")
-    print(f"  [INFO] agent 自建服务：{n_svc} 个（清单错误 {n_err} 处）")
+    check("管理面 token 已初始化", bool(get_config().admin_secret),
+          "" if get_config().admin_secret else
+          "[admin].secret 缺失——`xusi init` 生成，或在 etc/xusi.toml 手填")
+    # 互联信箱（mailroom）：outbox 扫描状态 + 互联标注统计
+    from . import registry
+    snap = mailroom.state_snapshot()
+    n_pub = sum(1 for a in registry.list_agents()
+                if isinstance(a.get("interconnect"), dict) and a.get("interconnect", {}).get("token"))
+    print(f"  [INFO] 互联信箱：{n_pub}/{len(registry.list_agents())} 个 agent 已发布互联；"
+          f"outbox 扫描偏移 {len(snap)} 份")
     units = subprocess.run(["systemctl", "--user", "list-units", "xusi-a-*",
                             "--no-legend", "--plain"], capture_output=True, text=True)
     n_units = len([l for l in units.stdout.splitlines() if l.strip()])
@@ -302,7 +236,7 @@ def cmd_doctor(_args) -> int:
 # ── backup / backups / restore ────────────────────────────────────────
 
 def cmd_backup(args) -> int:
-    """备份一个或全部 sleeping 的 agent；产物落到 etc/backups/。"""
+    """备份一个或全部 agent（运行中 SIGSTOP 冻结窗快照）；产物落到 etc/backups/。"""
     from . import backup
     if args.all:
         from . import registry
@@ -362,57 +296,43 @@ def cmd_restore(args) -> int:
     return 0
 
 
-# ── peers（Phase 2 集群名册） ──────────────────────────────────────
+# ── post-upgrade-note（升级迁移信：经管理邮箱投递，管理员手动触发）─────
 
-def cmd_peers_probe(_args) -> int:
-    rows = peers.list_peers()
-    if not rows:
-        print("(尚未注册 peer)")
+_UPGRADE_NOTE_TMPL = """【墟司管理面升级通知】
+墟司已重构：你我之间现在只有一条管理邮箱通道（其余通信方式全部取消）。
+你的对外呈现（观察台、自建服务等）是你的自家业务——怎么让人找到你，由你自己
+决定，并经 send_mail 告知管理员。
+1. 与其它 agent 互联（可选）：自生成互联 token 与互联端口，回信发布登记：
+   {{"xusi":"publish","port":<互联端口>,"token":"<互联token>","host":"<其它机器可达地址，同机可省略>"}}
+   重复发布 = 更新，随时可换端口换 token。
+2. 需要其它 agent 的互联地址与 token：回信 {{"xusi":"request_directory"}}，管理面自动回执目录。
+3. mission / brains / budgets 今后由你自己改：管理员不再改写你的 config.toml
+   （仅在创建时渲染一次）。需要新大脑的 api_key 时向管理员索取，用 run_shell 编辑
+   config.toml，每口呼吸热重载（改动前建议先自行备份）。"""
+
+
+def cmd_post_upgrade_note(args) -> int:
+    """升级后向 agent 投迁移说明信。管理员手动触发（不做升级自动投——
+    管理员先验收再通知）。"""
+    from . import agentops, registry
+    agents = registry.list_agents()
+    if args.agent_id:
+        agents = [a for a in agents if a["id"] == args.agent_id]
+        if not agents:
+            print(f"error: agent 不存在：{args.agent_id}", file=sys.stderr)
+            return 2
+    if not agents:
+        print("(注册表中没有 agent)")
         return 0
-    print(f"==> 重探 {len(rows)} 个 peer")
-    return 0
-
-
-def cmd_peers_list(_args) -> int:
-    if not peers.is_cluster():
-        print("(单节点模式：[cluster].secret 未设，peer 名册禁用)", file=sys.stderr)
-    rows = peers.list_peers()
-    if not rows:
-        print("(尚未注册 peer)")
-        return 0
-    for p in rows:
-        r = peers.probe_peer(p)
-        flag = "✓" if r["ok"] else "✗"
-        detail = f"{r.get('latency_ms', '?')}ms" if r["ok"] else r.get("error", "?")
-        name = p.get("name") or ""
-        print(f"  {flag} {p['id']:14} {name:20} {p['url']}  {detail}")
-    return 0
-
-
-def cmd_peers_add(args) -> int:
-    try:
-        rec = peers.add_peer(args.url, name=args.name, show_agents=args.show_agents)
-    except (peers.PeerUnreachable, peers.PeerRefused) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 2
-    flag = "✓" if rec.get("show_agents", True) else "✓(hide)"
-    print(f"  {flag} {rec['id']}  {rec.get('name', '')}  {rec['url']}")
-    # 集群模式时同步广播给其他已知 peer（fire-and-forget）
-    if peers.is_cluster():
-        import asyncio as _aio
+    for a in agents:
+        text = _UPGRADE_NOTE_TMPL.format(port=a["port"])
         try:
-            _aio.run(peers._broadcast_peer_add(rec))
-        except Exception as e:
-            print(f"  ! broadcast 失败：{type(e).__name__}: {e}", file=sys.stderr)
+            r = agentops.mail(a["id"], text)
+            print(f"  ✓ 已投递 {a['id']:28}（{r['id']}）")
+        except agentops.AgentError as e:
+            print(f"  · {a['id']:28} 跳过：{e}", file=sys.stderr)
+    agentops.audit("migration.note", agents=[a["id"] for a in agents])
     return 0
-
-
-def cmd_peers_remove(args) -> int:
-    if peers.remove_peer(args.peer_id):
-        print(f"  ✓ 已移除 peer {args.peer_id}")
-        return 0
-    print(f"  ✗ 未找到 peer {args.peer_id}", file=sys.stderr)
-    return 2
 
 
 def main() -> int:
@@ -431,14 +351,19 @@ def main() -> int:
     sub.add_parser("status", help="agent 一览").set_defaults(fn=cmd_status)
     sub.add_parser("doctor", help="环境自检").set_defaults(fn=cmd_doctor)
 
-    init_ = sub.add_parser("init", help="生成 / 同步 [cluster].secret（admin token + 集群互信）")
-    init_.add_argument("--cluster-secret", dest="secret", default=None,
-                       help="同步已有集群的 secret；缺省 = 本机生成新的")
+    init_ = sub.add_parser("init", help="生成 / 轮换 [admin].secret（管理面 admin token）")
+    init_.add_argument("--secret", dest="secret", default=None,
+                       help="指定 secret；缺省 = 本机生成新的")
     init_.add_argument("--rotate", action="store_true",
                        help="已有 secret 时强制轮换（重新生成）")
     init_.set_defaults(fn=cmd_init)
 
-    bp_ = sub.add_parser("backup", help="备份 agent 的 data + workspace（仅 sleeping 可）")
+    upn_ = sub.add_parser("post-upgrade-note", help="升级后向 agent 投递迁移说明信（管理邮箱）")
+    upn_.add_argument("--agent", dest="agent_id", default="",
+                      help="只投给指定 agent；缺省 = 全部")
+    upn_.set_defaults(fn=cmd_post_upgrade_note)
+
+    bp_ = sub.add_parser("backup", help="备份 agent 的 data + workspace（冻结窗快照）")
     bp_.add_argument("agent_id", nargs="?", default="")
     bp_.add_argument("--all", action="store_true", help="备份所有 sleeping 的 agent")
     bp_.add_argument("--reason", default="manual", help="备份原因（manual/pre-modify/...）")
@@ -454,24 +379,6 @@ def main() -> int:
     rs_.add_argument("--port", type=int, default=None, help="恢复后端口（默认自动分配；listen host 由注册表 expose 推导）")
     rs_.add_argument("--overwrite", action="store_true", help="覆盖同名已存在 agent")
     rs_.set_defaults(fn=cmd_restore)
-
-    # ── peer 名册 ──
-    pr_ = sub.add_parser("peers", help="集群对等节点名册（Phase 2）")
-    prs = pr_.add_subparsers(dest="cmd", required=True)
-    prl = prs.add_parser("list", help="列出 + 探活")
-    prl.set_defaults(fn=cmd_peers_list)
-    pra = prs.add_parser("add", help="注册一个 peer（先探活拿 id）")
-    pra.add_argument("url", help="peer 的管理面 url（如 http://10.0.16.15:8601）")
-    pra.add_argument("--name", default="", help="显示名（缺省用 peer 自报）")
-    pra.add_argument("--no-show-agents", dest="show_agents",
-                     action="store_false", default=True,
-                     help="纯通信模式：peer 行还在但 /api/agent-peers fan-in 不显示该 peer")
-    pra.set_defaults(fn=cmd_peers_add)
-    prr = prs.add_parser("remove", help="移除")
-    prr.add_argument("peer_id")
-    prr.set_defaults(fn=cmd_peers_remove)
-    prp = prs.add_parser("probe", help="强制重探（清 5s 缓存）")
-    prp.set_defaults(fn=cmd_peers_probe)
 
     args = p.parse_args()
     return args.fn(args)

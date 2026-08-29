@@ -1,11 +1,11 @@
 """xuseek-v2 版本仓库：versions/ 下的 zip 包由管理员投放，创建 agent 时按版本号选用。
+versions/ 是 xuseek-v2 源码的**唯一事实源**（每 agent 一份实例私有副本）。
 
 约定：文件名 xuseek-v2-<版本号>.zip（如 xuseek-v2-v2.3.0.zip）；包内是源码根
 （xuseek.sh 所在目录）——在压缩包根部、或包在唯一的一级子目录里都认。
 
-选定版本后解压一份**实例私有副本**到 instances/<id>/xuseek-v2/：实例之间、
-与共享主源码（etc/xusi.toml source_dir）互不影响；未选版本的 agent（含全部
-现存 agent）继续走共享主源码，行为与从前完全一致。
+选定版本后解压一份**实例私有副本**到 instances/<id>/xuseek-v2/：实例之间
+互不影响，实例目录自洽、可单独迁移。
 
 解压是防御式的：绝对路径 / .. / 符号链接成员一律跳过（防 zip-slip），
 .venv / .git / __pycache__ / *.pyc 不落地，xuseek.sh 强制可执行。

@@ -1,26 +1,22 @@
-"""Agent 路由：CRUD + 生命周期（start/stop/pause/resume/restart）+ 观察 + 投信。
+"""Agent 路由：CRUD + 生命周期（start/stop/pause/resume/restart）+ 投信/收信 + 日志。
 
 按生命周期分：
 - CRUD：list / create / get / patch / delete
 - 生命周期：5 个 POST /api/agents/{id}/{action}
-- 观察（只读 GET，跨节点 fan-in）：status / events / sessions / messages / outbox / logs
-- capabilities / services / mail / tokens 列表
+- 邮箱（唯一的 agent 通信通道）：POST mail 投信 / GET mailbox 收信
+- 日志：GET logs（journalctl，进程宿主职责）
 
-写端点（PATCH / DELETE / 5 lifecycle / mail / tokens new+revoke）走
-`require_agent_or_remote_admin`：local 命中走 agentops.*；remote 命中走
-`forward_to_peer`——caller 的 Authorization 头原样透传，peer 端用同一
-`[cluster].secret` verify 后由该 peer 自己执行 agentops.*。两端同密钥即
-同集群，admin 自动通配。
+单 xusi：所有 agent 都在本机 registry。写端点（PATCH / DELETE / 5 lifecycle /
+mail）走 `require_agent`（admin + 本地存在性）。
 """
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
-from .. import agentops, apitokens, authtok, capabilities, inter_agent_tokens, node, peers, proxy, registry, services
-from ..config import get_config
-from .auth import require_admin, require_agent_or_remote, require_agent_or_remote_admin, require_auth
-from .models import CreateAgentReq, MailReq, PatchAgentReq, TokenNewReq
+from .. import agentops
+from .auth import require_agent, require_admin, require_auth
+from .models import CreateAgentReq, MailReq, PatchAgentReq
 
 router = APIRouter()
 
@@ -28,98 +24,44 @@ router = APIRouter()
 # ── CRUD ─────────────────────────────────────────────────────────────
 
 @router.get("/api/agents")
-async def api_agents_list(request: Request,
-                          rec: dict = Depends(require_auth),
-                          local_only: bool = False) -> list[dict]:
-    """agent 一览：本地 + 集群模式下 fan-in peer（每行 _via=<peer-id>）。
-    单 peer 挂了不影响其他 / 本地——降级展示即可。
-
-    local_only=true 用于 fan-in 中继：只返回本地注册的 agent，不再二次 fan-out。
-    关键意义：防止双边注册时的 fan-in 回环。每个节点的"集群视图"是 local +
-    direct peers' local，不再递归 peers-of-peers。
-
-    所有 token 都是 admin——不再做 can_access 过滤，列全量。
-
-    request：注入用于把 `Authorization` 头透传给 peer（peer 端用同一
-    cluster_secret verify 后 fan-in 返回）。"""
-    rows = await asyncio.to_thread(agentops.list_status)
-    if not local_only and peers.is_cluster():
-        # 排除自己——peer 列表来自共享 etc/peers.toml，集群模式下自己的 id
-        # 也可能在里头（多机器各自 git pull 同一份 toml）；fan-in 到自己 = 自递归。
-        # show_agents 不在此过滤：它仅是 webui 节点对话框的显隐开关，fan-in
-        # 数据面始终完整——互联发现依赖全量名录，过滤会掐断 agent 直连链路。
-        me_id = node.info()["id"]
-        # 无 url 的残缺行整条跳过——fetch_json 与 node_url 都要它，缺了只
-        # 会 KeyError 500（同行 api_agent_peers 已用同款过滤）
-        pls = [p for p in peers.list_peers()
-               if p["id"] != me_id and p.get("url")]
-        if pls:
-            async def _one(p: dict) -> list[dict]:
-                try:
-                    # 给 peer 传 local_only=1：peer 也只返回自己的 local，
-                    # 不再 fan-in 它自己的 peers——这是双边注册能 work 的关键。
-                    r = await proxy.fetch_json(p, "/api/agents?local_only=1",
-                                                request=request, timeout=5)
-                    for row in r:
-                        if isinstance(row, dict):
-                            row["_via"] = p["id"]
-                    return [row for row in r if isinstance(row, dict)]
-                except proxy.PeerUnreachable:
-                    return []  # 单 peer 挂掉让 list 降级而非 502
-                except proxy.PeerHttpError:
-                    return []
-            results = await asyncio.gather(*[_one(p) for p in pls])
-            for r in results:
-                rows.extend(r)
-    return rows
+async def api_agents_list(_rec: dict = Depends(require_auth)) -> list[dict]:
+    """agent 一览（本机 registry）。所有 token 都是 admin——列全量。"""
+    return await asyncio.to_thread(agentops.list_status)
 
 
 @router.post("/api/agents", status_code=201)
 def api_agents_create(req: CreateAgentReq, _rec: dict = Depends(require_admin)) -> dict:
-    """新建 agent 总是落在本机（远端 peer 的注册表由 peer 自己管）——admin
-    想在 peer B 上建 agent 要先登 B 的 WebUI。"""
     return agentops.create_agent(
         req.name, req.mission, req.brains, expose=req.expose, port=req.port,
         budgets=req.budgets, note=req.note, source_version=req.source_version)
 
 
 @router.get("/api/agents/{agent_id}")
-async def api_agent_get(request: Request,
-                        pair: tuple = Depends(require_agent_or_remote)) -> Response:
-    target, _rec = pair
-    if target.kind == "local":
-        return JSONResponse(await asyncio.to_thread(agentops.status, target.agent["id"]))
-    return await proxy.forward_to_peer(target.peer, request, request.url.path)
+async def api_agent_get(pair: tuple = Depends(require_agent)) -> JSONResponse:
+    agent, _rec = pair
+    return JSONResponse(await asyncio.to_thread(agentops.status, agent["id"]))
 
 
 @router.patch("/api/agents/{agent_id}")
-async def api_agent_patch(request: Request, req: PatchAgentReq, apply_restart: bool = False,
-                          pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
-    """改 agent 字段。local → agentops.patch_agent；remote → forward。
-    apply_restart=1 会触发 restart（agent 重启），远端时 query 串已透传。"""
+async def api_agent_patch(req: PatchAgentReq, apply_restart: bool = False,
+                          pair: tuple = Depends(require_agent)) -> JSONResponse:
+    """改 agent 字段（簿记 + 进程层）。apply_restart=1 对 port/expose 立即重启生效。"""
     changes = {k: v for k, v in req.model_dump().items() if v is not None}
     if not changes:
         raise HTTPException(400, "请求体里没有任何要修改的字段")
-    target, _rec = pair
-    if target.kind == "local":
-        # patch 含 systemd 子进程；apply_restart 时还有 90s 级健康验收——
-        # 线程池跑，别冻事件循环
-        return JSONResponse(await asyncio.to_thread(
-            agentops.patch_agent, target.agent["id"], changes,
-            apply_restart=apply_restart))
-    return await proxy.forward_to_peer(target.peer, request, request.url.path)
+    agent, _rec = pair
+    # patch 含 systemd 子进程；apply_restart 时还有 90s 级验收——
+    # 线程池跑，别冻事件循环
+    return JSONResponse(await asyncio.to_thread(
+        agentops.patch_agent, agent["id"], changes, apply_restart=apply_restart))
 
 
 @router.delete("/api/agents/{agent_id}")
-async def api_agent_delete(request: Request,
-                           pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
-    target, _rec = pair
-    if target.kind == "local":
-        # delete 要停单元 + 把整个 home 挪进 .trash（GB 级目录可达分钟）——
-        # 线程池跑，别冻事件循环
-        return JSONResponse(await asyncio.to_thread(
-            agentops.delete, target.agent["id"]))
-    return await proxy.forward_to_peer(target.peer, request, request.url.path)
+async def api_agent_delete(pair: tuple = Depends(require_agent)) -> JSONResponse:
+    agent, _rec = pair
+    # delete 要停单元 + 把整个 home 挪进 .trash（GB 级目录可达分钟）——
+    # 线程池跑，别冻事件循环
+    return JSONResponse(await asyncio.to_thread(agentops.delete, agent["id"]))
 
 
 # ── 生命周期（5 个 POST）────────────────────────────────────────────
@@ -134,16 +76,12 @@ def _lifecycle(agent_id: str, action: str) -> dict:
 
 
 def _make_lifecycle_handler(action: str):
-    async def _h(request: Request,
-                 pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
-        target, _rec = pair
-        if target.kind == "local":
-            # 生命周期 = systemd 子进程 + 最长 90s 的健康验收（wait_health）——
-            # 必须丢线程池；在事件循环上同步等会冻住整个管理面（反代 / 轮询 /
-            # peer fan-in 一起卡）
-            return JSONResponse(await asyncio.to_thread(
-                _lifecycle, target.agent["id"], action))
-        return await proxy.forward_to_peer(target.peer, request, request.url.path)
+    async def _h(pair: tuple = Depends(require_agent)) -> JSONResponse:
+        agent, _rec = pair
+        # 生命周期 = systemd 子进程 + 最长 90s 的验收（wait_health）——
+        # 必须丢线程池；在事件循环上同步等会冻住整个管理面
+        return JSONResponse(await asyncio.to_thread(
+            _lifecycle, agent["id"], action))
     _h.__name__ = f"api_agent_{action}"
     return _h
 
@@ -153,216 +91,29 @@ for _action in _LIFECYCLE_ACTIONS:
         _make_lifecycle_handler(_action))
 
 
-# ── capabilities / services（只读 GET，跨节点 fan-in）──────────────
-
-@router.get("/api/agents/{agent_id}/capabilities")
-async def api_agent_capabilities(request: Request,
-                                pair: tuple = Depends(require_agent_or_remote)) -> Response:
-    """agent 的能力包清单（只读）。enabled 反映其 config [capabilities] 的
-    实况（通常全 false——墟司不写该段；若大脑自行写入亦如实显示）。"""
-    target, _rec = pair
-    if target.kind == "local":
-        # 首查可能建探测 venv 跑 CLI（_PROBE_TIMEOUT=300s）——线程池跑，
-        # 别冻事件循环（详情页状态 tab 每次都调这里）
-        return JSONResponse(await asyncio.to_thread(
-            capabilities.list_for_agent, target.agent))
-    return await proxy.forward_to_peer(target.peer, request, request.url.path)
-
-
-@router.get("/api/agents/{agent_id}/services")
-async def api_services_list(request: Request, probe: bool = True,
-                            pair: tuple = Depends(require_agent_or_remote)) -> Response:
-    target, _rec = pair
-    if target.kind == "local":
-        return JSONResponse(await asyncio.to_thread(
-            services.list_services, target.agent, probe=probe))
-    return await proxy.forward_to_peer(target.peer, request, request.url.path)
-
-
-# ── 观察（GET 6 个）与投信 ─────────────────────────────────────────
-
-_OBSERVE_KINDS = ("status", "events", "sessions", "messages", "outbox", "logs")
-
-
-def _make_observe_handler(what: str):
-    async def _h(request: Request, limit: int = 50,
-                 pair: tuple = Depends(require_agent_or_remote)) -> Response:
-        target, _rec = pair
-        if target.kind == "local":
-            if what == "logs":
-                return JSONResponse(await asyncio.to_thread(
-                    agentops.logs, target.agent["id"], limit))
-            return JSONResponse({"id": target.agent["id"], "what": what,
-                                 "data": await asyncio.to_thread(
-                                     agentops.observe, target.agent["id"], what, limit)})
-        # 远程：把 ?limit= 一并透传，peer 端 handler 自己解析
-        return await proxy.forward_to_peer(target.peer, request,
-                                            request.url.path)
-    _h.__name__ = f"api_agent_observe_{what}"
-    return _h
-
-
-for _what in _OBSERVE_KINDS:
-    router.get(f"/api/agents/{{agent_id}}/{_what}")(
-        _make_observe_handler(_what))
-
+# ── 邮箱（唯一的 agent 通信通道）与日志 ────────────────────────────
 
 @router.post("/api/agents/{agent_id}/mail")
-async def api_agent_mail(request: Request, req: MailReq,
-                         pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
-    """投信：admin 把一条文字塞进 agent 的 inbox。远端 agent 走 forward。"""
-    target, _rec = pair
-    if target.kind == "local":
-        return JSONResponse(agentops.mail(target.agent["id"], req.text))
-    return await proxy.forward_to_peer(target.peer, request, request.url.path)
+async def api_agent_mail(req: MailReq, pair: tuple = Depends(require_agent)) -> JSONResponse:
+    """投信：admin 把一条文字塞进 agent 的 mailbox（唯一的 agent 通信通道）。"""
+    agent, _rec = pair
+    return JSONResponse(agentops.mail(agent["id"], req.text))
 
 
-# ── 智能体互发现：懒查询，按需拿 peer 列表（最小信息）───────────────────
+@router.get("/api/agents/{agent_id}/mailbox")
+async def api_agent_mailbox(limit: int = 50, box: str = "outbox",
+                            pair: tuple = Depends(require_agent)) -> JSONResponse:
+    """读邮箱文件尾部：box=outbox 来信（agent→admin，send_mail）；box=inbox
+    投信历史（admin→agent，mailbox_log）。
 
-@router.get("/api/agent-peers")
-async def api_agent_peers(request: Request, local_only: bool = False) -> dict:
-    """智能体互发现：列出当前可联系的其他 agent 的最小信息
-    （id / name / node_id / inter_agent_token）。
-
-    三档 token 任一通过：admin / 互联 token / 任意 agent 观察台 token。
-    api token（反代入口凭证）显式 401——auth.py 明文承诺 api token 不进任何
-    /api/*，此前例外是越权口子（外部反代凭证可拿全集群互联 token）。
-    - admin / 互联 token：不返回 self 字段（caller 没有"自己"的概念）
-    - agent 观察台 token：返回除自己外的全部 peer + self 字段
-
-    互联 token（每 xusi 一把）同集群 agent ↔ agent 互调 /svc 时用——
-    本机这枚对本地 peer 行有效，远端 xusi 那枚随 fan-in 一并返回。peer
-    行里缺这字段表示对方 xusi 还没签发互联 token。
-
-    cluster 模式 fan-in：跨节点 agent 一并聚合（轻量版——不探活，只读
-    id+name+token）。fan-out 路径传 local_only=1 防止递归（peer 端看到该
-    标志停止 fan-in）。鉴权用本机 cluster_secret 代替 caller token——后者
-    是 agent webui token，跨节点验不了。
-    """
-    tok = request.query_params.get("mtoken")
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        tok = auth[7:].strip() or tok
-    if not tok:
-        raise HTTPException(401, "missing token（管理面 token / 互联 token / agent 观察台 token）")
-
-    src_id: str | None = None  # caller 的 agent id；admin/api/互联 token → None
-    if authtok.verify(tok):
-        src_id = None
-    elif apitokens.verify(tok):
-        raise HTTPException(401, "api token 不能调用 /api/*（仅 /px /svc 反代入口）")
-    elif inter_agent_tokens.verify(tok):
-        src_id = None  # 互联 token 不绑 agent 身份，caller 不可识别
-    else:
-        # agent_by_agent_token 逐个读 webui_tokens.json（agent 数 × 文件 IO）
-        # ——线程池跑，别冻事件循环
-        pair = await asyncio.to_thread(proxy.agent_by_agent_token, tok)
-        if pair:
-            src_id = pair[0]["id"]
-        else:
-            raise HTTPException(401, "invalid token")
-
-    me = node.info()
-    me_node_id = me["id"]
-    my_inter_token = inter_agent_tokens.get_token()  # None if not minted
-    # 本节点入口地址：node.info()["url"]（= cfg.public_url：[node].public_url
-    # > [server] 推导）——与 services.public_access_text 同源，本机入口只有
-    # 一种拼法；不查 peers.toml 自查行（自己的行常不在自己的名册里，且可能
-    # 比 [node].public_url 陈旧）。
-    me_url = me["url"]
-
-    # 本节点 agent
-    rows: list[dict] = []
-    for a in registry.list_agents():
-        if a["id"] == src_id:
-            continue
-        row = {
-            "id": a["id"],
-            "name": (a.get("name") or a["id"]).strip() or a["id"],
-            "node_id": me_node_id,
-            "node_url": me_url,
-        }
-        if my_inter_token:
-            row["inter_agent_token"] = my_inter_token
-        rows.append(row)
-
-    # cluster fan-in
-    if not local_only and peers.is_cluster():
-        admin_tok = get_config().cluster_secret
-        # show_agents 不在此过滤（仅 webui 节点对话框显隐）；无 url 的残缺行
-        # 整条跳过——fetch_json 与 node_url 都要它，缺了只会 KeyError 500。
-        pls = [p for p in peers.list_peers()
-               if p["id"] != me_node_id and p.get("url")]
-        if pls and admin_tok:
-            async def _one(p: dict) -> None:
-                try:
-                    r = await proxy.fetch_json(
-                        p, "/api/agent-peers?local_only=1",
-                        token=admin_tok, timeout=5)
-                    peer_rows = r.get("peers", []) if isinstance(r, dict) else []
-                    for row in peer_rows:
-                        if isinstance(row, dict) and row.get("id") != src_id:
-                            new_row = {
-                                "id": row["id"],
-                                "name": (row.get("name") or row["id"]).strip() or row["id"],
-                                "node_id": p["id"],
-                                "node_url": p["url"],
-                            }
-                            # 远端 xusi 自带它那把互联 token（若未签发则无字段）
-                            remote_tok = row.get("inter_agent_token")
-                            if remote_tok:
-                                new_row["inter_agent_token"] = remote_tok
-                            rows.append(new_row)
-                except proxy.PeerUnreachable:
-                    pass
-                except proxy.PeerHttpError:
-                    pass
-            await asyncio.gather(*[_one(p) for p in pls])
-
-    out: dict = {
-        "access_pattern": "/svc/{peer_id}/{service_name}/*（跨节点用行内 node_url 直连）",
-        "cluster": {
-            "node_id": me_node_id,
-            "is_cluster": peers.is_cluster(),
-            "peers_known": len(peers.list_peers()),
-        },
-        "peers": rows,
-    }
-    if src_id is not None:
-        out["self"] = {"id": src_id}
-    return out
+    只读展示；信封（互联发布/目录申请）的自动处理由 mailroom 后台线程完成。"""
+    agent, _rec = pair
+    return JSONResponse(agentops.mailbox(agent["id"], limit, box=box))
 
 
-# ── 观察台 token（agent 自家事，与管理面 cluster_secret 无关）────────────
-
-@router.get("/api/agents/{agent_id}/tokens")
-async def api_agent_tokens_list(request: Request,
-                                pair: tuple = Depends(require_agent_or_remote)) -> Response:
-    target, _rec = pair
-    if target.kind == "local":
-        return JSONResponse(agentops.tokens_list(target.agent["id"]))
-    return await proxy.forward_to_peer(target.peer, request, request.url.path)
-
-
-@router.post("/api/agents/{agent_id}/tokens", status_code=201)
-async def api_agent_token_new(request: Request, req: TokenNewReq,
-                              pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
-    """签发该 agent 自己的观察台 token。远端走 forward——peer 端自己读
-    自己的 webui_tokens.json 写新 token。"""
-    target, _rec = pair
-    if target.kind == "local":
-        # 签发要跑 xuseek CLI 子进程（装依赖场景分钟级）——线程池跑
-        return JSONResponse(await asyncio.to_thread(
-            agentops.token_new, target.agent["id"], req.label))
-    return await proxy.forward_to_peer(target.peer, request, request.url.path)
-
-
-@router.delete("/api/agents/{agent_id}/tokens/{prefix}")
-async def api_agent_token_revoke(request: Request, prefix: str,
-                                 pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
-    target, _rec = pair
-    if target.kind == "local":
-        # 撤销同样跑 xuseek CLI 子进程——线程池跑
-        return JSONResponse(await asyncio.to_thread(
-            agentops.token_revoke, target.agent["id"], prefix))
-    return await proxy.forward_to_peer(target.peer, request, request.url.path)
+@router.get("/api/agents/{agent_id}/logs")
+async def api_agent_logs(limit: int = 200, pair: tuple = Depends(require_agent)) -> JSONResponse:
+    """日志：journalctl 该 agent 单元最近 N 行（进程宿主职责，非 agent 接口）。"""
+    agent, _rec = pair
+    return JSONResponse(await asyncio.to_thread(
+        agentops.logs, agent["id"], limit))

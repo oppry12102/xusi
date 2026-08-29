@@ -1,25 +1,33 @@
-"""agent 生命周期操作：创建/启停/暂停/续跑/重启/改参/删除/观察/投信/token。
+"""agent 生命周期操作：创建/启停/暂停/续跑/重启/改参/删除/观察/投信/收信。
 
-manager 与 agent 之间只有三条通道（本模块是唯一实现处）：
-1. 进程与信号 —— systemd 瞬态单元（Restart=always 掉线保护）；
-2. 只读 HTTP GET —— http://127.0.0.1:<port>/v1/*（探活与观察，绝不写）；
-3. 文件 —— 渲染 config.toml、追加 mailbox.jsonl、读 webui_tokens.json、tail journald。
+manager 与 agent 之间只有**一条**通道——管理邮箱：
+- 投信：追加 `<home>/data/mailbox.jsonl`（sender=admin，与内核 post() 同语义，
+  双写 mailbox_log.jsonl 保历史）；
+- 收信：读 `<home>/data/outbox.jsonl`（内核 send_mail 工具写，sender=brain）。
 
-参数唯一事实源是注册表（etc/agents.json）；config.toml 永远单向渲染。
+其余界面全部取消：不再 HTTP GET /v1/*、不再调 xuseek CLI（init/token/capabilities）、
+不再渲染（重写）config.toml（创建时渲染一次出生配置，此后归 agent 自治）、
+不再读 webui_tokens.json（agent 自己的凭证文件，xusi 不碰）。
+
+进程与信号（systemd）不是"通信"——它是管理面不可削减的宿主职责：
+spawn `xuseek.sh serve` / stop / SIGSTOP / SIGCONT / journalctl 日志。
+
+参数事实源：注册表（etc/agents.json）只记簿记（name/note/port/expose 等）与
+互联标注；mission/brains/budgets 在创建时渲染进 config.toml 后不再管理，
+改它们走投信让 agent 自己改（内核每轮热重载）。
 """
 from __future__ import annotations
 
 import json
 import re
 import shutil
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import httpx
-
-from . import brains, node, ports, registry, services, systemdctl, versions
+from . import brains, ports, registry, systemdctl, versions
 from .config import get_config
 
 
@@ -66,56 +74,16 @@ def _listen_host(agent: dict) -> str:
     return "0.0.0.0" if agent.get("expose") else "127.0.0.1"
 
 
-def _source_for(agent: dict | None = None) -> Path:
-    """该 agent 的 xuseek-v2 源码目录。
-
-    注册表带 source_version → 实例私有副本 instances/<id>/xuseek-v2/（创建时从
-    版本仓库解压，实例间完全隔离，可各跑各的版本）；不带（含全部现存 agent）→
-    共享主源码 source_dir，行为与从前一字不差。
-    """
-    ver = str((agent or {}).get("source_version") or "").strip()
-    if not ver:
-        return ensure_source()
+def _source_for(agent: dict) -> Path:
+    """该 agent 的 xuseek-v2 源码目录 = 实例私有副本 instances/<id>/xuseek-v2/
+    （创建时从版本仓库解压，实例间完全隔离，可各跑各的版本）。"""
+    ver = str(agent.get("source_version") or "").strip()
     p = _home(agent) / versions.SRC_DIR_NAME
     if not (p / "xuseek.sh").exists():
         raise AgentError(
             f"agent {agent['id']} 的私有源码副本缺失：{p}（版本 {ver}）。"
             f"实例目录可能被改动——可从版本仓库重新解压到该路径，或停机重建")
     return p
-
-
-def _xuseek_sh(agent: dict | None = None) -> Path:
-    src = _source_for(agent)
-    p = src / "xuseek.sh"
-    if not p.exists():
-        raise AgentError(f"xuseek 源码目录无效：{src}")
-    return p
-
-
-def ensure_source() -> Path:
-    """确保 xuseek-v2 源码就位：自管目录缺失时自动从 GitHub 拉取。
-
-    https 匿名拉不动（私有/受限仓库）时回退 ssh（运维者已配 GitHub 密钥的场景）。
-    只在部署后第一次发生（源码随目录常驻，.gitignore 不入库）。
-    """
-    cfg = get_config()
-    if (cfg.source_dir / "xuseek.sh").exists():
-        return cfg.source_dir
-    import subprocess
-    cfg.source_dir.parent.mkdir(parents=True, exist_ok=True)
-    ssh_url = cfg.source_repo.replace("https://github.com/", "git@github.com:").rstrip("/")
-    if not ssh_url.endswith(".git"):
-        ssh_url += ".git"
-    for url in (cfg.source_repo, ssh_url):
-        try:
-            r = subprocess.run(["git", "clone", url, str(cfg.source_dir)],
-                               capture_output=True, text=True, timeout=600)
-            if r.returncode == 0 and (cfg.source_dir / "xuseek.sh").exists():
-                return cfg.source_dir
-        except Exception:
-            continue
-    raise AgentError(f"xuseek-v2 源码缺失且从 {cfg.source_repo} 拉取失败"
-                     f"（https 需认证时可手动：git clone {ssh_url} {cfg.source_dir}）")
 
 
 def _spawn_unit(agent: dict) -> None:
@@ -127,132 +95,26 @@ def _spawn_unit(agent: dict) -> None:
                            str(_home(agent)), _listen_host(agent), agent["port"])
 
 
-# 默认 PyPI 镜像：本机直连 pypi.org 不可达（DNS 通但 TCP/TLS 握手挂死，
-# 参见 memory xusi-pip-mirror），xuseek init 经启动器自愈安装依赖时会卡
-# 在网络层分钟级。xusi 在所有 xuseek 子进程 spawn 时统一注入 UV_INDEX_URL
-# ——保证新建 agent 的 venv 装包秒级完成，不让 webui 端点同步等待挂死。
-# 覆盖：env XUSI_UV_INDEX_URL（也同步设 PIP_INDEX_URL 兜底 pip 回落路径）。
-# 设空串 = 关镜像，回退到 pypi.org（不保证可达）。
-DEFAULT_UV_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
-
-
-def _pip_env() -> dict[str, str]:
-    """xuseek 子进程的 env：继承父进程 + 注入 PyPI 镜像 URL。"""
-    import os
-    env = os.environ.copy()
-    url = os.environ.get("XUSI_UV_INDEX_URL", DEFAULT_UV_INDEX_URL)
-    env["UV_INDEX_URL"] = url
-    env["PIP_INDEX_URL"] = url
-    return env
-
-
-def _run_cli(args: list[str], timeout: float = 120, *, agent: dict | None = None) -> str:
-    """调 xuseek 公开 CLI（init / token / seed）——公开接口，非内部耦合。
-    带版本创建的 agent 用它自己的源码副本跑 CLI。注意 CLI 经启动器跑，开了
-    能力包 extras 时可能先自愈安装依赖（分钟级），超时要给足。"""
-    import subprocess
-    try:
-        r = subprocess.run([str(_xuseek_sh(agent)), *args], capture_output=True, text=True,
-                           timeout=timeout, env=_pip_env())
-    except subprocess.TimeoutExpired as e:
-        raise AgentError(
-            f"xuseek CLI 超时（{timeout:.0f}s）：{' '.join(args[:3])} ——"
-            "若正在安装能力包依赖属正常，稍候重试；不要在安装中途重启它") from e
-    if r.returncode != 0:
-        err = (r.stderr or r.stdout or "").strip().splitlines()
-        raise AgentError(err[-1] if err else f"xuseek CLI 失败：{' '.join(args[:2])}")
-    return r.stdout
-
-
-# ── token 文件读取（通道 3）─────────────────────────────────────────
-
-def read_agent_tokens(agent: dict) -> dict[str, dict]:
-    """agent 的 data/webui_tokens.json：{token: {label, created_at}}（实时）。"""
-    p = _home(agent) / "data" / "webui_tokens.json"
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def internal_token(agent: dict) -> str | None:
-    """取一个可用的观察台 token（代理注入与内部观察用）：注册表记录优先。"""
-    rec = [t["token"] for t in agent.get("tokens", [])]
-    for tok in rec:
-        if tok in read_agent_tokens(agent):
-            return tok
-    live = read_agent_tokens(agent)
-    return next(iter(live), None)
-
-
-# ── HTTP 观察（通道 2，只读 GET）────────────────────────────────────
-
-def _get(agent: dict, path: str, timeout: float = 4.0) -> httpx.Response:
-    url = f"http://127.0.0.1:{agent['port']}{path}"
-    headers = {}
-    tok = internal_token(agent)
-    if tok:
-        headers["Authorization"] = f"Bearer {tok}"
-    return httpx.get(url, headers=headers, timeout=timeout)
-
-
-def wait_health(port: int, agent_id: str, timeout: float = 90.0) -> None:
-    """启动验收：轮询 /v1/health 直到 200。失败抛 AgentError（附日志尾部）。"""
-    import time
-    deadline = time.monotonic() + timeout
-    last_err = ""
-    while time.monotonic() < deadline:
-        try:
-            r = httpx.get(f"http://127.0.0.1:{port}/v1/health", timeout=2.0)
-            if r.status_code == 200:
-                return
-            last_err = f"HTTP {r.status_code}"
-        except Exception as e:
-            last_err = type(e).__name__
-        time.sleep(0.6)
-    log = systemdctl.journal_tail(get_config().unit_name(agent_id), 20)
-    raise AgentError(f"agent 启动后 {timeout:.0f}s 未通过健康验收（{last_err}）。日志尾部：\n{log}")
-
-
 # ── 生命周期 ─────────────────────────────────────────────────────────
 
-# source_version 保留值：显式选共享主源码（过渡期保留，逐步废弃——勿用作版本号）
-MAIN_SOURCE = "main"
-
-
 def _resolve_source_choice(src_ver: str) -> str:
-    """创建时的源码抉择，返回实际使用的版本号（"" = 共享主源码）。
-
-    缺省（未选版本）→ **版本仓库最新包**：每个 agent 自带 xuseek-v2 私有副本，
-    instances/<id>/ 自洽、可单独迁移（共享主源码逐步废弃中）；
-    显式版本 → 直接用它（提前校验，失败零副作用）；
-    显式 "main"，或仓库为空时的缺省回落 → 共享主源码：本地已在 → 用
-    （零网络）；不在 → 试 GitHub 拉取；都不可得 → 报错并给出指引。
-    """
-    if src_ver and src_ver != MAIN_SOURCE:
+    """创建时的源码抉择：显式版本 → 提前校验后直接用（失败零副作用）；
+    缺省 → **版本仓库最新包**（每个 agent 自带 xuseek-v2 私有副本，
+    instances/<id>/ 自洽、可单独迁移）。仓库为空 → 报错并指引投放 zip。"""
+    if src_ver:
         versions.zip_for(src_ver)
         return src_ver
-    want_main = src_ver == MAIN_SOURCE
-    if not want_main:
-        avail = versions.list_versions()
-        if avail:
-            return avail[0]["version"]   # list_versions 已按版本号新→旧排序
-    try:
-        ensure_source()
-        return ""
-    except AgentError as e:
-        if want_main:
-            raise
+    avail = versions.list_versions()
+    if not avail:
         raise AgentError(
-            f"版本仓库（{get_config().versions_dir}）为空，共享主源码也不可得：{e}。"
-            f"请管理员投放 xuseek-v2-<版本号>.zip（见 docs/versions.md），"
-            f"或手动 git clone 到 {get_config().source_dir}") from None
+            f"版本仓库（{get_config().versions_dir}）为空。"
+            f"请管理员投放 xuseek-v2-<版本号>.zip（见 docs/versions.md）")
+    return avail[0]["version"]   # list_versions 已按版本号新→旧排序
 
 
 def _validate_brains(bl: list[str]) -> None:
     """校验大脑列表（ brains.validate_selection 的 AgentError 适配——
-    create / patch / restore 共用同一份断言，见 brains.py）。"""
+    create / restore 共用同一份断言，见 brains.py）。"""
     try:
         brains.validate_selection(bl)
     except ValueError as e:
@@ -263,35 +125,25 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
                  expose: bool = False, port: int | None = None,
                  budgets: dict | None = None, note: str = "",
                  source_version: str = "") -> dict:
-    """创建并启动一个 agent：init（播种经验库）→ 渲染 config → systemd 拉起 → 健康验收 → 签发首个 token。
+    """创建并启动一个 agent：渲染出生 config.toml → 注册 → systemd 拉起 → 端口验收。
 
     source_version：版本号 → 该版本源码解压成实例私有副本（instances/<id>/xuseek-v2/，
-    删除时随 home 进 .trash）；"main" → 共享主源码（过渡期保留，逐步废弃）；
-    缺省 → 版本仓库最新包（每 agent 自带私有副本，实例自洽可单独迁移；
-    仓库为空时回落共享主源码，见 _resolve_source_choice）。
+    删除时随 home 进 .trash）；缺省 → 版本仓库最新包（每 agent 自带私有副本，
+    实例自洽可单独迁移；仓库为空报错，见 _resolve_source_choice）。
 
-    能力包（capabilities）：墟司**只播种不预装**——init 无条件播全部 pack 种子
-    （几 KB 文件，归大脑的世界），不写 [capabilities]、不装 extras。启用与否、
-    依赖安装全归大脑（pack 指南有自装说明；run_shell 后台装）。
+    创建后 xusi 与该 agent 只剩邮箱通道：不再签发任何 agent 侧凭证
+    （agent 自签自报）、不再改写 config.toml（mission/brains/budgets 归 agent 自治）。
     """
     cfg = get_config()
     mission = (mission or "").strip()
     if not mission:
         raise AgentError("mission 不能为空")
-    # 角色守门：仅 worker 节点可注册 agent；backup/portal 在此直接拒（架构层拦住，
-    # 不是权限问题——这两个角色根本不需要本地 agent）。
-    if not node.can_register_agents():
-        raise AgentError(
-            f"当前节点 role={cfg.node_role} 不允许注册 agent（仅 worker 角色可；"
-            f"backup/portal 节点专用于备份与门户聚合）"
-        )
     _validate_brains(brain_list)
     src_ver = _resolve_source_choice((source_version or "").strip())
 
     agent_id = gen_id(name)
-    # 端口分配 → 注册表落盘必须整体持锁（见 ports.ALLOC_LOCK）：窗口隔着
-    # init（分钟级），两个并发 create 会拿到同一端口。锁内串行——create 本就
-    # 是低频 admin 操作，等待方只是晚几分钟拿到自己的端口。
+    # 端口分配 → 注册表落盘必须整体持锁（见 ports.ALLOC_LOCK）：窗口内含解压与
+    # 渲染（分钟级）。锁内串行——create 本就是低频 admin 操作。
     with ports.ALLOC_LOCK:
         port = ports.allocate(port)
         home = cfg.instance_home(agent_id)
@@ -310,22 +162,21 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
             "source_version": src_ver,
             "created_at": registry.now_iso(),
             "updated_at": registry.now_iso(),
-            "tokens": [],
         }
         try:
             _init_workspace(rec, src_ver)
             # 注册（期望态 running）
             registry.add_agent(rec)
-            # systemd 拉起（Restart=always 掉线保护）+ 健康验收
-            spawn_and_verify(rec)
-            # 签发首个观察台 token（代理注入 + 用户取用）
-            _mint_token(agent_id, "xusi-proxy")
         except Exception as e:
             _rollback_create(unit, home, agent_id)
             raise AgentError(f"创建失败已回滚：{e}") from e
 
+    # 锁外拉起：落盘后端口已被三重检验挡住，锁外 spawn 语义等价，
+    # 并发 create 不再互相等 90s 验收
+    spawn_and_verify(rec)
+
     audit("agent.create", agent=agent_id, name=rec["name"], port=port,
-          expose=expose, brains=brain_list, source=src_ver or "main",
+          expose=expose, brains=brain_list, source=src_ver,
           source_defaulted=not (source_version or "").strip())
     return get_agent_or_404(agent_id)
 
@@ -333,37 +184,44 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
 def _init_workspace(rec: dict, src_ver: str) -> None:
     """在 agent 被注册/拉起之前，把它的 home 准备到位：
 
-    - 选了版本：从版本仓库解压到实例私有源码副本
-    - 调 xuseek CLI init 建 home/data + workspace + 播种能力包种子
-    - 播种对外接口 playbook（agent 据此可注册自建服务拿外部入口）
-    - 渲染 config.toml（含所选大脑与 key）
+    - 从版本仓库解压源码到实例私有副本（instances/<id>/xuseek-v2/）
+    - 渲染 config.toml（含所选大脑与 key）——出生配置，唯一一次
+      （data/、workspace/ 由内核启动时自建，xusi 不动）
 
     失败抛 AgentError，由 create_agent 的统一 try/except 回滚（home 仍可能存在，
     rollback 把它挪进 .trash）。"""
     home = _home(rec)
-    if src_ver:
-        versions.extract(src_ver, home / versions.SRC_DIR_NAME)
-    # init：建 home/data、workspace，播种 playbook 经验库与全部能力包种子
-    # （v2 公开 CLI，播种无条件幂等；版本化实例用它自己的源码副本跑）。
-    # 不传 --capability：不写 [capabilities]、不触发 extras 预装——
-    # 启用与否、依赖安装归大脑
-    _run_cli(["--home", str(home), "init", "--mission", rec["mission"], "--force"],
-             timeout=300, agent=rec)
-    services.seed_quickstart_playbook(home / "workspace")
-    services.seed_playbook(home / "workspace")
-    services.seed_peer_find_playbook(home / "workspace")
-    # 渲染 config.toml（含所选大脑与 key，600）。内核/大脑写入的段
-    # （如 [capabilities]）保真回传——墟司只重渲染自己认识的段
+    home.mkdir(parents=True, exist_ok=True)
+    versions.extract(src_ver, home / versions.SRC_DIR_NAME)
     brains.write_agent_config(home, rec["mission"], rec["brains"], rec["budgets"])
 
 
 def spawn_and_verify(rec: dict) -> None:
-    """systemd 拉起 + 健康验收。失败抛 AgentError。
+    """systemd 拉起 + 端口验收。失败抛 AgentError。
 
     公开给 backup.restore 复用（create 的私有实现提级——恢复与创建走同一条
     拉起路径，别再各自 systemdctl.spawn_agent）。"""
     _spawn_unit(rec)
     wait_health(rec["port"], rec["id"])
+
+
+def wait_health(port: int, agent_id: str, timeout: float = 90.0) -> None:
+    """启动验收：systemd 单元 active 且端口已进入监听（ss）。失败抛 AgentError
+    （附日志尾部）。
+
+    HTTP /v1/health 探活已取消（xusi 与 agent 只剩邮箱通道）——内核 serve 先
+    跑 preflight（config 缺失则写模板、同档无可用大脑则退出）才起 uvicorn：
+    端口进入监听 = preflight 已通过；preflight 失败时端口不会绑定，错误经
+    单元日志尾部暴露。绑端口之后的崩溃由 systemd Restart=always 兜底。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if (systemdctl.unit_state(get_config().unit_name(agent_id)) == "active"
+                and port in ports._kernel_listening_ports()):
+            return
+        time.sleep(0.6)
+    log = systemdctl.journal_tail(get_config().unit_name(agent_id), 20)
+    raise AgentError(f"agent 启动后 {timeout:.0f}s 未通过验收"
+                     f"（单元未 active 或端口 {port} 未监听）。日志尾部：\n{log}")
 
 
 def _rollback_create(unit: str, home: Path, agent_id: str) -> None:
@@ -379,14 +237,6 @@ def _rollback_create(unit: str, home: Path, agent_id: str) -> None:
         dest = get_config().trash_dir / f"{agent_id}-{uuid.uuid4().hex[:6]}"
         shutil.move(str(home), str(dest))
     registry.remove_agent(agent_id)
-
-
-def _mint_token(agent_id: str, label: str) -> tuple[str, str]:
-    agent = get_agent_or_404(agent_id)
-    out = _run_cli(["--home", str(_home(agent)), "token", "new", label], agent=agent)
-    tok = out.strip().splitlines()[0].strip()
-    registry.record_token(agent_id, tok, label)
-    return tok, label
 
 
 def get_agent_or_404(agent_id: str) -> dict:
@@ -425,7 +275,7 @@ def stop(agent_id: str) -> dict:
 
 
 def pause(agent_id: str) -> dict:
-    """冻结（SIGSTOP）：进程驻留、观察台无响应、呼吸暂停。"""
+    """冻结（SIGSTOP）：进程驻留、端口无响应、呼吸暂停。"""
     agent = get_agent_or_404(agent_id)
     unit = _unit(agent)
     if systemdctl.unit_state(unit) != "active":
@@ -444,7 +294,7 @@ def resume(agent_id: str) -> dict:
 
 
 def restart(agent_id: str) -> dict:
-    """优雅重启：SIGTERM 落盘 → 重新拉起 → 健康验收。冻结态先解冻（同 stop——
+    """优雅重启：SIGTERM 落盘 → 重新拉起 → 端口验收。冻结态先解冻（同 stop——
     冻结进程收不到 SIGTERM，硬 restart 会拖到 SIGKILL、丢会话）。"""
     agent = get_agent_or_404(agent_id)
     if systemdctl.unit_state(_unit(agent)) == "active":
@@ -488,37 +338,42 @@ def delete(agent_id: str) -> dict:
         dest = get_config().trash_dir / f"{agent_id}-{uuid.uuid4().hex[:6]}"
         shutil.move(str(home), str(dest))
     registry.remove_agent(agent_id)
+    from . import mailroom
+    mailroom.forget(agent_id)
     audit("agent.delete", agent=agent_id, port=agent["port"], trash=str(dest))
     return {"id": agent_id, "deleted": True, "moved_to": str(dest)}
 
 
 # ── 改参 ─────────────────────────────────────────────────────────────
 
-_PATCHABLE = {"name", "mission", "brains", "budgets", "expose", "port", "note"}
+# 可改字段 = 簿记层（name/note）+ 进程层（port/expose）。
+# mission/brains/budgets 在创建后归 agent 自治——改它们请投信让 agent 自己
+# 修改自己的 config.toml（内核每轮热重载）。
+_PATCHABLE = {"name", "note", "port", "expose"}
+
+_AGENT_OWNED = {
+    "mission": "使命已由 agent 自治：请投信让它自己修改 config.toml（内核每轮热重载）",
+    "brains": "大脑已由 agent 自治：请投信让它自己修改 config.toml 的 [brains.*]（新 api_key 可向管理员索取）",
+    "budgets": "预算已由 agent 自治：请投信让它自己修改 config.toml 的 [agent] 段",
+}
 
 
 def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) -> dict:
-    """改参。mission/brains/budgets 热重载（下一口呼吸生效）；
-    port/expose 需要进程重启，返回 restart_required，?apply=restart 立即执行。"""
+    """改参。name/note 写注册表即生效；port/expose 改的是进程监听参数，
+    返回 restart_required，?apply=restart 立即执行。"""
     agent = get_agent_or_404(agent_id)
     bad = set(changes) - _PATCHABLE
+    owned = sorted(b for b in bad if b in _AGENT_OWNED)
+    if owned:
+        raise AgentError(
+            f"这些字段已由 agent 自治：{', '.join(owned)}。"
+            f"{_AGENT_OWNED[owned[0]]}")
     if bad:
         raise AgentError(f"不可修改的字段：{', '.join(sorted(bad))}（可改：{', '.join(sorted(_PATCHABLE))}）")
 
-    hot = {}       # 写注册表即生效（渲染 config）
+    hot = {}       # 写注册表即生效
     need_restart = False
 
-    if "brains" in changes:
-        bl = list(changes["brains"])
-        _validate_brains(bl)
-        hot["brains"] = bl
-    if "mission" in changes:
-        m = str(changes["mission"]).strip()
-        if not m:
-            raise AgentError("mission 不能为空")
-        hot["mission"] = m
-    if "budgets" in changes:
-        hot["budgets"] = dict(changes["budgets"])
     if "name" in changes:
         hot["name"] = str(changes["name"]).strip() or agent["name"]
     if "note" in changes:
@@ -535,9 +390,6 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
             next_rec["expose"] = bool(changes["expose"])
             need_restart = True
 
-        if hot:
-            brains.write_agent_config(_home(next_rec), next_rec["mission"],
-                                      next_rec["brains"], next_rec.get("budgets"))
         updates = dict(hot)
         if next_rec.get("port") != agent.get("port"):
             updates["port"] = next_rec["port"]
@@ -570,82 +422,30 @@ def _respawn(agent: dict) -> None:
     wait_health(agent["port"], agent["id"])
 
 
-# ── 观察（只读）─────────────────────────────────────────────────────
+# ── 状态（systemd + 注册表，无 HTTP 观察）────────────────────────────
 
 def status(agent_id: str) -> dict:
-    """状态聚合：systemd 单元 + /v1/health + /v1/status。全程只读 GET。"""
+    """状态聚合：注册表 + systemd 单元 + 互联标注。不再探 agent 的 HTTP。"""
     agent = get_agent_or_404(agent_id)
     out: dict[str, Any] = {
         "id": agent["id"],
         "name": agent["name"],
         "mission": agent["mission"],
         "brains": agent["brains"],
+        "budgets": agent.get("budgets", {}),
         "port": agent["port"],
         "expose": agent.get("expose", False),
         "note": agent.get("note", ""),
         "source_version": agent.get("source_version", ""),
         "desired_state": agent.get("desired_state", "running"),
         "listen_host": _listen_host(agent),
-        # 实例能力开关实况（文件直读 [capabilities] 段，零子进程开销）
-        "capabilities": brains.read_capabilities(_home(agent)),
+        "interconnect": agent.get("interconnect"),
         "created_at": agent.get("created_at"),
-        "tokens_count": len(read_agent_tokens(agent)),
+        "updated_at": agent.get("updated_at"),
         "fetched_at": _iso(),
     }
     out["process"] = systemdctl.unit_brief(_unit(agent))
-    if out["process"]["active"] != "active":
-        out["health"] = {"ok": False, "note": f"单元 {out['process']['active']}"}
-        return out
-    out["health"] = _probe_health(agent)
-    if not out["health"]["ok"]:
-        return out
-    out["agent_status"] = _probe_agent_status(agent)
     return out
-
-
-def _probe_health(agent: dict) -> dict:
-    """/v1/health 单次探——公开端点，不带 token。失败给 note 字段便于前端区分。"""
-    try:
-        r = httpx.get(f"http://127.0.0.1:{agent['port']}/v1/health", timeout=2.5)
-        return {"ok": r.status_code == 200}
-    except Exception as e:
-        return {"ok": False, "note": type(e).__name__}
-
-
-def _probe_agent_status(agent: dict) -> dict:
-    """/v1/status 取 agent 自报——带 token。"""
-    try:
-        r = _get(agent, "/v1/status", timeout=4.0)
-        return r.json() if r.status_code == 200 else {"error": f"HTTP {r.status_code}"}
-    except Exception as e:
-        return {"error": type(e).__name__}
-
-
-def observe(agent_id: str, what: str, limit: int = 50) -> Any:
-    """只读观察转发：status/sessions/events/messages/outbox/whoami。
-
-    返回值已解开 agent 的标准包装（{"events":[…]} 之类）——列表项直接给前端。
-    注意 outbox 的键名也是 "messages"（agent 侧如此定义）。
-    """
-    agent = get_agent_or_404(agent_id)
-    if systemdctl.unit_state(_unit(agent)) != "active":
-        raise AgentError("agent 未在运行")
-    allowed = {"status", "sessions", "events", "messages", "outbox", "whoami"}
-    if what not in allowed:
-        raise AgentError(f"观察项须为 {sorted(allowed)}")
-    limit = max(1, min(int(limit), 500))
-    path = f"/v1/{what}" if what in {"status", "whoami"} else f"/v1/{what}?limit={limit}"
-    r = _get(agent, path, timeout=6.0)
-    if r.status_code == 401:
-        raise AgentError("观察台 token 全部失效（重新签发一个）")
-    if r.status_code != 200:
-        raise AgentError(f"上游 HTTP {r.status_code}")
-    data = r.json()
-    wrap = {"events": "events", "sessions": "sessions",
-            "messages": "messages", "outbox": "messages"}
-    if what in wrap and isinstance(data, dict):
-        return data.get(wrap[what], [])
-    return data
 
 
 def logs(agent_id: str, n: int = 200) -> dict:
@@ -655,11 +455,20 @@ def logs(agent_id: str, n: int = 200) -> dict:
     return {"id": agent_id, "lines": text.splitlines()[-n:]}
 
 
-# ── 投信（通道 3：纯文件写）─────────────────────────────────────────
+# ── 投信 / 收信（唯一的 agent 通信通道）──────────────────────────────
+
+_MAIL_FIELDS = ("id", "sender", "text", "at")
+
+
+def _append_mail_line(path: Path, line: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line)
+
 
 def mail(agent_id: str, text: str) -> dict:
-    """给大脑投信：追加 data/mailbox.jsonl（与 xuseek CLI mail / 观测台表单完全同语义）。
-    休眠中 5s 内被轮询唤醒。"""
+    """给大脑投信：追加 data/mailbox.jsonl（与内核 post() 完全同语义——双写
+    mailbox_log.jsonl 保历史）。休眠中 5s 内被轮询唤醒。"""
     agent = get_agent_or_404(agent_id)
     text = (text or "").strip()
     if not text:
@@ -669,60 +478,41 @@ def mail(agent_id: str, text: str) -> dict:
         raise AgentError("实例目录不存在")
     msg = {"id": uuid.uuid4().hex[:12], "sender": "admin", "text": text, "at": _iso()}
     line = json.dumps(msg, ensure_ascii=False) + "\n"
-    # 与 agent mailbox.post() 同语义：mailbox.jsonl 给 daemon 收信；
+    # 与内核 mailbox.post() 同语义：mailbox.jsonl 给 daemon 收信；
     # mailbox_log.jsonl 是观测历史（agent drain 后 pending 清空，历史保留，
     # 详情页"来信历史"就走它读——漏写会被 agent 拿走再清掉，看起来"丢了"）
     for name in ("mailbox.jsonl", "mailbox_log.jsonl"):
-        p = home / "data" / name
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("a", encoding="utf-8") as f:
-            f.write(line)
+        _append_mail_line(home / "data" / name, line)
     audit("agent.mail", agent=agent_id, chars=len(text))
     return {"posted": True, "id": msg["id"], "at": msg["at"]}
 
 
-# ── agent 观察台 token ──────────────────────────────────────────────
+def mailbox(agent_id: str, limit: int = 50, *, box: str = "outbox") -> dict:
+    """读邮箱文件尾部 N 行（只读展示，不推进 mailroom 的扫描偏移）。
 
-def tokens_list(agent_id: str) -> list[dict]:
-    """实时 token 清单（含完整 token —— 供经管理面认证的用户取用）。"""
+    box="outbox"：来信（内核 send_mail 写，sender=brain）；
+    box="inbox"： 投信历史（mailbox_log.jsonl，sender=admin 为主——管理邮箱
+    的观测日志，投信时双写，语义与内核 post() 一致）。
+    """
     agent = get_agent_or_404(agent_id)
-    live = read_agent_tokens(agent)
-    labels = {t["token"]: t for t in agent.get("tokens", [])}
-    out = []
-    for tok, meta in live.items():
-        out.append({
-            "token": tok,
-            "label": meta.get("label") or labels.get(tok, {}).get("label", ""),
-            "created_at": meta.get("created_at", ""),
-            "recorded_by_xusi": tok in labels,
-        })
-    return out
-
-
-def token_new(agent_id: str, label: str = "") -> dict:
-    agent = get_agent_or_404(agent_id)
-    label = (label or "").strip() or f"tok-{len(agent.get('tokens', [])) + 1}"
-    tok, _ = _mint_token(agent_id, label)
-    audit("agent.token_new", agent=agent_id, label=label)
-    return {"token": tok, "label": label, "created_at": registry.now_iso()}
-
-
-def token_revoke(agent_id: str, token_prefix: str) -> dict:
-    agent = get_agent_or_404(agent_id)
-    prefix = token_prefix.strip()
-    if len(prefix) < 8:
-        raise AgentError("请提供至少 8 位 token 前缀")
-    full = None
-    for tok in read_agent_tokens(agent):
-        if tok.startswith(prefix):
-            full = tok
-            break
-    if not full:
-        raise AgentError("没有匹配该前缀的 token")
-    _run_cli(["--home", str(_home(agent)), "token", "revoke", full], agent=agent)
-    registry.drop_token(agent_id, prefix)
-    audit("agent.token_revoke", agent=agent_id, prefix=prefix)
-    return {"revoked": full[:8] + "…"}
+    limit = max(1, min(int(limit), 500))
+    name = {"outbox": "outbox.jsonl", "inbox": "mailbox_log.jsonl"}.get(box)
+    if not name:
+        raise AgentError(f"未知邮箱文件：{box}（可选 outbox/inbox）")
+    p = _home(agent) / "data" / name
+    try:
+        text = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    rows: list[dict] = []
+    for line in text.splitlines()[-limit:]:
+        try:
+            obj = json.loads(line)
+            if isinstance(obj, dict):
+                rows.append(obj)
+        except ValueError:
+            continue
+    return {"id": agent_id, "box": box, "messages": rows}
 
 
 # ── reconcile（掉线保护第二层：manager 重启/机器重启后按期望态拉齐）──

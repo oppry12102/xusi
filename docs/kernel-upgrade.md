@@ -5,6 +5,8 @@
 > API 层「source_version 创建后不可改」约束的是**创建流程**；存量升级是目录级
 > 操作，本文是标准做法。前置：管理面代码 ≥ `ca56645`（分档语义与内核 v2.5.5
 > 对齐：未标注 tier 视同 power）。
+> **当前目标版本：v2.7.4（2026-08-29 投放）**。v2.5.x → v2.7.4 是同一套目录级
+> 流程；运行时依赖零变化（pyproject 只差版本号行），坑④的 .venv 平移结论不变。
 
 ## 0. 前置条件（顺序重要）
 
@@ -28,7 +30,7 @@ sys.path.insert(0, ".")
 from xusi import registry, agentops, versions
 from xusi.config import get_config
 
-AID, NEW = "agent-XXXX", "v2.5.5"          # ← 只改这两处
+AID, NEW = "agent-XXXX", "v2.7.4"          # ← 只改这两处
 agent = registry.get_agent(AID)
 OLD = agent["source_version"]
 home = get_config().instance_home(AID)
@@ -51,15 +53,20 @@ print("完成，旧树备份:", bak.name)
 EOF
 ```
 
-## 2. 升级后必做：PATCH 触发重渲染
+## 2. 升级后：config.toml 由 agent 自己改（v2 起 xusi 不再重渲染）
 
-**内核升级不会重写 config.toml**。存量 agent 需要一次任意 PATCH 把
-tier / context_window / 预算 / note 渲染进去（热重载，下一口呼吸生效）：
+**内核升级不会重写 config.toml**；v2 起 xusi 也不再重渲染（config 只在创建时
+渲染一次，此后归 agent 自治）。要把 tier / context_window / 预算 / note 写进去：
+
+1. 管理员改 `etc/brains.toml`（tier/context_window/note 等新数据）；
+2. **投信**给 agent：把新键值原文发给它，让它用 run_shell 自己编辑自己的
+   `config.toml`（内核每口呼吸热重载，下一口生效）。
 
 ```python
-from xusi import agentops, registry
-a = registry.get_agent(AID)
-agentops.patch_agent(AID, {"brains": a["brains"]})   # 原样写回即触发重渲染
+from xusi import agentops
+agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier = \"power\"、"
+                   "context_window = 131072；[agent] 段加 max_context_tokens = 123072。"
+                   "改前先自行备份 config.toml。")
 ```
 
 ## 3. 踩过的坑（每条都真实发生过）
@@ -69,12 +76,11 @@ agentops.patch_agent(AID, {"brains": a["brains"]})   # 原样写回即触发重�
 | ① | 用 `zipfile.extractall` / 裸 unzip 解内核包 → `xuseek.sh` 644 → systemd 报 `Permission denied` 拉不起 | 一律走 `versions.extract`：还原权限位、无条件保证 `xuseek.sh` 可执行、防 zip-slip |
 | ② | 后台脚本调 `systemctl --user` 全部 `not-found` | 先 `export XDG_RUNTIME_DIR=/run/user/$(id -u)` |
 | ③ | PATCH 改 `source_version` 被拒（`_PATCHABLE` 白名单不含它） | `registry.update_agent()` 直改；不改则 webui/备份恢复显示错版本 |
-| ④ | 担心 `.venv` 要重建 | 平移即可（`mv` 进新树，路径不变）；v2.5.x 无新增依赖，未来加了 xuseek.sh 也会自愈补装 |
+| ④ | 担心 `.venv` 要重建 | 平移即可（`mv` 进新树，路径不变）；v2.7.4 依赖与 v2.5.x 完全一致（pyproject 只差版本号行），指纹不漂移不重装；今后依赖变了 xuseek.sh 也会按指纹自愈补装（有 uv 用 uv，失败回落 pip） |
 | ⑤ | 担心停单元时 manager 抢拉 | 不会——reconcile 只在 manager 重启时跑，手动操作窗口安全 |
 
 ## 4. 验证清单（升级后 5 分钟）
 
-- [ ] `/v1/status` 的 `version` = 新版本号
 - [ ] journal 启动横幅：`大脑：X（故障转移兜底: …）`——兜底名单应是**同档**脑，不是全池
 - [ ] `config.toml`：`[brains.X]` 带 `tier` / `context_window`；
       `[agent] max_context_tokens` = default 同档已声明窗口最小值 − 8192
@@ -83,7 +89,7 @@ agentops.patch_agent(AID, {"brains": a["brains"]})   # 原样写回即触发重�
 ## 5. 语义变化提醒（内核 v2.5.5）
 
 - **故障转移同档循环**：跨档不再自动兜底；档内全灭的错误会提示其它档（跨档走
-  管理员 PATCH 换 default）。
+  投信让 agent 自己改 default）。
 - **未标注 tier 视同 power**：全未标注的存量池行为一字不差；「已标注 + 未标注」
   混合池里，未标注脑会加入 power 轮转。
 - **发送前按 context_window 预检**（≥2 脑的池跳过装不下的脑）；单脑池无预检，
@@ -92,6 +98,19 @@ agentops.patch_agent(AID, {"brains": a["brains"]})   # 原样写回即触发重�
   所有）；要告知智能体新档位语义走 send_mail。
 - 会话内预算恒定的不变量成立：预算 = 同档最小 − 8k，任何中途换脑都不会把
   可用窗口换小。
+
+### 内核 v2.7.x 新增（2026-08-29，v2.7.4）
+
+- **撤 init**：升级流程不受影响（playbook 从不调 init）。serve/run 预检就是唯一
+  引导点：config 缺失才写模板（xusi 创建时已渲染，不会触发）；经验库/能力包
+  种子无条件幂等补播。
+- **能力包 `[capabilities]`**：开关写 config.toml（机器不代写，可投信让 agent
+  自改）；开启包的重依赖由 xuseek.sh 启动时按指纹自愈安装，装不上软失败只警告、
+  不阻呼吸。
+- **xuseek.sh 自愈增强**：venv 失效自动重建；依赖指纹（python 版本 + 主依赖 +
+  已开 extras）不一致才重装。
+- 升级后顺带投信告知：`./xuseek.sh capabilities list` 看本版本能力包；种子已在
+  workspace 播好，用不用归大脑。
 
 ## 6. 回滚
 

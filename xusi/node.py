@@ -1,12 +1,11 @@
 """节点身份：name 走 etc/node.json（可改，UI 改）；
-id 走 etc/node.id（不可改——本机持久身份；改它会失去与历史 token /
-   备份 / peer 名册的关联性）；role 走 etc/xusi.toml（改 role 重启）。
+id 走 etc/node.id（不可改——本机持久身份；改它会失去与历史备份的关联性）。
 
 去耦合的不变式：
   - node.json 只存 name（连同 updated_at）
   - node.id 是单行 url-safe id，gitignored、600，由 load_config 首次启动时生成
-  - id / role 永远以 cfg.node_id / cfg.node_role 为准；本模块不镜像
-  - 任何 toml / node.json / node.id 改动不在本模块发生（写回走 __main__ / load_config）
+  - id 永远以 cfg.node_id 为准；本模块不镜像
+  - 任何 node.json / node.id 改动不在本模块发生（写回走 __main__ / load_config）
 """
 from __future__ import annotations
 
@@ -14,7 +13,6 @@ import json
 import socket
 import threading
 from datetime import datetime, timezone
-from pathlib import Path
 
 from .config import get_config
 from . import __version__
@@ -79,18 +77,11 @@ def set_name(name: str) -> dict:
 
 
 def info() -> dict:
-    """对外摘要（/api/peer/id、/api/cluster）。不含敏感字段。name 会 strip。"""
+    """对外摘要（/api/node）。不含敏感字段。name 会 strip。"""
     cfg = get_config()
     name = load_name().strip() or default_name()
     return {
         "id": cfg.node_id or "(unset)",
         "name": name,
-        "role": cfg.node_role,
         "version": __version__,
-        "url": cfg.public_url,
     }
-
-
-def can_register_agents() -> bool:
-    """仅 worker role 可注册 agent；backup / portal 在 create_agent 入口直接拒绝。"""
-    return get_config().node_role == "worker"

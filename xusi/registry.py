@@ -1,8 +1,11 @@
-"""注册表：etc/agents.json —— 管理面自己的数据（agent 档案 + 期望态）。
+"""注册表：etc/agents.json —— 管理面自己的簿记（agent 档案 + 期望态 + 互联标注）。
 
-注册表是 agent 参数的唯一事实源：mission / brains / 端口 / 暴露开关 / 预算都以
-这里为准，agent home 里的 config.toml 永远由本模块的数据渲染出来。
-写入原子（tmp + os.replace），进程内加锁。
+注册表记的是管理面侧的事实：id/name/端口/暴露开关/期望态/创建时的
+mission·brains·budgets 快照（出生配置已渲染进 config.toml，此后归 agent 自治，
+快照仅供展示），以及互联标注 interconnect（agent 经管理邮箱发布的互联
+token/端口，见 mailroom.py）。
+
+写入原子（tmp + os.replace，600——含互联 token 明文），进程内加锁。
 """
 from __future__ import annotations
 
@@ -45,6 +48,10 @@ def _save(data: dict) -> None:
     f.parent.mkdir(parents=True, exist_ok=True)
     tmp = f.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        tmp.chmod(0o600)   # 含互联 token 明文，比 644 更稳
+    except OSError:
+        pass
     tmp.replace(f)
 
 
@@ -91,38 +98,6 @@ def remove_agent(agent_id: str) -> bool:
             return False
         _save(data)
     return True
-
-
-def record_token(agent_id: str, token: str, label: str) -> None:
-    with _LOCK:
-        data = _load()
-        for a in data["agents"]:
-            if a.get("id") == agent_id:
-                a.setdefault("tokens", []).append(
-                    {"token": token, "label": label, "created_at": now_iso()})
-                a["updated_at"] = now_iso()
-                _save(data)
-                return
-
-
-def drop_token(agent_id: str, token_prefix: str) -> int:
-    """按前缀移除已记录的 token（撤销时用）。返回移除条数。"""
-    with _LOCK:
-        data = _load()
-        n = 0
-        for a in data["agents"]:
-            if a.get("id") == agent_id:
-                keep = []
-                for t in a.get("tokens", []):
-                    if t.get("token", "").startswith(token_prefix):
-                        n += 1
-                    else:
-                        keep.append(t)
-                a["tokens"] = keep
-                a["updated_at"] = now_iso()
-                _save(data)
-                break
-    return n
 
 
 def used_ports() -> dict[int, str]:

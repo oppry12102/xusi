@@ -1,12 +1,13 @@
 """智能体备份 / 恢复 —— 状态镜像 + 后台无关的 backend 抽象。
 
 设计要点：
-  1. 只在 agent 处于 sleeping 时备份（前置条件：daemon.state == "sleeping" 且
-     next_wake_at 距今 >= grace_seconds）。快照窗口内 SIGSTOP/SIGCONT 单元
-     保证文件系统层一致；agent 视角无感（睡久了 1-3 秒不会被察觉）。
+  1. 快照窗口内 SIGSTOP/SIGCONT 冻结进程保证文件系统层一致（jsonl 均为追加型
+     文件，一致性要求低）。**一致性降级说明**：xusi 与 agent 只剩邮箱通道后，
+     已无从得知 daemon 何时休眠（/v1/status 已取消）——运行中备份一律冻结快照，
+     不再挑睡眠窗。
   2. 备份包 = meta.json + config.toml + data/ + workspace/。
      排除：.venv/（重建）、xuseek-v2/（重建）、__pycache__/*.pyc（缓存）、
-     webui_tokens.json（凭证，重新签发）。
+     webui_tokens.json（agent 自己的凭证文件，恢复后由 agent 自行重建）。
   3. backend 解耦：LocalBackend 是当前实现，第三方可 drop-in 实现 S3Backend 等。
   4. 跨主机：备份包自描述（meta 含 source_version / port / brains 等），
      在另一台装了 xuseek-v2 versions 的机器上 `xusi restore` 即可起。
@@ -19,6 +20,7 @@ import io
 import json
 import os
 import platform
+import re
 import shutil
 import socket
 import tarfile
@@ -28,12 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from . import __version__, agentops, brains, node, ports, registry, systemdctl, versions
+from . import __version__, agentops, brains, ports, registry, systemdctl, versions
 from .config import get_config
-
-
-# 拒绝条件：备份触发时距下次唤醒至少这么远（秒），避免 snapshot 撞上唤醒
-DEFAULT_GRACE_SECONDS = 30
 
 # tar 内排除的路径/后缀（运行时产物或凭证）
 _EXCLUDE_DIRS = {".venv", "xuseek-v2", "__pycache__", ".pytest_cache"}
@@ -136,9 +134,8 @@ class LocalBackend:
 
 
 # key 命名约束：仅 xusi-<id>-<timestamp>.tar.gz，<id> 限 [A-Za-z0-9_-]+
-import re as _re
-_KEY_RE = _re.compile(r"^xusi-[A-Za-z0-9_\-]+-\d{8}T\d{6}Z\.tar\.gz$")
-_KEY_OK_RE = _re.compile(r"^[A-Za-z0-9_\-]+$")
+_KEY_RE = re.compile(r"^xusi-[A-Za-z0-9_\-]+-\d{8}T\d{6}Z\.tar\.gz$")
+_KEY_OK_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
 def _ts() -> str:
@@ -162,52 +159,6 @@ def _proc_active(agent_id: str) -> bool:
     return (st.get("process") or {}).get("active") == "active"
 
 
-def _agent_state(agent_id: str) -> dict:
-    """拉一次 agent 的 daemon 状态；agent 未起 / 单元 not-found 抛 BackupError。
-
-    返回 {} 表示状态未知（如 agent 进程存在但 /v1/status 失败）。
-    """
-    try:
-        st = agentops.status(agent_id)
-    except agentops.AgentError as e:
-        raise BackupError(str(e)) from None
-    # agentops.status() 返回 {"agent_status": {"daemon": {...}, ...}, ...}
-    inner = st.get("agent_status")
-    if isinstance(inner, dict):
-        d = inner.get("daemon")
-        if isinstance(d, dict):
-            return d
-    return {}
-
-
-def _check_backupable(agent_id: str, grace: int) -> None:
-    """前置条件（WebUI + CLI 共用）：
-      · 进程已停止（active != 'active'）—— 直接放行（无进程无 SIGSTOP 需要）；
-      · 进程活跃时要求 daemon.state == 'sleeping' 且 next_wake 距今 >= grace 秒。
-    旧版仅认 sleeping 排除了 stopped；webui 入口要求 stopped 可用，故放宽。
-    """
-    if not _proc_active(agent_id):
-        return
-    d = _agent_state(agent_id)
-    state = d.get("state")
-    if state != "sleeping":
-        raise BackupError(
-            f"agent {agent_id} 当前 daemon 状态 = {state or '未知'}，"
-            f"仅在 daemon 休眠中或 agent 已停止时可备份。"
-            f"等下一口睡眠或先 `python3 -m xusi` 走 API 停止该 agent。")
-    nw = d.get("next_wake_at")
-    if nw:
-        try:
-            t = datetime.fromisoformat(nw.replace("Z", "+00:00"))
-            remain = (t - datetime.now(timezone.utc)).total_seconds()
-            if remain < grace:
-                raise BackupError(
-                    f"agent {agent_id} 距离下次唤醒仅 {remain:.0f}s (<{grace}s)，"
-                    f"本次跳过以免撞上唤醒边界。")
-        except ValueError:
-            pass  # 解析失败不阻塞
-
-
 # ── 快照 ──────────────────────────────────────────────────────────────
 
 def _filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
@@ -225,8 +176,8 @@ def _filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
 def _build_meta(agent_id: str, agent: dict, reason: str,
                 tmp_size: int, home_size: int,
                 xuseek_version: str = "") -> dict:
-    """包内 meta.json：注册表快照 + 备份元数据。xuseek_version 由 caller 在
-    SIGSTOP 冻结前探测好传入（冻结中的 agent 不应答）。"""
+    """包内 meta.json：注册表快照 + 备份元数据。xuseek_version 取自注册表
+    source_version（内核版本自报通道 /v1/status 已取消）。"""
     return {
         "xusi_version": __version__,
         "agent_id": agent_id,
@@ -247,25 +198,17 @@ def _build_meta(agent_id: str, agent: dict, reason: str,
     }
 
 
-def _detect_xuseek_version(agent_id: str) -> str:
-    """/v1/status 顶层的 version（agent 自报的内核版本，如 "2.5.2"）。
-    未运行/不应答/键缺失返 ""。须在 SIGSTOP 冻结前调。"""
-    try:
-        st = agentops.status(agent_id)
-        inner = st.get("agent_status")
-        if isinstance(inner, dict):
-            return str(inner.get("version") or "")
-    except Exception:
-        pass
-    return ""
+def _detect_xuseek_version(agent: dict) -> str:
+    """注册表的 source_version 即内核版本（如 "v2.5.5"；共享主源码 = ""）。"""
+    return str(agent.get("source_version") or "")
 
 
 def snapshot(agent_id: str, *, reason: str = "manual",
-             grace: int = DEFAULT_GRACE_SECONDS,
              backend: BackupBackend | None = None) -> dict:
     """备份 agent 的 data + workspace + config 到 backend。
 
     返回 {key, size_bytes, mtime, meta}。前置条件不满足抛 BackupError。
+    运行中一律 SIGSTOP 冻结窗快照（不再挑 daemon 睡眠窗——HTTP 状态通道已取消）。
     """
     be = backend or LocalBackend()
     agent = registry.get_agent(agent_id)
@@ -276,9 +219,7 @@ def snapshot(agent_id: str, *, reason: str = "manual",
         raise BackupError(f"agent home 不存在：{home}")
 
     proc_active = _proc_active(agent_id)
-    _check_backupable(agent_id, grace)
-    # 内核版本在冻结前探——曾放在冻结窗内调（agent 不应答），恒为空串
-    xuseek_ver = _detect_xuseek_version(agent_id)
+    xuseek_ver = _detect_xuseek_version(agent)
     unit = get_config().unit_name(agent_id)
 
     # 估算 home 大小（仅 data + workspace，excluded 之后）
@@ -373,12 +314,6 @@ def restore(backup_path: Path, *, new_id: str | None = None,
     brains / note 若非 None，覆盖备份 meta 里的同名字段（克隆对话框用：大脑不是
     备份项目，备注自动写"从备份克隆于 …"）。
     """
-    # 同 create_agent：restore 也会写入本地注册表 → 仅 worker 节点可做。
-    if not node.can_register_agents():
-        raise BackupError(
-            f"当前节点 role={get_config().node_role} 不允许本地恢复 agent"
-            f"（仅 worker 角色可；backup/portal 节点专用于备份与门户聚合）"
-        )
     # 局部别名：参数 `brains` 与模块同名会遮蔽导入；池校验用模块
     from . import brains as _brains_mod
     meta = _read_meta_from_tar(backup_path)
@@ -437,11 +372,11 @@ def restore(backup_path: Path, *, new_id: str | None = None,
     src_dir = home / versions.SRC_DIR_NAME
     if not (src_dir / "xuseek.sh").exists():
         sv = meta.get("source_version") or ""
-        if not sv or sv == "main":
+        if not sv:
             shutil.rmtree(home, ignore_errors=True)
             raise BackupError(
-                f"备份的 source_version={sv!r} 是过渡期字段；请管理员在 versions/"
-                f"投放对应版本包或显式选可用版本（GET /api/versions）。")
+                f"备份包里没有 source_version；请管理员在 versions/"
+                f"投放对应版本包后重试（GET /api/versions）。")
         try:
             versions.extract(sv, src_dir)
         except versions.VersionError as e:
@@ -474,7 +409,6 @@ def restore(backup_path: Path, *, new_id: str | None = None,
             "source_version": meta.get("source_version", ""),
             "created_at": meta.get("created_at", now),
             "updated_at": now,
-            "tokens": [],
         }
         try:
             _brains_mod.validate_selection(rec["brains"])
@@ -483,8 +417,9 @@ def restore(backup_path: Path, *, new_id: str | None = None,
             raise BackupError(f"大脑池校验失败：{e}") from None
         registry.add_agent(rec)
 
-    # 5. 拉起 + 健康验收（与 create 同一条路径：源码副本 / listen host 都按
-    # 注册表推导——不再自带一份 systemdctl.spawn_agent 绕开 agentops）
+    # 5. 拉起 + 端口验收（与 create 同一条路径：源码副本 / listen host 都按
+    # 注册表推导——不再自带一份 systemdctl.spawn_agent 绕开 agentops）。
+    # agent 侧凭证不再由 xusi 签发：其凭证文件不进备份包，恢复后由 agent 自行重建。
     try:
         agentops.spawn_and_verify(rec)
     except Exception as e:
@@ -497,21 +432,10 @@ def restore(backup_path: Path, *, new_id: str | None = None,
         shutil.rmtree(home, ignore_errors=True)
         raise BackupError(f"spawn 失败：{e}") from e
 
-    # 6. 签发新观察台 token（webui_tokens.json 备份时被排除；新 agent 启动时
-    # 不会自带，需调 xuseek CLI 现场 mint + 记注册表——token_new 与 create 共用）
-    try:
-        agentops.token_new(agent_id, "restored")
-    except Exception as e:
-        # token 签发失败不阻塞恢复——管理员可后续补签
-        rec_token_err = str(e)
-    else:
-        rec_token_err = ""
-
     agentops.audit("backup.restore", agent=agent_id, port=port,
                    source=meta.get("agent_id"), overwrite=overwrite)
     return {"id": agent_id, "port": port, "home": str(home),
-            "restored_from": meta.get("snapshot_at"),
-            "token_warning": rec_token_err}
+            "restored_from": meta.get("snapshot_at")}
 
 
 # ── 列表 / 删除 ──────────────────────────────────────────────────────

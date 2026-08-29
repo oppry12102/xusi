@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import os
 import secrets
-import socket
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,23 +43,17 @@ class XusiConfig:
     port: int = 8601
     port_lo: int = 8602          # agent 端口分配下界（8601 归管理面）
     port_hi: int = 8699
-    source_dir: Path = ROOT / "xuseek-v2"   # xuseek-v2 源码（自管：缺失时从 GitHub 拉取）
-    source_repo: str = "https://github.com/oppry12102/xuseek-v2"
-    versions_dir: Path = ROOT / "versions"  # 版本仓库：管理员投放 xuseek-v2-<版本号>.zip
+    versions_dir: Path = ROOT / "versions"  # xuseek-v2 源码唯一事实源：管理员投放 xuseek-v2-<版本号>.zip
     display_timezone: str = "Asia/Shanghai"
 
-    # —— 集群身份（Phase1：仅 config 字段；2026-08-24 起的互联基础）——
-    cluster_secret: str = ""     # [cluster].secret 留空 = 单节点模式（今天的行为）；
-                                 # 设值 = 同密钥的所有 xusi 互信，token 用 HS256-JWT 跨节点通用。
+    # —— 身份 ——
+    admin_secret: str = ""       # admin token（etc/xusi.toml [admin].secret）。
+                                 # 留空 = 未初始化，doctor 会提醒。
                                  # 本字段的用途仅是签发/校验；不要写到 /api/* 响应里。
     node_id: str = ""           # 节点身份 = etc/node.id 的内容（首次 serve 自动生成，
                                  # URL-safe 8 字节；gitignored、600；不可改——改它会失去
-                                 # 与历史 token / 备份 / peer 名册的关联性）。
+                                 # 与历史备份的关联性）。
                                  # 临时覆盖：环境变量 XUSI_NODE_ID。
-    node_role: str = "worker"   # [node].role：worker | backup | portal；
-                                 # 改它要重启语义；agent 启停路径依赖本字段。
-    node_public_url: str = ""   # [node].public_url 显式覆盖（推荐）——peer 名册要拿这个；
-                                 # 空时按 host:port 自动探测。
 
     # —— 派生路径 ——
     @property
@@ -74,11 +67,9 @@ class XusiConfig:
     @property
     def agents_file(self) -> Path: return self.etc_dir / "agents.json"
     @property
-    def tokens_file(self) -> Path: return self.etc_dir / "tokens.json"
-    @property
-    def inter_agent_tokens_file(self) -> Path: return self.etc_dir / "inter_agent_tokens.json"
-    @property
     def audit_file(self) -> Path: return self.etc_dir / "audit.jsonl"
+    @property
+    def outbox_state_file(self) -> Path: return self.etc_dir / "outbox_state.json"
     @property
     def backup_dir(self) -> Path: return self.root / "etc" / "backups"
     @property
@@ -89,31 +80,12 @@ class XusiConfig:
     def node_file(self) -> Path: return self.etc_dir / "node.json"
     @property
     def node_id_file(self) -> Path: return self.etc_dir / "node.id"
-    @property
-    def peers_file(self) -> Path: return self.etc_dir / "peers.toml"
 
     def instance_home(self, agent_id: str) -> Path:
         return self.instances_dir / agent_id
 
     def unit_name(self, agent_id: str) -> str:
         return f"xusi-a-{agent_id}"
-
-    @property
-    def public_url(self) -> str:
-        """本节点的对外访问地址（peer 列表相互引用的形态）。
-
-        三级优先：
-        ① [node].public_url 显式覆盖（推荐——明确可控）；
-        ② `host:port`，host 是 0.0.0.0/::/空 时自动探测本机出站 IP；
-        ③ 全失败时回退 'localhost'（明显坏但不会让服务起不来——前端会立即看见歧义）。
-
-        Phase1 用于 /api/peer/id 自报与对等名册快照。Phase2 peer 转发按此 url 反向调用。"""
-        if self.node_public_url:
-            return self.node_public_url
-        host = self.host
-        if host in ("0.0.0.0", "", "::"):
-            host = _detect_outbound_ip() or "localhost"
-        return f"http://{host}:{self.port}"
 
     def ensure_dirs(self) -> None:
         for d in (self.etc_dir, self.instances_dir, self.trash_dir,
@@ -126,28 +98,18 @@ def load_config() -> XusiConfig:
     cfg = XusiConfig(root=ROOT)
     srv = raw.get("server", {})
     mgr = raw.get("manager", {})
-    cluster = raw.get("cluster", {})
-    node = raw.get("node", {})
     if "host" in srv: cfg.host = str(srv["host"])
     if "port" in srv: cfg.port = int(srv["port"])
     lo, hi = mgr.get("port_range", [cfg.port_lo, cfg.port_hi])
     cfg.port_lo, cfg.port_hi = int(lo), int(hi)
-    if "source_dir" in mgr:
-        cfg.source_dir = Path(os.path.expanduser(str(mgr["source_dir"]))).resolve()
     if "versions_dir" in mgr:
         cfg.versions_dir = Path(os.path.expanduser(str(mgr["versions_dir"]))).resolve()
-    if "source_repo" in mgr:
-        cfg.source_repo = str(mgr["source_repo"])
     if "display_timezone" in mgr:
         cfg.display_timezone = str(mgr["display_timezone"])
-    if "secret" in cluster:
-        cfg.cluster_secret = str(cluster["secret"])
-    # 旧约定：[node].id 直接写在 toml 里——被 Phase 1.2 起废弃（多机器 git pull
-    # 会撞号）。这里 **故意不读** 这个键；写过的也是无害的孤儿键，迟早被清理。
-    if "role" in node:
-        cfg.node_role = str(node["role"])
-    if "public_url" in node:
-        cfg.node_public_url = str(node["public_url"])
+    # admin token = [admin].secret（唯一键位）
+    admin = raw.get("admin", {})
+    if "secret" in admin:
+        cfg.admin_secret = str(admin["secret"])
     cfg.ensure_dirs()
     # 节点身份：etc/node.id 本地单行文件（gitignored、600）。
     # 优先 XUSI_NODE_ID 环境变量（测试 / CI / 临时改名），否则读文件，
@@ -186,20 +148,6 @@ def _resolve_node_id(node_id_file: Path) -> str:
     except OSError:
         pass
     return new_id
-
-
-def _detect_outbound_ip() -> str | None:
-    """UDP socket trick：不真正发包；从系统路由表反推本机出站 IP。
-    8.8.8.8 是路由探测的经典目标（Google DNS，不可达也无妨——connect 不发数据）。
-    失败（无外网/无默认路由/容器内受限）返回 None，由 caller 兜底。"""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        return s.getsockname()[0]
-    except Exception:
-        return None
-    finally:
-        s.close()
 
 
 _CONFIG: XusiConfig | None = None

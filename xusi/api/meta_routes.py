@@ -1,6 +1,6 @@
-"""元信息路由：健康检查 / 自报 / 集群视图 / 大脑池 / 版本仓库 / 端口 / WebUI / 文档。
+"""元信息路由：健康检查 / 节点自报 / 大脑池 / 版本仓库 / 端口 / WebUI / 文档。
 
-不鉴权的端点：/api/health、/api/peer/id（peer 间建立信任前的握手）、/、/api/docs.md。
+不鉴权的端点：/api/health、/api/node（公开身份：id/name/version，无敏感字段）、/、/api/docs.md。
 """
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
-from .. import __version__, brains, node, peers, ports, registry, versions
+from .. import __version__, brains, node, ports, registry, versions
 from ..config import get_config
 from .auth import require_admin, require_auth
 from .models import PatchNodeReq
@@ -29,54 +29,25 @@ def api_health() -> dict:
 
 @router.get("/api/whoami")
 def api_whoami(_rec: dict = Depends(require_auth)) -> dict:
-    """唯一的角色：admin。rec 形如 {"token": <cluster_secret>}——只用来
+    """唯一的角色：admin。rec 形如 {"token": <admin token>}——只用来
     表示「鉴权通过」，对外 shape 保持最小。"""
     return {"role": "admin"}
 
 
-# ── 节点身份（peer 自报 / 改名 / 集群视图）────────────────
-# 注意：/api/peer/id **不鉴权**——peer 之间在建立信任之前就要先拿到对方自报；
-# 仅返回公开字段（id/name/role/version/url），从不返回 secret/cluster_secret/tokens。
+# ── 节点身份（自报 / 改名）────────────────
 
-@router.get("/api/peer/id")
-def api_peer_id() -> dict:
-    """本节点自报（peer 之间 + WebUI 顶栏皆用）。"""
+@router.get("/api/node")
+def api_node() -> dict:
+    """本节点自报（WebUI 顶栏用）。不鉴权——只返回公开身份字段
+    （id/name/version），从不返回 secret/token。"""
     return node.info()
 
 
 @router.patch("/api/node")
 def api_node_patch(req: PatchNodeReq, _rec: dict = Depends(require_admin)) -> dict:
-    """改名。id/role 不让改（id 是机器身份；role 改完要重启，且本来也不该在一行 API 里改）。"""
+    """改名。id 不让改（机器身份）。"""
     node.set_name(req.name)
     return node.info()
-
-
-@router.get("/api/cluster")
-def api_cluster(_rec: dict = Depends(require_auth)) -> dict:
-    """集群视图：self + 探活后的 peers[]（每个 peer 含 ok/info/error/latency_ms）。
-    前端顶栏的「切换节点下拉」与节点对话框的「其他节点」列表都直接消费本接口。
-    单节点模式（cluster_secret 未设）：peers 永远空，不探活。
-    排除自己——peer 列表来自共享 toml，集群模式下自己的 id 可能在里头。"""
-    me = node.info()
-    cluster_on = peers.is_cluster()
-    out = {"self": me, "cluster": cluster_on, "peers": []}
-    if not cluster_on:
-        return out
-    for p in peers.list_peers():
-        if p["id"] == me["id"]:
-            continue  # 排除自递归
-        r = peers.probe_peer(p)  # 实时探活；前端 15s 轮询无穿透压力
-        entry: dict = {"id": p["id"], "name": p.get("name", ""),
-                       "url": p["url"], "ok": r["ok"],
-                       "show_agents": p.get("show_agents", True)}
-        if r.get("latency_ms") is not None:
-            entry["latency_ms"] = r["latency_ms"]
-        if r["ok"]:
-            entry["info"] = r["info"]
-        else:
-            entry["error"] = r.get("error", "")
-        out["peers"].append(entry)
-    return out
 
 
 @router.get("/api/brains")
@@ -87,12 +58,9 @@ def api_brains(_rec: dict = Depends(require_auth)) -> list[dict]:
 @router.get("/api/versions")
 def api_versions(_rec: dict = Depends(require_auth)) -> dict:
     """xuseek-v2 版本仓库清单（zip 由管理员投放于 versions/，约定见 docs/versions.md）。
-    创建 agent 的 source_version 缺省 = 清单最新版（每 agent 私有副本）。
-    'main' = 共享主源码（过渡期字段，新约定不再推荐），其就绪与否见 main_ready。
-    default_ready = 版本仓库是否非空（实际默认源 = 仓库最新版）。"""
+    创建 agent 的 source_version 缺省 = 清单最新版（每 agent 私有副本）。"""
     return {"repo_dir": str(get_config().versions_dir),
             "default_ready": bool(versions.list_versions()),
-            "main_ready": (get_config().source_dir / "xuseek.sh").exists(),
             "versions": versions.list_versions()}
 
 

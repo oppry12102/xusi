@@ -11,7 +11,7 @@ agent」对话框与 `POST /api/agents` 的 `source_version` 字段都从这里�
 xuseek-v2-<版本号>.zip
 ```
 
-版本号以字母或数字开头，仅含 `字母 数字 . _ -`，≤64 位（`main` 为保留值，请勿用作版本号）。例如：
+版本号以字母或数字开头，仅含 `字母 数字 . _ -`，≤64 位。例如：
 
 - `xuseek-v2-v2.3.0.zip`
 - `xuseek-v2-20260821.zip`
@@ -44,16 +44,13 @@ zip -r /path/to/xusi/versions/xuseek-v2-v2.3.0.zip . \
 
 ## 语义
 
+- **versions/ 是 xuseek-v2 源码的唯一事实源**：新建 agent 一律从这里解压版本包。
 - **缺省（不选版本）→ 本仓库最新版**：源码解压到 `instances/<id>/xuseek-v2/`，
   每实例一份私有副本（首次启动各自构建 `.venv`）——实例目录自洽，**可单独迁移**
   （整个 `instances/<id>/` 拷走即可）；实例之间互不影响，不同 agent 可跑不同版本。
   删除 agent 时副本随实例目录一起进 `.trash`。实际版本记入注册表，创建后不可改。
 - **显式版本** → 用该版本（同样是私有副本）。
-- **共享主源码**（`etc/xusi.toml` 的 `source_dir`，`source_version="main"` 显式选择，
-  或仓库为空时的缺省回落）→ 本地已在 → 直接用（**不需要 GitHub**）；不在 → 创建时
-  试 GitHub 拉取。**共享主源码将逐步废弃**——仅现存 agent 与过渡期显式选择在用，
-  新建 agent 一律默认私有副本。`GET /api/versions` 的 `default_ready` 标示其是否本地就绪。
-- `main` 是保留值（显式选共享主源码），请勿用作版本号。
+- **仓库为空 → 无法创建 agent**（create 报错、doctor FAIL）——请先投放版本包。
 - 已有 agent 不受影响。
 - **存量 agent 升级内核**（「创建后不可改」约束的是创建流程；升级是目录级操作）
   的标准做法见 [kernel-upgrade.md](kernel-upgrade.md)。

@@ -1,18 +1,13 @@
 """主密钥池：etc/brains.toml —— 管理员维护的大脑（LLM 厂商）模板。
 
-创建/改参时从这里取模板，连同 api_key 直写进 agent 的 config.toml（600），
-agent 保持「目录即自主体」的自洽性。key 轮换：改本文件 + PATCH 触发重渲染，
-agent 每个大循环热重载 config，无需重启。
-
-config.toml 整文件重渲染时的**保真义务**（capabilities 契约二）：墟司只写自己
-认识的段；内核/大脑写入的段（如 [capabilities]，及未来一切内核段）原样保真
-回传。能力包分工裁决：墟司只负责种子（内核 init 无条件播），启用与否、依赖
-安装归大脑——墟司不写 [capabilities]，只读它来观察。
+创建 agent 时从这里取模板，连同 api_key 直写进 agent 的 config.toml（600）
+——**只渲染这一次出生配置**。此后 config.toml 归 agent 自治：改 mission /
+换大脑 / 轮换 key / 调预算一律投信让 agent 自己改（内核每个大循环热重载，
+无需重启）。xusi 不再重渲染、不再读回 config.toml。
 """
 from __future__ import annotations
 
 import json
-import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -27,13 +22,6 @@ _OPTIONAL_FIELDS = ("temperature", "timeout", "tier", "price_prompt", "price_com
 # 内核「超顶优雅结束」又按上次成功调用的 prompt_tokens 事后判定——不留余量
 # 的话护栏永远晚一步。预留 8k 让 80% 提醒/优雅收尾先于硬错触发。
 _CONTEXT_RESERVE_TOKENS = 8_192
-
-# config.toml 里墟司拥有（每次渲染重写）的段；其余段一律保真回传。
-# "" = 顶层键（mission/display_timezone）。[brains.*] 用前缀匹配（大脑名动态）。
-_OWNED_SECTIONS = {"", "brain", "agent"}
-_OWNED_PREFIXES = ("brains.",)
-
-_SECTION_RE = re.compile(r"^\s*\[\[?\s*([A-Za-z0-9_.\-]+)\s*\]?\]?\s*(?:#.*)?$")
 
 
 def _load_pool() -> dict[str, dict]:
@@ -131,36 +119,6 @@ def _failover_class(spec: dict) -> str:
     return str(spec.get("tier") or "power")
 
 
-def _owned(section: str) -> bool:
-    return section in _OWNED_SECTIONS or section.startswith(_OWNED_PREFIXES)
-
-
-def extract_foreign_sections(text: str) -> str:
-    """从旧 config.toml 里逐字抽出墟司不认识的段（内核所有，如 [capabilities]）。
-
-    文本级抽取（非 parse→re-serialize）：段头（含 [[array]]）到下一个段头之间的
-    全部行原样保留——键、注释、空行、书写顺序一个不动。顶层键区与墟司自己的段
-    （[brain]/[brains.*]/[agent]）不抽（那些本就该被重渲染覆盖）。
-
-    已知边界：多行字符串里出现形如段头的行会被误切。当前内核段（如
-    [capabilities]）是扁平 k=v、无多行字符串，假设成立；内核若引入多行字符串
-    需要同步这里（改 tomllib round-trip 或按语法跳过字符串体）。
-    """
-    blocks: list[str] = []
-    cur: list[str] = None  # type: ignore[assignment]
-    for line in text.splitlines():
-        m = _SECTION_RE.match(line)
-        if m:
-            if cur is not None:
-                blocks.append("\n".join(cur).rstrip())
-            cur = [line] if not _owned(m.group(1)) else None
-        elif cur is not None:
-            cur.append(line)
-    if cur is not None:
-        blocks.append("\n".join(cur).rstrip())
-    return "\n\n".join(b for b in blocks if b.strip())
-
-
 def render_agent_config(mission: str, brains: list[str], budgets: dict | None = None,
                         display_timezone: str | None = None) -> str:
     """渲染 agent 的 config.toml 全文（注册表数据 → 配置文件，单向渲染）。
@@ -203,9 +161,10 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
 
     lines = [
         "# ═══════════════════════════════════════════════════════════════════",
-        "# 本文件由墟司（xusi 管理面）渲染生成 —— 参数的唯一事实源是管理面注册表。",
-        "# 手工改动会在下次改参时被覆盖；新增大脑请编辑管理面的 etc/brains.toml。",
-        "# 内核所有的段（如 [capabilities]）由墟司保真回传，不在此渲染范围内。",
+        "# 本文件由墟司（xusi 管理面）在创建时渲染一次——出生配置。",
+        "# 此后归你（agent）自治：xusi 不再改写本文件；改 mission / 换大脑 / 调",
+        "# 预算请直接编辑（内核每个大循环热重载，无需重启；改前建议自行备份）。",
+        "# 新大脑的 api_key 可经管理邮箱向管理员索取。",
         "# ═══════════════════════════════════════════════════════════════════",
         "",
         f"mission = {_q(mission)}",
@@ -267,34 +226,11 @@ def write_agent_config(home: Path, mission: str, brains: list[str],
                        budgets: dict | None = None) -> Path:
     """渲染并写入 <home>/config.toml（chmod 600，含 api_key）。
 
-    整文件重渲染前先读旧文件，把墟司不认识的段（内核所有，如 [capabilities]）
-    逐字保真接回文末——保真义务（capabilities 契约二）。首次写入（init 刚生成）
-    时旧文件里的 [capabilities] 由 init --capability 写入，同样被接续保留。
+    只在创建/恢复时调用——出生配置，首写即终写；此后该文件归 agent 自治，
+    xusi 不再读回、不再重渲染。
     """
     text = render_agent_config(mission, brains, budgets)
     p = home / "config.toml"
-    try:
-        old = p.read_text(encoding="utf-8")
-    except Exception:
-        old = ""
-    foreign = extract_foreign_sections(old)
-    if foreign:
-        text = text.rstrip("\n") + "\n\n# ── 以下段为内核所有（墟司保真回传，不渲染）──\n" + foreign + "\n"
     p.write_text(text, encoding="utf-8")
     p.chmod(0o600)
     return p
-
-
-# ── [capabilities] 段的只读观察（契约二：段是实例能力的唯一事实源，归内核/大脑）──
-
-def read_capabilities(home: Path) -> dict[str, bool]:
-    """读 <home>/config.toml 的 [capabilities]（缺段/坏文件 = 全关）。"""
-    try:
-        with (home / "config.toml").open("rb") as f:
-            raw = tomllib.load(f)
-    except Exception:
-        return {}
-    caps = raw.get("capabilities")
-    if not isinstance(caps, dict):
-        return {}
-    return {str(k): bool(v) for k, v in caps.items() if isinstance(v, bool)}

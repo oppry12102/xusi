@@ -1,12 +1,13 @@
 # 建议引入「A-MEM 长期记忆能力」（给墟司的分工建议 · 第二版）
 
-> 状态：**已实施并经裁决收缩（2026-08-22）**。§3.1 渲染保真、只读观察
-> （`GET /api/agents/{id}/capabilities`）、doctor 检查落地；但表单开关、创建
-> 透传（`init --capability`）与存量开关动作在讨论后被**撤除**——最终裁决：
-> **墟司只负责种子（由内核 init 无条件播），剩下的事情交给 agent 自己做**：
-> 不写 `[capabilities]`、不替 agent 预装依赖、不为此重启 agent。启用与否、
-> 依赖安装（run_shell 后台 pip）归大脑。§3.2/§3.3 保留在文中仅作历史记录。
-> 契约文本见版本仓库 zip 内 `docs/capabilities.md`。
+> 状态：**历史提案（本文已不再指导当前代码）**。2026-08-22 已实施并经裁决收缩；
+> **v2 减法重构（2026-08-29）后相关代码路径全部移除**——xusi 与 agent 只剩管理
+> 邮箱通道：不再渲染/保真 config.toml（仅创建时渲染一次）、不再只读观察
+> `[capabilities]` 段、不再调 `xuseek.sh capabilities list` CLI、doctor 不再检查
+> 能力包资产。能力包的种子、启用、依赖安装一律归 agent 自治（内核首启预检
+> 无条件播种——v2.7.4 撤 init，serve/run 预检就是唯一引导点；启用与否、装不装
+> 依赖是 agent 自己的事）。
+> 本文保留仅作思路记录；契约文本见版本仓库 zip 内 `docs/capabilities.md`。
 
 ## 1. 背景：A-MEM 是什么，为什么值得引入
 
@@ -37,7 +38,7 @@ top-k + 链接展开。`~/work/research/amem` 是可独立部署的复现，已�
 | 仓库 | 职责 | 明确不做 |
 |---|---|---|
 | `research/amem` | ① tier 透传（记忆分析走 economy 档，不烧主池）；② 库级钉死嵌入模型（防中途换模型致余弦失真）；③ 打快照 tag 供内核取用 | 不碰内核/管理面仓库 |
-| `research/xuseek-v2` | 能力包格式与资产、无条件幂等播种、`pyproject` extras、`xuseek.sh` 按指纹自愈安装 extras、CLI（`capabilities list` / `init --capability`）、selftest、发版 | 不替大脑注册技能；不自动注入 pack 效果 |
+| `research/xuseek-v2` | 能力包格式与资产、无条件幂等播种、`pyproject` extras、`xuseek.sh` 按指纹自愈安装 extras、CLI（`capabilities list`；`init --capability` 随 v2.7.4 撤 init 作废）、selftest、发版 | 不替大脑注册技能；不自动注入 pack 效果 |
 | **`xusi`（本文）** | 见 §3：渲染保真、表单与开关、doctor、成本展示 | **不碰 pip**；不解析 pack 内容；不硬编码 pack 名 |
 
 两仓之间的全部界面 = 三份冻结契约（详见 `capabilities.md` §2）：
@@ -48,7 +49,8 @@ manifest 格式、`config.toml [capabilities]` 段、两个公开 CLI。契约�
 ### 3.1 config 渲染保真（唯一修改义务，可先行，独立有益）
 
 `brains.write_agent_config` 目前整文件重渲染 `config.toml`。能力开关的事实源是内核
-所有的 `[capabilities]` 段（init 写入），**渲染器必须原样保真回传它不认识的段**——
+所有的 `[capabilities]` 段（内核所有；v2.7.4 已撤 init，机器不代写 config），
+**渲染器必须原样保真回传它不认识的段**——
 否则 step 2 渲染即清掉 step 1 写入的开关。
 
 这不只是为本提案服务：它保护的是未来一切内核段。建议无论本提案何时落地，
@@ -67,9 +69,9 @@ amem = true
 - 创建流程只在既有 spawn 序列上透传一个参数：
 
 ```
-1) _run_cli([..., "init", "--mission", ..., "--capability", "amem", ...])
-   —— init 写 [capabilities] 并播全部 pack 种子；不装包
-2)~6) 渲染 config（须保真 §3.1）/ 注册 / systemd 拉起 / 验收 / 签 token   # 其余不变
+1) 渲染 config.toml（创建时唯一一次）——原提案的 `init --capability` 已随
+   v2.7.4 撤 init 作废；[capabilities] 开关由管理员自写或投信让 agent 自改
+2)~5) 注册 / systemd 拉起 / 验收 / 签 token   # 其余不变
 ```
 
 **依赖安装不需要墟司做任何事**：首次 serve 时 `xuseek.sh` 按双指纹自检补装

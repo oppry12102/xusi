@@ -10,6 +10,13 @@ from typing import Any
 
 MANAGER_UNIT = "xusi.service"
 
+# 默认 PyPI 镜像：本机直连 pypi.org 不可达（DNS 通但 TCP/TLS 握手挂死），
+# xuseek.sh 首次 serve 自愈安装依赖时会卡在网络层分钟级。spawn 时经
+# systemd-run --setenv 注入——保证新建 agent 的 venv 装包秒级完成。
+# 覆盖：env XUSI_UV_INDEX_URL（也同步设 PIP_INDEX_URL 兜底 pip 回落路径）。
+# 设空串 = 关镜像，回退到 pypi.org（不保证可达）。
+DEFAULT_UV_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
 
 class SystemdError(RuntimeError):
     pass
@@ -30,18 +37,24 @@ def spawn_agent(unit: str, source_dir: str, home: str, host: str, port: int) -> 
     """以瞬态单元拉起一个 agent（Restart=always → 崩溃自动重启）。
 
     TimeoutStopSec=20 > xuseek daemon 的 10s 优雅停窗，保证轮边界落盘后再退。
+    PyPI 镜像经 --setenv 注入（xuseek.sh 首启自愈装依赖走它，见 DEFAULT_UV_INDEX_URL）。
     """
+    import os
     if unit_state(unit) == "active":
         raise SystemdError(f"单元 {unit} 已在运行")
-    _run([
+    url = os.environ.get("XUSI_UV_INDEX_URL", DEFAULT_UV_INDEX_URL)
+    cmd = [
         "systemd-run", "--user", "--collect",
         "--unit", unit,
         "-p", "Restart=always",
         "-p", "RestartSec=5",
         "-p", "TimeoutStopSec=20",
-        f"{source_dir}/xuseek.sh", "--home", home,
-        "serve", "--host", host, "--port", str(port),
-    ])
+    ]
+    if url:
+        cmd += ["--setenv", f"UV_INDEX_URL={url}", "--setenv", f"PIP_INDEX_URL={url}"]
+    cmd += [f"{source_dir}/xuseek.sh", "--home", home,
+            "serve", "--host", host, "--port", str(port)]
+    _run(cmd)
 
 
 def unit_state(unit: str) -> str:

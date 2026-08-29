@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- HTML 静态资源不缓存：避免部署新版后用户受旧 JS 影响（见 xusi-ui-bugfix-2026-08-25.md 根因 B） -->
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
@@ -22,8 +21,6 @@
          border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
   header h1{font-size:17px;margin:0;font-weight:650}
   header h1 small{color:var(--sub);font-weight:400;margin-left:8px}
-  #tok{flex:1;max-width:420px;margin-left:auto;padding:6px 10px;border:1px solid var(--line);
-       border-radius:8px;font-family:var(--mono);font-size:12px}
   button{cursor:pointer;border:1px solid var(--line);background:#fff;border-radius:8px;
          padding:6px 13px;font-size:13px;color:var(--ink)}
   button:hover{border-color:var(--acc);color:var(--acc)}
@@ -32,29 +29,11 @@
   button.danger:hover{border-color:var(--err);color:var(--err)}
   button.mini{padding:2px 8px;font-size:11.5px;border-radius:5px}
   button:disabled{opacity:.45;cursor:not-allowed}
-  /* 节点徽章 + peer 切换器（顶栏） */
   #nodebar{display:flex;align-items:center;gap:8px;margin-left:14px}
   #btn-node{display:flex;align-items:center;gap:7px;padding:5px 11px;font-weight:600;
             background:#fff;color:var(--ink);border-radius:8px}
   #btn-node:hover{border-color:var(--acc);color:var(--acc)}
   #btn-node .arr{color:var(--sub);font-size:11px}
-  #btn-node .role{font-size:11px;padding:1px 7px;border-radius:99px;background:#f0f2f7;
-                 color:var(--sub);font-weight:650;text-transform:lowercase}
-  #btn-node .role.worker{background:#e3f4ea;color:var(--ok)}
-  #btn-node .role.backup{background:#fdf3e1;color:var(--warn)}
-  #btn-node .role.portal{background:#eaf0fb;color:var(--acc)}
-  /* peer 列表（节点对话框） */
-  .peer-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px}
-  .peer-row:hover{background:#f5f6fa}
-  .peer-row .dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px}
-  .peer-row .dot.ok{background:var(--ok)}
-  .peer-row .dot.fail{background:var(--err)}
-  .peer-row .mono{font-family:var(--mono);font-size:11.5px;color:var(--sub)}
-  .peer-row .peer-latency{font-size:11px;color:var(--sub);margin-left:auto}
-  .peer-row .open{font-size:11px;padding:1px 8px;border:1px solid var(--line);border-radius:5px;
-                  color:var(--acc);text-decoration:none}
-  .peer-row .open:hover{background:var(--acc);color:#fff;border-color:var(--acc)}
-  /* 远端 agent 标识（在第二行以纯文字展示，不占徽章位） */
   main{max-width:1180px;margin:20px auto;padding:0 22px}
   .bar{display:flex;align-items:center;gap:10px;margin:0 0 14px}
   .bar .hint{color:var(--sub);font-size:12.5px}
@@ -65,17 +44,14 @@
   .card .nm{font-weight:650;font-size:15px}
   .card .aid{color:var(--sub);font-family:var(--mono);font-size:11.5px}
   .card .src{display:flex;gap:8px;align-items:center;margin-top:-2px;font-size:11.5px;color:var(--sub)}
-  .card .src-peer{color:var(--acc)}
   .card .src-exp{color:var(--warn)}
   .badge{display:inline-block;padding:1px 9px;border-radius:99px;font-size:12px;white-space:nowrap}
-  .b-run{background:#e3f4ea;color:var(--ok)} .b-slp{background:#eaf0fb;color:var(--acc)}
-  .b-stop{background:#f0f1f4;color:var(--sub)} .b-pau{background:#efe9fa;color:var(--pause)}
-  .b-err{background:#fae5e5;color:var(--err)}
+  .b-run{background:#e3f4ea;color:var(--ok)} .b-pau{background:#efe9fa;color:var(--pause)}
+  .b-stop{background:#f0f1f4;color:var(--sub)} .b-err{background:#fae5e5;color:var(--err)}
   .row{display:flex;gap:8px;flex-wrap:wrap;color:var(--sub);font-size:12.5px;align-items:center}
   .chip{background:#f0f2f7;border-radius:6px;padding:0 7px;font-size:12px;color:var(--ink)}
   .chip.bcur{background:#eaf0fb;color:var(--acc);font-weight:700}
-  .chip.bsw{cursor:pointer}
-  .chip.bsw:hover{background:#eaf0fb;color:var(--acc)}
+  .chip.conn{background:#e3f4ea;color:var(--ok)}
   .mono{font-family:var(--mono)}
   .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
   .acts button{padding:4px 10px;font-size:12.5px}
@@ -96,7 +72,7 @@
                background:#f6f7fa;padding:4px 10px;border-radius:8px}
   .switch{display:flex;align-items:center;gap:8px}
   .err{color:var(--err);font-size:13px;white-space:pre-wrap}
-  /* ⋯ 卡片溢出菜单 + 新建对话框 tab */
+  .hint{color:var(--sub)}
   .ov{position:relative;display:inline-block}
   .ov-btn{padding:4px 10px;font-size:13px;line-height:1;color:var(--sub)}
   .ov-menu{position:absolute;right:0;top:calc(100% + 4px);background:#fff;
@@ -107,27 +83,15 @@
                   padding:7px 10px;border-radius:6px;font-size:13px;color:var(--ink);font-weight:500}
   .ov-menu button:hover{background:#f6f7fa;color:var(--acc)}
   .ov-menu button.ov-danger:hover{background:#fbe9e9;color:var(--err)}
-  .ov-menu button:disabled{opacity:.4}
   .tabs{display:flex;gap:2px;margin:0 0 12px;border-bottom:1px solid var(--line)}
   .tabs button{border:none;border-radius:8px 8px 0 0;padding:8px 14px;color:var(--sub);background:transparent}
   .tabs button.on{color:var(--acc);box-shadow:inset 0 -2px var(--acc);background:transparent}
-  /* 集群 peer 名册 / 添加对话框 */
-  .install-cmd{font-family:var(--mono);font-size:12px;background:#0f1320;color:#c9e7ff;
-               padding:10px 12px;border-radius:7px;word-break:break-all;line-height:1.55;
-               user-select:all;max-height:90px;overflow:auto;border:1px solid #1f2640}
-  .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line);
-        border-top-color:var(--acc);border-radius:50%;animation:spin 1s linear infinite;
-        vertical-align:-2px;margin-right:6px}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  /* 备份 / 回滚对话框：备份列表（单选） */
   .bklist{display:flex;flex-direction:column;gap:5px;max-height:240px;overflow:auto}
   .bkrow{display:flex;gap:9px;align-items:center;padding:7px 10px;border:1px solid var(--line);
          border-radius:8px;cursor:pointer;font-size:13px}
   .bkrow.on{border-color:var(--acc);background:#f5f8ff}
   .bkrow .ts{font-family:var(--mono);font-size:12px;color:var(--sub)}
-  .bkrow .sz{color:var(--sub);font-size:12px;margin-left:auto}
   .bkrow .rs{font-size:12px;color:var(--sub)}
-  /* 详情抽屉 */
   #drawer{position:fixed;top:0;right:-620px;width:min(600px,96vw);height:100vh;background:#fff;
           border-left:1px solid var(--line);transition:right .18s;z-index:20;display:flex;
           flex-direction:column;box-shadow:-8px 0 30px rgba(20,26,40,.08)}
@@ -143,91 +107,20 @@
             font-family:var(--mono);white-space:pre-wrap;word-break:break-all}
   .kv{display:grid;grid-template-columns:130px 1fr;gap:4px 10px;font-size:13px}
   .kv b{color:var(--sub);font-weight:400}
-  .ev{border-left:3px solid var(--line);padding:4px 10px;margin-bottom:6px;font-size:12.5px}
-  .ev .t{color:var(--sub);font-family:var(--mono);font-size:11.5px}
-  .mailrow{padding:7px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:7px;font-size:13px}
+  .mailrow{padding:7px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:7px;font-size:13px;
+           white-space:pre-wrap;word-break:break-word}
   .mailrow .t{color:var(--sub);font-size:11.5px;font-family:var(--mono)}
-  /* 呼吸（会话）总结列表：点行展开全文 */
-  details.sessrow{border:1px solid var(--line);border-radius:8px;margin-bottom:7px;overflow:hidden}
-  details.sessrow summary{cursor:pointer;padding:7px 10px;font-size:12.5px;display:flex;gap:8px;
-      align-items:center;flex-wrap:wrap;list-style:none;color:var(--ink)}
-  details.sessrow summary::-webkit-details-marker{display:none}
-  details.sessrow summary:hover{background:#f6f7fa}
-  details.sessrow[open] summary{border-bottom:1px solid var(--line);background:#f9fafc}
-  .sessbody{padding:8px 12px}
-  .sesskv{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;font-size:11.5px;color:var(--sub)}
-  .tokrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dashed var(--line)}
-  .tokrow code{font-family:var(--mono);font-size:11.5px;word-break:break-all;flex:1}
   .sendbox{display:flex;gap:8px;margin:10px 0}
   .sendbox textarea{min-height:52px}
-  #login-tip{margin:60px auto;max-width:420px;text-align:center;color:var(--sub)}
-  .spin{display:inline-block;width:12px;text-align:center}
-  /* 服务 tab 与 API 探索器 */
-  .svcrow{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px}
-  .svcrow .hd{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .dot{width:9px;height:9px;border-radius:99px;display:inline-block;background:#c3c9d6;flex:none}
-  .dot.ok{background:var(--ok)} .dot.bad{background:var(--err)}
-  .svcrow .acts{margin-top:8px}
-  #xp{position:fixed;inset:0;background:#fff;z-index:30;display:none;flex-direction:column}
-  #xp.on{display:flex}
-  #xp .xh{display:flex;align-items:center;gap:10px;padding:10px 18px;border-bottom:1px solid var(--line)}
-  #xp .xb{flex:1;display:flex;min-height:0}
-  #xp .xl{width:330px;flex:none;border-right:1px solid var(--line);overflow:auto;padding:10px 12px}
-  #xp .xr{flex:1;overflow:auto;padding:14px 18px;display:flex;flex-direction:column;gap:12px}
-  #xp pre{background:#f6f7fa;border-radius:8px;padding:10px;font-size:12px;overflow:auto;
-          font-family:var(--mono);white-space:pre-wrap;word-break:break-all}
-  .ep{display:flex;gap:7px;align-items:center;padding:5px 8px;border-radius:8px;cursor:pointer;font-size:12.5px}
-  .ep:hover{background:#f2f4f8} .ep.on{background:#eaf0fb}
-  .ep .p{font-family:var(--mono);font-size:11.5px;word-break:break-all}
-  .mb{display:inline-block;min-width:44px;text-align:center;border-radius:5px;font-size:10.5px;
-      font-weight:700;color:#fff;padding:1px 5px;font-family:var(--mono);flex:none}
-  .m-get{background:#2e8b57}.m-post{background:#2b5fdb}.m-put{background:#b3760a}
-  .m-delete{background:#c23b3b}.m-patch{background:#7a5bd6}
-  .fld{display:flex;gap:10px;align-items:center;margin-bottom:7px}
-  .fld label{flex:none;width:170px;margin:0;font-size:12.5px;word-break:break-all}
-  .fld input,.fld select,.fld textarea{flex:1}
-  .fld input[type=checkbox]{flex:none}
-  .respbar{display:flex;gap:12px;align-items:baseline;font-size:12.5px;color:var(--sub);flex-wrap:wrap}
-  .vbar{display:flex;gap:6px;margin:2px 0 8px}
-  .vbar button{padding:3px 11px;font-size:12.5px}
-  .vbar button.on{border-color:var(--acc);color:var(--acc);background:#eaf0fb}
-  table.jt{border-collapse:collapse;font-size:12px;margin-top:6px}
-  table.jt th,table.jt td{border:1px solid var(--line);padding:4px 8px;text-align:left;max-width:280px;
-      overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  table.jt th{background:#f6f7fa;font-weight:600}
-  table.jt th.dim{color:var(--sub);font-weight:400;font-style:italic}
-  details.cell summary{cursor:pointer;color:var(--acc);font-size:11.5px;list-style:none}
-  details.cell summary::-webkit-details-marker{display:none}
-  details.cell pre{margin:6px 0 2px;font-size:11px;white-space:pre-wrap;word-break:break-all;
-      max-width:360px;max-height:220px;overflow:auto;background:#f6f7fa;border-radius:6px;padding:8px}
-  .mdcard{border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:10px}
-  .mdmeta{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
-  .mdsec{margin:8px 0 2px}
-  .mdsec .secl{font-size:11.5px;color:var(--sub);margin-bottom:2px}
-  .mdsec ul{margin:2px 0;padding-left:1.5em}
-  .mdsec li p{margin:0}
-  .md{line-height:1.7;font-size:13.5px}
-  .md h1,.md h2,.md h3,.md h4{margin:.7em 0 .35em}
-  .md h1{font-size:1.35em}.md h2{font-size:1.2em}.md h3{font-size:1.08em}
-  .md p{margin:.45em 0}
-  .md pre{background:#f6f7fa;border-radius:8px;padding:10px;overflow:auto;font-family:var(--mono);font-size:12px}
-  .md code{font-family:var(--mono);background:#f0f2f7;border-radius:4px;padding:0 4px;font-size:.92em}
-  .md pre code{background:none;padding:0}
-  .md ul,.md ol{margin:.45em 0;padding-left:1.6em}
-  .md blockquote{margin:.5em 0;padding:2px 12px;border-left:3px solid var(--line);color:var(--sub)}
-  .md table{border-collapse:collapse;margin:.6em 0;font-size:12.5px}
-  .md th,.md td{border:1px solid var(--line);padding:4px 9px}
-  .md th{background:#f6f7fa}
-  .md a{color:var(--acc)}
+  #login-tip{margin:60px auto;max-width:440px;text-align:center;color:var(--sub)}
 </style>
 </head>
 <body>
 <header>
   <h1>墟司 <small>xuseek 智能体管理面 · <span id="ver"></span></small></h1>
   <div id="nodebar">
-    <button id="btn-node" title="本节点信息 / 切换 / 改名">
+    <button id="btn-node" title="本节点信息 / 改名">
       <span id="node-name">…</span>
-      <span class="role" id="node-role">…</span>
       <span class="arr">▾</span>
     </button>
   </div>
@@ -236,61 +129,30 @@
   <button id="btn-new" class="pri">＋ 新建 agent</button>
 </header>
 
-<!-- 节点切换 / 改名 / 关于 -->
+<!-- 节点信息 / 改名 -->
 <dialog id="dlg-node">
-  <div class="dlg-h">节点 <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">当前节点身份、peer 切换、改名</span>
+  <div class="dlg-h">节点 <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">当前节点身份与改名</span>
     <button onclick="document.getElementById('dlg-node').close()" style="margin-left:auto">✕</button></div>
   <div class="dlg-b">
     <div style="border:1px solid var(--line);border-radius:10px;padding:11px 13px">
-      <div style="font-weight:650;margin-bottom:6px">当前 · <span id="dnode-name"></span>
-        <span class="role" id="dnode-role" style="margin-left:6px"></span></div>
+      <div style="font-weight:650;margin-bottom:6px">当前 · <span id="dnode-name"></span></div>
       <div class="kv" style="font-size:12px">
         <b>id</b><span class="mono" id="dnode-id"></span>
         <b>version</b><span class="mono" id="dnode-ver"></span>
-        <b>url</b><span class="mono" id="dnode-url"></span>
       </div>
       <div style="display:flex;gap:8px;margin-top:9px" id="dnode-actions"></div>
     </div>
-    <div>
-      <div style="font-weight:650;margin:6px 0 6px;display:flex;align-items:center;justify-content:space-between">
-        <span>其他节点 <span style="color:var(--sub);font-weight:400;font-size:12px">（peer 名册）</span></span>
-        <button onclick="openPeerAddDialog()" id="btn-peer-add" hidden style="font-size:12px;padding:3px 10px">＋ 添加</button>
-      </div>
-      <div id="dnode-peers" style="border:1px dashed var(--line);border-radius:10px;padding:18px;color:var(--sub);font-size:12.5px;text-align:center">
-        尚未配置对等节点。<br>
-        <span style="font-size:11.5px">在 etc/peers.toml 里加 [[peers]] 条目后这里会出现其它 xusi 的入口。</span>
-      </div>
+    <div style="border:1px dashed var(--line);border-radius:10px;padding:14px;color:var(--sub);font-size:12.5px;margin-top:12px">
+      与 agent 的唯一通道是<b>管理邮箱</b>：你投信（agent 呼吸时收取）；agent 回信写 outbox（这里展示）。
+      agent 之间的互联：agent 自发行互联 token + 端口，经邮箱发布登记；也可经邮箱申请其它 agent 的地址与 token。
     </div>
   </div>
   <div class="dlg-f"><button onclick="document.getElementById('dlg-node').close()">关闭</button></div>
 </dialog>
 
-<!-- 添加对等节点：admin only。先把对端 [cluster].secret 与本节点同步一致，再注册到本机名册。 -->
-<dialog id="dlg-peer-add">
-  <div class="dlg-h">添加对等节点 <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">把已有 xusi 加为 peer</span>
-    <button onclick="closePeerAdd()" style="margin-left:auto">✕</button></div>
-  <div class="dlg-b">
-    <p class="hint" style="color:var(--sub);font-size:12.5px;margin:0 0 10px">
-      peer 已装好且 <code class="mono">[cluster].secret</code> 与本节点一致——填它的 URL 与可选名字，立即注册到本节点名册。
-      新节点引导走 CLI：
-      <code class="mono">xusi init --cluster-secret &lt;本节点的 secret&gt;</code> → 装好服务 → 双向 <code class="mono">xusi peer add</code>。
-    </p>
-    <div><label>peer URL（管理面入口，如 http://10.0.16.15:8601）</label>
-      <input type="text" id="pa-exist-url" placeholder="http://…"></div>
-    <div><label>显示名（可空，用 peer 自报）</label>
-      <input type="text" id="pa-exist-name" maxlength="64"></div>
-    <div style="display:flex;gap:8px;margin-top:10px">
-      <button class="pri" id="pa-exist-go">注册并探活</button>
-    </div>
-    <div id="pa-exist-result" hidden style="margin-top:12px;font-size:13px"></div>
-    <div class="err" id="pa-exist-err" hidden></div>
-  </div>
-  <div class="dlg-f"><button onclick="closePeerAdd()">关闭</button></div>
-</dialog>
-
-<!-- 改名（admin only） -->
+<!-- 改名 -->
 <dialog id="dlg-rename">
-  <div class="dlg-h">改本节点显示名 <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">仅 UI 展示；id / role 不改</span>
+  <div class="dlg-h">改本节点显示名 <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">仅 UI 展示；id 不改</span>
     <button onclick="document.getElementById('dlg-rename').close()" style="margin-left:auto">✕</button></div>
   <div class="dlg-b">
     <div><label>新名字</label><input type="text" id="rename-input" maxlength="64"></div>
@@ -302,7 +164,7 @@
 <main>
   <div class="bar">
     <span class="hint" id="summary"></span>
-    <span class="hint" style="margin-left:auto">看板每 15s 自动刷新（打开详情时暂停，观察/操作不被打扰）</span>
+    <span class="hint" style="margin-left:auto">看板每 15s 自动刷新（打开详情时暂停）</span>
   </div>
   <div id="login-tip" hidden>
     <p style="font-size:15px;color:var(--ink)">请打开带 token 的链接认证（推荐）</p>
@@ -313,9 +175,7 @@
       <input id="tip-tok" type="text" placeholder="管理面 token" spellcheck="false" style="font-family:var(--mono);font-size:12px">
       <button id="tip-login" class="pri">认证</button>
     </div>
-    <p style="margin-top:14px">管理面 token = <code class="mono">etc/xusi.toml</code> 的 <code class="mono">[cluster].secret</code>。
-      集群互通（两端同 secret = 同集群），本节点可用 <code class="mono">xusi status</code> 查看；
-      新 xusi 加入集群：<code class="mono">xusi init --cluster-secret &lt;值&gt;</code> 后双向 <code class="mono">xusi peer add</code>。</p>
+    <p style="margin-top:14px">管理面 token = <code class="mono">etc/xusi.toml</code> 的 <code class="mono">[admin].secret</code>。</p>
   </div>
   <div id="cards"></div>
 </main>
@@ -331,14 +191,14 @@
 
     <div id="f-tab-blank">
       <div><label>名称</label><input id="f-name" type="text" placeholder="如：astronomy（生成 id：astronomy-xxxx）"></div>
-      <div><label>使命 mission（agent 围绕它自主工作，随时可改、热生效）</label>
+      <div><label>使命 mission（创建时渲染进 config.toml 一次；此后归 agent 自治，改它请投信）</label>
         <textarea id="f-mission" placeholder="持续获取中国A股的交易数据，形成本地数据库，并对外提供查询服务。"></textarea></div>
-      <div><label>大脑（首个为默认；顺序 = 故障转移序；密钥由管理面代持）</label>
+      <div><label>大脑（首个为默认；顺序 = 故障转移序；密钥由管理面代持进出生配置）</label>
         <div id="f-brains" class="check"></div></div>
-      <div><label>xuseek-v2 版本（源码副本随实例隔离、实例可单独迁移，创建后不可改；缺省 = 仓库最新版）</label>
+      <div><label>xuseek-v2 版本（源码副本随实例隔离；缺省 = 仓库最新版）</label>
         <select id="f-version"><option value="">最新版本</option></select></div>
       <div style="display:flex;gap:12px">
-        <div style="flex:1"><label>端口（8601–8699，缺省自动分配）</label>
+        <div style="flex:1"><label>端口（缺省自动分配）</label>
           <select id="f-port"><option value="">自动分配</option></select></div>
         <div style="flex:1;display:flex;align-items:end"><div class="switch">
           <input id="f-expose" type="checkbox"><label for="f-expose" style="margin:0">暴露外网（监听 0.0.0.0）</label>
@@ -346,28 +206,21 @@
       </div>
       <div><label>备注（可选）</label><input id="f-note" type="text"></div>
       <div id="f-err" class="err"></div>
-      <div class="hint" style="color:var(--sub);font-size:12px">
-        默认仅监听 127.0.0.1，外部一律经管理面（端口 <span class="mono" id="f-myport"></span>）反代访问；勾选「暴露外网」才会直接对外监听所选端口。
-      </div>
     </div>
 
     <div id="f-tab-clone" hidden>
-      <div><label>选备份（从本地 etc/backups/ 库）</label>
+      <div><label>选择备份（本地 etc/backups/）</label>
         <select id="f-cbkey"><option value="">（加载中…）</option></select></div>
-      <div style="display:flex;gap:10px">
-        <div style="flex:1"><label>新 agent id（必填；可加 -clone 后缀）</label>
-          <input id="f-cnewid" type="text" placeholder="如：astronomy-clone"></div>
-        <div style="flex:1"><label>端口（留空 = 自动分配）</label>
-          <select id="f-cport"><option value="">自动分配</option></select></div>
-      </div>
-      <div><label>大脑（从 xusi 大脑池选；默认勾选备份 meta 里的大脑，可改）</label>
-        <div id="f-cbrains" class="check">（选备份后展示）</div></div>
+      <div><label>新 id（字母数字下划线连字符）</label>
+        <input id="f-cnewid" type="text" placeholder="如：agent-xxxx-clone"></div>
+      <div><label>端口（缺省自动分配）</label>
+        <select id="f-cport"><option value="">自动分配</option></select></div>
+      <div><label>大脑（默认勾选备份里的；缺失项 disabled）</label>
+        <div id="f-cbrains" class="check"></div></div>
       <div id="f-cerr" class="err"></div>
       <div class="hint" style="color:var(--sub);font-size:12px">
-        名称 / 使命不在此填（沿用备份；改参对话框随时热改）。
+        名称 / 使命沿用备份（改参对话框只能改簿记——mission 归 agent 自治，投信让它改）。
         备注自动写「从备份克隆于 YYYY-MM-DD」。
-        流程 = 解压备份 → 从 versions/ 重建该 agent 的 xuseek-v2 私有副本 → 注册到管理面 → 启动。
-        备份里没有的（.venv/、xuseek-v2/、缓存、token 文件）会按本地现状重建。
       </div>
     </div>
   </div>
@@ -375,13 +228,13 @@
     <button id="btn-create" class="pri">创建并启动</button></div>
 </dialog>
 
-<!-- 备份对话框（卡片 ⋯ → 备份） -->
+<!-- 备份对话框 -->
 <dialog id="dlg-backup">
   <div class="dlg-h">📦 备份 agent <button onclick="dlgBackup.close()">✕</button></div>
   <div class="dlg-b">
-    <p class="hint" style="color:var(--sub);margin:0">把当前 agent 的 <code class="mono">data/</code> + <code class="mono">workspace/</code> + <code class="mono">config.toml</code> 打成 tar 包到本地 etc/backups/。
+    <p class="hint" style="margin:0">把当前 agent 的 <code class="mono">data/</code> + <code class="mono">workspace/</code> + <code class="mono">config.toml</code> 打成 tar 包到本地 etc/backups/。
       排除：<code>.venv/</code>、<code>xuseek-v2/</code>、<code>__pycache__/</code>、<code>*.pyc</code>、<code>webui_tokens.json</code>。
-      期间 SIGSTOP 冻结 1–3 秒，对 sleeping agent 几乎无感。</p>
+      运行中备份 = SIGSTOP 冻结窗快照（jsonl 为追加型文件，一致性风险低）。</p>
     <div><label>agent</label>
       <div id="bk-id" class="mono" style="font-size:13px;color:var(--sub)"></div></div>
     <div><label>备份原因（写入 meta）</label>
@@ -392,11 +245,11 @@
     <button id="btn-backup-go" class="pri">开始备份</button></div>
 </dialog>
 
-<!-- 回滚对话框（卡片 ⋯ → 回滚）—— 语义：原地还原（同 id + 同端口），不改名、不换端口 -->
+<!-- 回滚对话框：原地还原（同 id + 同端口） -->
 <dialog id="dlg-restore">
   <div class="dlg-h">↺ 回滚 agent <button onclick="dlgRestore.close()">✕</button></div>
   <div class="dlg-b">
-    <p class="hint" style="color:var(--sub);margin:0">从本地 etc/backups/ 选一个备份，<b>原地还原到当前 agent</b>（沿用原 id 与原端口；
+    <p class="hint" style="margin:0">从本地 etc/backups/ 选一个备份，<b>原地还原到当前 agent</b>（沿用原 id 与原端口；
       内部走 stop → 删旧实例 → 解压备份 → 重启）。要改名 / 换端口克隆新实例请走「新建 agent → 从备份克隆」。</p>
     <div><label>原 agent</label>
       <div id="rs-id" class="mono" style="font-size:13px;color:var(--sub)"></div></div>
@@ -411,9 +264,8 @@
 <!-- 详情抽屉 -->
 <div id="drawer">
   <div class="dh"><span class="nm" id="d-nm"></span><span class="aid mono" id="d-id" style="color:var(--sub);font-size:12px"></span>
-    <button id="d-refresh" onclick="loadDetail()" style="margin-left:auto" title="手动刷新（详情打开期间自动刷新已暂停，数据不会被刷掉）">⟳</button>
+    <button id="d-refresh" onclick="loadDetail()" style="margin-left:auto" title="手动刷新">⟳</button>
     <button id="d-edit" onclick="openEdit(cur)" hidden>✎ 改参</button>
-    <a id="d-ui" href="#" target="_blank" style="font-size:12.5px">观测台 ↗</a>
     <button onclick="closeDetail()" title="关闭并恢复看板 15s 自动刷新">✕</button></div>
   <div id="tabs"></div>
   <div id="pane"></div>
@@ -424,11 +276,6 @@
   <div class="dlg-h">改参 <button onclick="dlgEdit.close()">✕</button></div>
   <div class="dlg-b">
     <div><label>名称</label><input id="e-name" type="text"></div>
-    <div><label>使命 mission（热生效：下一口呼吸起 agent 围绕新使命工作）</label>
-      <textarea id="e-mission"></textarea></div>
-    <div><label>大脑（勾选参与的大脑；<b>默认大脑 = 列表中第一个勾选的</b>，顺序 = 故障转移序；
-      勾选变化热生效。日常切默认可直接在看板卡片上点大脑徽章）</label>
-      <div id="e-brains" class="check"></div></div>
     <div style="display:flex;gap:12px">
       <div style="flex:1"><label>端口（改端口需重启进程）</label>
         <select id="e-port"></select></div>
@@ -439,40 +286,28 @@
     <div><label>备注（可选）</label><input id="e-note" type="text"></div>
     <div id="e-err" class="err"></div>
     <div class="hint" style="color:var(--sub);font-size:12px">
-      mission / 大脑 / 备注 为热改参：写注册表并重渲染 config.toml，agent 下一口呼吸自动重读，不打断运行中的会话；
-      端口 / 暴露开关 改的是监听参数，需重启进程（提交时询问）。
+      这里只能改簿记与进程监听参数。mission / 大脑 / 预算在创建后归 <b>agent 自治</b>——
+      改它们请到「信箱」tab 投信，让 agent 自己修改自己的 config.toml（每口呼吸热重载）。
     </div>
   </div>
   <div class="dlg-f"><button onclick="dlgEdit.close()">取消</button>
     <button id="btn-edit-save" class="pri">保存</button></div>
 </dialog>
 
-<!-- API 探索器（全宽覆盖层，覆盖在抽屉之上） -->
-<div id="xp">
-  <div class="xh">
-    <button onclick="closeExplorer()">← 返回</button>
-    <b id="xp-title"></b>
-    <span class="hint" id="xp-sub" style="color:var(--sub);font-size:12.5px"></span>
-    <a id="xp-docs" href="#" target="_blank" style="margin-left:auto;font-size:12.5px">原生文档 ↗</a>
-  </div>
-  <div class="xb"><div class="xl" id="xp-list"></div><div class="xr" id="xp-main"></div></div>
-</div>
-
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
-const dlgNew = document.getElementById("dlg-new");   // id 带连字符，无隐式全局，须显式取
+const dlgNew = document.getElementById("dlg-new");
 const dlgEdit = document.getElementById("dlg-edit");
 const dlgBackup = document.getElementById("dlg-backup");
 const dlgRestore = document.getElementById("dlg-restore");
+const drawer = document.getElementById("drawer");
 const TOKKEY = "xusi_token";
 let tok = localStorage.getItem(TOKKEY) || "";
 let me = null, pollTimer = null;
 let cur = null, curTab = "状态";
-let agentsCache = [];   // 看板最近一次的 agent 列表（卡片上的大脑切换要用完整档案）
+let agentsCache = [];
 
-// URL 带 token 直达：/ ?mtoken=<token>（或 ?token=）。认证一次存 localStorage，
-// 随即从地址栏抹掉（token 不留在浏览器历史/地址栏）；之后直接打开 / 即可
 {
   const q = new URLSearchParams(location.search);
   const urlTok = (q.get("mtoken") || q.get("token") || "").trim();
@@ -485,9 +320,13 @@ let agentsCache = [];   // 看板最近一次的 agent 列表（卡片上的大�
 
 $("#tip-url").textContent = `http://${location.hostname || "<IP>"}:${location.port}/?mtoken=<token>`;
 $("#ver").textContent = "";
-// 节点徽章：先拉（无论是否登录都要显示"这是哪台机器"）
 loadNode();
 document.getElementById("btn-node").onclick = openNodeDialog;
+document.getElementById("btn-new").onclick = openNew;
+document.getElementById("btn-logout").onclick = logout;
+document.getElementById("tip-login").onclick = login;
+document.getElementById("tip-tok").addEventListener("keydown",
+  e => { if (e.key === "Enter") login(); });
 document.getElementById("rename-go").onclick = doRename;
 document.getElementById("rename-input").addEventListener("keydown",
   e => { if (e.key === "Enter") doRename(); });
@@ -525,120 +364,21 @@ function logout() {
   location.reload();
 }
 
-/* ── 节点徽章 / 切换 / 改名 ─────────────────────────────── */
-let nodeInfo = null;     // /api/peer/id 缓存
-let nodeCluster = null;  // /api/cluster 缓存（self + peers[]）
-let peersById = {};      // peer id → peer 记录（给 _via 徽章取名用）
-
-// 远端 agent = 注册在 peer 上的（list 项里带 _via 字段，卡片"来自 peer X"徽章
-// 与端口 chip 直接判 a._via）。单凭证体系下：admin 凭 cluster_secret 在任何
-// xusi 都通配，写路径全部开放——远端时 forward 给 peer，peer 用同一密钥
-// verify 后由 peer 自己执行。
-let meAdmin = false;     // 缓存：从 me.role 派生（未登录为 false）
+/* ── 节点徽章 / 改名 ─────────────────────────────── */
+let nodeInfo = null;
+let meAdmin = false;
 
 async function loadNode() {
-  // 无鉴权也能拿——便于登录前就显示这是哪台机器
   try {
-    const r = await fetch("/api/peer/id");
+    const r = await fetch("/api/node");
     nodeInfo = await r.json();
   } catch (e) {
-    nodeInfo = {name: "(未连接)", role: "?", id: "?", version: "?", url: location.origin};
+    nodeInfo = {name: "(未连接)", id: "?", version: "?"};
   }
   $("#node-name").textContent = nodeInfo.name || "?";
-  const r = $("#node-role");
-  r.textContent = nodeInfo.role || "?";
-  r.className = "role " + (nodeInfo.role || "");
-  // 同步 dialog 内容（如果开着）
-  ["dnode-name", "dnode-id", "dnode-ver", "dnode-url", "dnode-role"].forEach(() => {});
   $("#dnode-name").textContent = nodeInfo.name || "?";
   $("#dnode-id").textContent = nodeInfo.id || "?";
   $("#dnode-ver").textContent = nodeInfo.version || "?";
-  $("#dnode-url").textContent = nodeInfo.url || "?";
-  $("#dnode-role").textContent = nodeInfo.role || "?";
-  $("#dnode-role").className = "role " + (nodeInfo.role || "");
-  // 集群视图（带鉴权；未登录降级到空列表——不影响顶栏显示）
-  try {
-    const headers = tok ? {"authorization": "Bearer " + tok} : {};
-    const rc = await fetch("/api/cluster", {headers});
-    if (rc.ok) {
-      nodeCluster = await rc.json();
-      peersById = {};
-      (nodeCluster.peers || []).forEach(p => { peersById[p.id] = p; });
-      renderPeerList(nodeCluster.peers || []);
-    }
-  } catch (e) {
-    nodeCluster = {self: nodeInfo, cluster: false, peers: []};
-  }
-}
-
-async function deletePeer(peerId, name) {
-  if (!confirm(`从本机 peer 名册移除「${name}」？\n只影响本机——对方仍然认识你（除非对方也删）。`)) return;
-  try {
-    await api(`/api/peers/${encodeURIComponent(peerId)}`, {method: "DELETE"});
-    await loadNode();   // 重拉并重渲染
-  } catch (e) { alert("删除失败：" + e.message); }
-}
-
-async function togglePeerVisibility(peerId, curShow) {
-  const next = !curShow;
-  try {
-    await api(`/api/peers/${encodeURIComponent(peerId)}/visibility`, {
-      method: "POST", body: JSON.stringify({show_agents: next})});
-    await loadNode();   // 先刷 /api/cluster：peersById 拿到 show_agents 新值
-                        // （显隐过滤读它）+ 节点对话框按钮文案
-    await refresh();    // 再刷 cards——用新值渲染，切换即时生效
-  } catch (e) { alert("切换失败：" + e.message); }
-}
-
-function renderPeerList(peers) {
-  const el = $("#dnode-peers");
-  if (!peers || !peers.length) {
-    el.innerHTML = `<div style="color:var(--sub);font-size:12.5px;padding:6px 4px">
-      单节点模式或尚未注册 peer。<br>
-      在 etc/peers.toml 加 <code>[[peers]]</code>，或登录后用
-      <code>POST /api/peers</code> 注册对等节点。
-    </div>`;
-    return;
-  }
-  el.innerHTML = peers.map(p => {
-    const dot = p.ok ? "ok" : "fail";
-    const name = esc(p.name || p.id);
-    const idShort = esc(p.id);
-    const tail = p.ok ? `${p.latency_ms}ms` : esc(p.error || "不可达");
-    const peerUrl = esc(p.url).replace(/\/+$/, "") + "/";
-    const openHref = `${peerUrl}?mtoken=${encodeURIComponent(tok)}`;
-    const show = p.show_agents !== false;  // 后端老数据缺省补 true
-    // 按钮文案 = 动作（不是状态）：当前显示着 → 「隐藏」（点了会隐藏）；
-    // 当前隐藏着 → 「显示」（点了会显示）。data-* + addEventListener 取代
-    // inline onclick 内嵌参数——后者会被 HTML 实体解码（esc 把 ' 转 &#39;）
-    // 破坏 JS 字面量，peer 名带单引号就 syntax error。
-    const visBtn = meAdmin
-      ? `<button class="mini vis-toggle" data-peer-id="${idShort}" data-show="${show}"
-           title="${show ? "在 fan-in 视图里隐藏该 peer 的 agents" : "在 fan-in 视图里显示该 peer 的 agents"}"
-           style="${show ? "" : "color:var(--sub)"}">${show ? "隐藏" : "显示"}</button>`
-      : "";
-    const delBtn = meAdmin
-      ? `<button class="danger mini del-peer" data-peer-id="${idShort}" data-name="${name}"
-           title="从本机 peer 名册移除">删</button>`
-      : "";
-    return `<div class="peer-row">
-      <span class="dot ${dot}" title="${p.ok ? "可达" : "不可达"}"></span>
-      <b>${name}</b>
-      <span class="mono">${idShort}</span>
-      <a class="open" href="${openHref}" target="_blank" rel="noopener">打开</a>
-      <span class="peer-latency">${tail}</span>
-      ${visBtn}
-      ${delBtn}
-    </div>`;
-  }).join("");
-  // 事件代理：避免 inline onclick 内嵌参数被 HTML 实体解码破坏 JS 字面量
-  el.querySelectorAll(".vis-toggle").forEach(b => {
-    b.addEventListener("click", () => togglePeerVisibility(
-      b.dataset.peerId, b.dataset.show === "true"));
-  });
-  el.querySelectorAll(".del-peer").forEach(b => {
-    b.addEventListener("click", () => deletePeer(b.dataset.peerId, b.dataset.name));
-  });
 }
 
 function openNodeDialog() {
@@ -650,49 +390,7 @@ function openNodeDialog() {
     b.onclick = () => { document.getElementById("dlg-node").close(); openRenameDialog(); };
     acts.appendChild(b);
   }
-  $("#btn-peer-add").hidden = !(meAdmin && tok && nodeCluster.cluster);
-  // 打开时重渲一次 peer 行——保证 meAdmin 变化（如刚登 admin）后删按钮就出现
-  if (nodeCluster && nodeCluster.peers) renderPeerList(nodeCluster.peers);
   document.getElementById("dlg-node").showModal();
-}
-
-// ── 添加对等节点对话框（admin only）────────────────
-function openPeerAddDialog() {
-  document.getElementById("dlg-node").close();
-  document.getElementById("dlg-peer-add").showModal();
-}
-function closePeerAdd() {
-  document.getElementById("dlg-peer-add").close();
-}
-
-$("#pa-exist-go").onclick = doAddExisting;
-
-// Tab 2: 已有 xusi 加为 peer（补回 commit b71a618 漏掉的定义——见
-// xusi-ui-bugfix-2026-08-25.md 根因 A：onclick 引用却未定义 → 整个
-// <script> 在该行 ReferenceError 中断，后续 refresh(true) 不跑，UI 空）
-async function doAddExisting() {
-  $("#pa-exist-err").hidden = true;
-  $("#pa-exist-go").disabled = true;
-  try {
-    const url = $("#pa-exist-url").value.trim();
-    const name = $("#pa-exist-name").value.trim();
-    if (!url) {
-      $("#pa-exist-err").textContent = "URL 不能为空";
-      $("#pa-exist-err").hidden = false;
-      return;
-    }
-    const r = await api("/api/peers", {method: "POST", body: JSON.stringify({url, name})});
-    $("#pa-exist-result").innerHTML =
-      `<span style="color:var(--ok)">✓ 已注册</span> ` +
-      `<b>${esc(r.name || r.id)}</b>（${esc(r.url)}）`;
-    $("#pa-exist-result").hidden = false;
-    loadNode();   // 顺手刷新节点对话框的名册
-  } catch (e) {
-    $("#pa-exist-err").textContent = e.message;
-    $("#pa-exist-err").hidden = false;
-  } finally {
-    $("#pa-exist-go").disabled = false;
-  }
 }
 
 async function openRenameDialog() {
@@ -720,7 +418,7 @@ const fmtDur = s => { if (!s) return "-"; const d = new Date(s); const ms = Date
 /* ── 看板 ─────────────────────────────────────────── */
 async function refresh(first = false) {
   if (!tok) { setLogin(); return; }
-  if (first && !pollTimer) pollTimer = setInterval(refresh, 15000);   // 先武装：首拉失败也保住轮询自愈
+  if (first && !pollTimer) pollTimer = setInterval(refresh, 15000);
   try {
     const [h, who, list] = await Promise.all([
       fetch("/api/health").then(r => r.json()),
@@ -728,51 +426,35 @@ async function refresh(first = false) {
     me = who;
     meAdmin = (who.role === "admin");
     $("#ver").textContent = "v" + h.version;
-    const vis = visibleAgents(list);
-    $("#hstate").textContent = `管理员 · ${vis.length} 个 agent`;
+    $("#hstate").textContent = `管理员 · ${list.length} 个 agent`;
     $("#btn-logout").hidden = false;
     $("#login-tip").hidden = true;
-    agentsCache = list;      // 完整档案（详情/大脑切换）
-    renderCards(vis);        // 显示层按 show_agents 过滤
-    // meAdmin 改变后重渲 peer 行——「删」按钮 admin-only；startup 时 meAdmin=false
-    // 首次渲染的 HTML 没按钮，登录后才补
-    if (nodeCluster && nodeCluster.peers) renderPeerList(nodeCluster.peers);
-    if (first) console.log("ok");
+    agentsCache = list;
+    renderCards(list);
   } catch (e) { if (String(e.message) !== "401") $("#summary").textContent = "⚠ " + e.message; }
 }
 
 function stateBadge(a) {
-  const p = a.process || {}, h = a.health || {};
+  const p = a.process || {};
   if (p.active !== "active") return `<span class="badge b-stop">已停止</span>`;
-  if (p.sub === "running" && (a.desired_state === "paused" || h.ok === false)) {
-    if (a.desired_state === "paused") return `<span class="badge b-pau">已暂停 ⏸</span>`;
-    return `<span class="badge b-err">无响应</span>`;
-  }
-  if (!h.ok) return `<span class="badge b-err">无响应</span>`;
-  const d = a.agent_status?.daemon?.state || "…";
-  const m = {running_session: ["呼吸中", "b-run"], sleeping: ["休眠中", "b-slp"],
-             parked: ["驻留", "b-pau"], init: ["启动中", "b-slp"], stopped: ["已停", "b-stop"]}[d] || [d, "b-slp"];
-  return `<span class="badge ${m[1]}">${m[0]}</span>`;
+  if (a.desired_state === "paused") return `<span class="badge b-pau">已暂停 ⏸</span>`;
+  return `<span class="badge b-run">运行中</span>`;
 }
 
-// show_agents 仅是 webui 显隐开关（数据面 fan-in 恒完整）：渲染时滤掉
-// 「来自被收起 peer」的远端 agent，本机 agent 恒显示。agentsCache 仍存
-// 全量（详情抽屉 / 大脑切换要完整档案）——只动显示层，不动任何数据逻辑。
-function visibleAgents(list) {
-  return list.filter(a => !a._via || (peersById[a._via] || {}).show_agents !== false);
+function interconnectChip(a) {
+  const ic = a.interconnect || {};
+  if (!ic.token) return `<span class="chip" title="agent 未发布互联 token">未互联</span>`;
+  return `<span class="chip conn" title="发布自 ${fmtT(ic.published_at)}；host=${esc(ic.host || '127.0.0.1')}">互联 :${ic.port}</span>`;
 }
 
 function renderCards(list) {
   const el = $("#cards");
-  $("#summary").textContent = `共 ${list.length} 个 · 运行 ${list.filter(a => (a.process||{}).active === "active").length} · 暴露外网 ${list.filter(a => a.expose).length}`;
+  const nRun = list.filter(a => (a.process || {}).active === "active").length;
+  const nConn = list.filter(a => (a.interconnect || {}).token).length;
+  $("#summary").textContent = `共 ${list.length} 个 · 运行 ${nRun} · 互联 ${nConn} · 暴露外网 ${list.filter(a => a.expose).length}`;
   if (!list.length) { el.innerHTML = `<div class="hint" style="grid-column:1/-1">还没有 agent —— 点右上角「新建 agent」创建第一个。</div>`; return; }
   el.innerHTML = list.map(a => {
     const ds = a.desired_state, run = (a.process || {}).active === "active";
-    // 按钮方案（防误删 + 语义去重）：运行中 暂停/停止/重启；暂停中 续跑/停止/重启；
-    // 停止态才有 启动 和 删除。重启进界面（confirm 防误触）：改端口「仅保存」后
-    // 靠它生效——此前只能 停止→启动 两步绕。
-    // 远端 agent：写按钮也开——caller Authorization 头会透传给 peer，peer
-    // 端用同一 cluster_secret verify 后由 peer 自己执行；这是单凭证体系的核心。
     const acts = [];
     if (ds === "paused") {
       acts.push(`<button onclick="act('${a.id}','resume')">▶ 续跑</button>`);
@@ -786,7 +468,6 @@ function renderCards(list) {
       acts.push(`<button onclick="act('${a.id}','start')">▶ 启动</button>`);
     }
     acts.push(`<button onclick="openDetail('${a.id}')">详情</button>`);
-    // ⋯ 二级菜单：备份 / 回滚 / 删除——仅 stopped 态才出现；非 stopped 态卡片根本不渲染 ⋯ 按钮
     const stopped = !run && ds !== "paused";
     if (stopped) {
       const ovId = `ov-${a.id}`;
@@ -801,27 +482,25 @@ function renderCards(list) {
     return `<div class="card">
       <div class="top"><span class="nm">${esc(a.name)}</span>${stateBadge(a)}
         <span class="aid" style="margin-left:auto">${a.id}</span></div>
-      ${(a._via || a.expose) ? `<div class="src">
-        ${a._via ? `<span class="src-peer" title="此 agent 由 peer 提供">来自 ${esc((peersById[a._via]||{}).name || a._via)}</span>` : ""}
-        ${a.expose ? '<span class="src-exp" title="监听 0.0.0.0 直接对外">外网直连</span>' : ""}
-      </div>` : ""}
+      ${a.expose ? `<div class="src"><span class="src-exp" title="监听 0.0.0.0 直接对外">外网直连</span></div>` : ""}
       <div class="mission">${esc(a.mission)}</div>
       <div class="row">
-        <span class="chip mono">${a._via ? `peer ${esc((peersById[a._via]||{}).name || a._via)}` : `127.0.0.1:${a.port}`}</span>
-        ${brainChips(a)}
+        <span class="chip mono">127.0.0.1:${a.port}</span>
+        ${interconnectChip(a)}
+        ${(a.brains || []).map((b, i) => i === 0
+          ? `<b class="chip bcur" title="默认大脑">${esc(b)}</b>`
+          : `<span class="chip">${esc(b)}</span>`).join("")}
       </div>
       <div class="row">
-        <span>会话 <b>${(a.agent_status?.daemon?.session_count ?? "-")}</b></span>
-        <span>待收信 <b>${(a.agent_status?.daemon?.mailbox_pending ?? "-")}</b></span>
         <span>自动重启 <b>${(a.process || {}).auto_restarts ?? 0}</b></span>
         <span>在线 ${fmtDur((a.process || {}).active_since)}</span>
+        <span>xuseek-v2 ${esc(a.source_version)}</span>
       </div>
       <div class="acts">${acts.join("")}</div>
     </div>`;
   }).join("");
 }
 
-/* ⋯ 二级菜单：单开（点别处关闭）；不在「停止态」时即便菜单能开也没操作项 */
 function ovToggle(id, ev) {
   ev.stopPropagation();
   const target = $(`#ov-${id}`);
@@ -833,38 +512,24 @@ document.addEventListener("click", () => {
   document.querySelectorAll(".ov-menu").forEach(m => m.hidden = true);
 });
 
-/* 看板事件代理：动态重渲的按钮（大脑切换 / 删除）经 data-* 传参——
-   inline onclick 内嵌 esc() 后的自由文本会被实体解码破坏 JS 字面量 */
 $("#cards").addEventListener("click", e => {
-  const bsw = e.target.closest(".bsw");
-  if (bsw) { switchBrain(bsw.dataset.agent, bsw.dataset.brain); return; }
   const delBtn = e.target.closest(".ov-del");
   if (delBtn) { del(delBtn.dataset.id, delBtn.dataset.name); }
-});
-/* 详情面板事件代理：服务行的探索 / 文档按钮——服务名允许单引号，同样不能 inline */
-$("#pane").addEventListener("click", e => {
-  const xp = e.target.closest(".svc-xp");
-  if (xp) { openExplorer(xp.dataset.id, xp.dataset.name); return; }
-  const doc = e.target.closest(".svc-doc");
-  if (doc) { svcDocs(doc.dataset.id, doc.dataset.name); }
 });
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
-/* ── 面板重绘的状态保全：轮询刷新不能打扰用户 ─────────
-   覆盖：信箱草稿等输入值、聚焦点与光标、<details> 展开态、滚动位置 */
+/* ── 面板重绘的状态保全（信箱草稿等输入不被打扰）───────── */
 let paneSnap = null;
 
 function snapshotPane() {
   const pane = $("#pane");
-  const snap = {scroll: pane.scrollTop, focus: null, sel: [0, 0],
-                open: new Set(), drafts: {}};
+  const snap = {scroll: pane.scrollTop, focus: null, sel: [0, 0], drafts: {}};
   const ae = document.activeElement;
   if (ae && pane.contains(ae) && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT")) {
     snap.focus = ae.id || null;
     snap.sel = [ae.selectionStart ?? 0, ae.selectionEnd ?? 0];
   }
-  pane.querySelectorAll("details[data-key][open]").forEach(d => snap.open.add(d.dataset.key));
   pane.querySelectorAll("textarea, input[type=text]").forEach(el => {
     if (el.id && el.value) snap.drafts[el.id] = el.value;
   });
@@ -880,41 +545,10 @@ function setPane(html) {
     const el = document.getElementById(did);
     if (el && !el.value) el.value = v;
   }
-  pane.querySelectorAll("details[data-key]").forEach(d => {
-    if (snap.open.has(d.dataset.key)) d.open = true;
-  });
   if (snap.focus) {
     const el = document.getElementById(snap.focus);
     if (el) { el.focus(); try { el.setSelectionRange(snap.sel[0], snap.sel[1]); } catch {} }
   }
-}
-
-/* 大脑徽章：当前默认（列表首位）加粗高亮；admin 可点其他徽章切默认（热生效）。
-   bsw 用 data-* 传参（事件代理见下方 #cards 监听）——inline onclick 内嵌 esc()
-   后的值会被 HTML 实体解码（' → '），名字带引号就 SyntaxError */
-function brainChips(a) {
-  const bs = a.brains || [];
-  return bs.map((b, i) => {
-    if (i === 0)
-      return `<b class="chip bcur" title="当前默认大脑">${esc(b)}</b>`;
-    if (me?.role !== "admin")
-      return `<span class="chip">${esc(b)}</span>`;
-    return `<span class="chip bsw" title="点击切换为默认大脑（热生效：下一口呼吸起用）"
-              data-agent="${a.id}" data-brain="${esc(b)}">${esc(b)}</span>`;
-  }).join("");
-}
-
-async function switchBrain(id, brain) {
-  const a = agentsCache.find(x => x.id === id);
-  if (!a) return;
-  const order = [brain, ...(a.brains || []).filter(b => b !== brain)];
-  if (!confirm(`把「${a.name}」的默认大脑切换为 ${brain}？\n\n` +
-      `热生效：当前会话继续用旧大脑跑完，下一口呼吸起用新配置（config.toml 已重渲染）。\n` +
-      `优先序变为：${order.join(" → ")}`)) return;
-  try {
-    await api(`/api/agents/${id}`, {method: "PATCH", body: JSON.stringify({brains: order})});
-    refresh();
-  } catch (e) { alert(e.message); }
 }
 
 async function act(id, action) {
@@ -924,7 +558,6 @@ async function act(id, action) {
 }
 
 async function del(id, name) {
-  // 安全闸：运行中（含暂停）不允许删除——必须先显式停止，两步防误删
   try {
     const s = await api(`/api/agents/${id}`);
     if ((s.process || {}).active === "active") {
@@ -940,10 +573,9 @@ async function del(id, name) {
 }
 
 /* ── 新建 ─────────────────────────────────────────── */
-let _brainsPool = [];   // /api/brains 缓存（blank / clone 两个 tab 共用）
+let _brainsPool = [];
 
 function renderBrainChecks(containerSel, defaults) {
-  // 把池渲染成 checkbox 组；defaults = 字符串数组，命中项默认 checked（缺key 项始终 disabled）
   const defs = new Set(defaults || []);
   $(containerSel).innerHTML = _brainsPool.map(b =>
     `<label><input type="checkbox" value="${esc(b.name)}" ${defs.has(b.name) ? "checked" : ""} ${b.has_key ? "" : "disabled"}>
@@ -955,37 +587,29 @@ async function openNew() {
   if (me?.role !== "admin") { alert("创建 agent 需要 admin token"); return; }
   $("#f-err").textContent = ""; $("#f-mission").value = ""; $("#f-name").value = "";
   $("#f-note").value = ""; $("#f-expose").checked = false;
-  $("#f-myport").textContent = location.port;
   $("#f-cerr").textContent = "";
   $("#f-cbkey").innerHTML = `<option value="">（加载中…）</option>`;
   switchNewTab("blank");
   try {
     const [bs, ps, vs] = await Promise.all([api("/api/brains"), api("/api/ports/available?count=12"), api("/api/versions")]);
     _brainsPool = bs;
-    // blank tab：缺省勾选所有已配 key 的大脑（顺序 = 故障转移序，首个为默认）
     renderBrainChecks("#f-brains", bs.filter(b => b.has_key).map(b => b.name));
     const vers = vs.versions || [];
-    const mainLabel = vs.default_ready
-      ? "共享主源码（过渡期保留，将逐步废弃）"
-      : "共享主源码（本地缺失：创建时试 GitHub；过渡期保留，将逐步废弃）";
-    $("#f-version").innerHTML =
-      (vers.length
-        ? `<option value="">最新版本（${esc(vers[0].version)}）</option>` +
-          vers.slice(1).map(v =>
-            `<option value="${esc(v.version)}">${esc(v.version)}（${(v.size_bytes / 1048576).toFixed(1)} MB）</option>`).join("")
-        : `<option value="">仓库为空 → 缺省回落共享主源码</option>`) +
-      `<option value="main">${mainLabel}</option>`;
+    $("#f-version").innerHTML = vers.length
+      ? `<option value="">最新版本（${esc(vers[0].version)}）</option>` +
+        vers.slice(1).map(v =>
+          `<option value="${esc(v.version)}">${esc(v.version)}（${(v.size_bytes / 1048576).toFixed(1)} MB）</option>`).join("")
+      : `<option value="">（版本仓库为空——请管理员投放 zip 后再建 agent）</option>`;
     $("#f-port").innerHTML = `<option value="">自动分配</option>` +
       ps.ports.map(p => `<option value="${p}">${p}</option>`).join("");
     $("#f-cport").innerHTML = `<option value="">自动分配</option>` +
       ps.ports.map(p => `<option value="${p}">${p}</option>`).join("");
   } catch (e) { $("#f-err").textContent = e.message; }
   dlgNew.showModal();
-  // 异步加载备份列表（不影响打开）
   loadCloneBackups();
 }
 
-let _cloneBackups = [];   // [{key, size_bytes, mtime, meta}]
+let _cloneBackups = [];
 
 async function loadCloneBackups() {
   $("#f-cbkey").innerHTML = `<option value="">（加载中…）</option>`;
@@ -997,7 +621,7 @@ async function loadCloneBackups() {
   }
   const sel = $("#f-cbkey");
   if (!_cloneBackups.length) {
-    sel.innerHTML = `<option value="">（本地还没有备份——先用命令行或别的 agent 跑一次「📦 备份」再来）</option>`;
+    sel.innerHTML = `<option value="">（本地还没有备份——先用「📦 备份」做一个再来）</option>`;
     return;
   }
   sel.innerHTML = `<option value="">（请选择…）</option>` + _cloneBackups.map((b, i) => {
@@ -1017,17 +641,16 @@ function switchNewTab(tab) {
 }
 $("#f-tab-blank-btn").onclick = () => switchNewTab("blank");
 $("#f-tab-clone-btn").onclick = () => switchNewTab("clone");
-// 备份选择改变时回填
 $('#f-cbkey').addEventListener('change', e => {
   const i = parseInt(e.target.value, 10);
   if (!Number.isFinite(i) || !_cloneBackups[i]) return;
   const m = _cloneBackups[i].meta || {};
   $("#f-cnewid").value = m.agent_id ? (m.agent_id + "-clone") : "";
   if (m.port) $("#f-cport").value = m.port;
-  // 大脑 checkbox：默认勾选备份 meta 里的大脑（缺失项 disabled），用户可改
   renderBrainChecks("#f-cbrains", m.brains || []);
   $("#f-cerr").textContent = "";
 });
+$("#btn-create").onclick = create;
 
 async function create() {
   const tab = $("#f-tab-clone").hidden ? "blank" : "clone";
@@ -1064,7 +687,6 @@ async function createClone() {
   }
   const brains = [...$("#f-cbrains").querySelectorAll("input:checked")].map(i => i.value);
   if (!brains.length) { $("#f-cerr").textContent = "至少勾选一家大脑"; return; }
-  // 备注自动写「从备份克隆于 YYYY-MM-DD」，名称/使命沿用备份（用户在「改参」对话框改）
   const mtime = (_cloneBackups[i].mtime || "").slice(0, 10) || "今天";
   const note = `从备份克隆于 ${mtime}`;
   const port = parseInt($("#f-cport").value, 10) || null;
@@ -1077,12 +699,10 @@ async function createClone() {
   finally { $("#btn-create").disabled = false; }
 }
 
-/* ── 备份 / 回滚（卡片 ⋯ 二级菜单）──────────────── */
+/* ── 备份 / 回滚 ─────────────────────────────────── */
 async function backupOne(id) {
-  // 关闭所有 ⋯ 弹层（避免遮挡对话框）
   document.querySelectorAll(".ov-menu").forEach(m => m.hidden = true);
   if (me?.role !== "admin") { alert("备份需要 admin token"); return; }
-  // 二次保险：webui 硬约束——即使 ⋯ 菜单错位点中，也再校一次 stopped
   const a = agentsCache.find(x => x.id === id);
   if (!a || (a.process || {}).active === "active" || a.desired_state === "paused") {
     alert("agent 必须在停止态才能备份");
@@ -1108,7 +728,7 @@ $("#btn-backup-go").onclick = async () => {
   finally { $("#btn-backup-go").disabled = false; }
 };
 
-let _rsBackups = [];   // 当前 restore 对话框里加载的备份列表（key+meta）
+let _rsBackups = [];
 
 async function openRestore(id) {
   document.querySelectorAll(".ov-menu").forEach(m => m.hidden = true);
@@ -1142,7 +762,7 @@ function renderRsList() {
       <span class="ts">${esc(b.mtime)}</span>
       <span class="rs">${esc(reason)}</span>
       <span class="hint" style="color:var(--sub);font-size:12px">${(b.size_bytes/1024).toFixed(1)} KB</span>
-      <span class="sz mono">${esc(b.key.slice(-20))}</span>
+      <span class="mono" style="color:var(--sub);font-size:12px">${esc(b.key.slice(-20))}</span>
     </label>`;
   }).join("");
   el.firstElementChild?.click();
@@ -1160,13 +780,12 @@ $("#btn-restore-go").onclick = async () => {
   if (!checked) { $("#rs-err").textContent = "请先选一个备份"; return; }
   const key = _rsBackups[parseInt(checked.value, 10)]?.key;
   if (!key) return;
-  // 回滚语义 = 原地还原：同 id + 同端口 + overwrite=true
   $("#btn-restore-go").disabled = true; $("#rs-err").textContent = "";
   try {
     const r = await api(`/api/restore`, {method: "POST", body: JSON.stringify({
       key, overwrite: true})});
     dlgRestore.close();
-    alert(`已原地回滚\n  id   : ${r.id}（端口 ${r.port}）\n  home : ${r.home}\n  来自 : ${r.restored_from}\n\n回滚 token 已重新签发。`);
+    alert(`已原地回滚\n  id   : ${r.id}（端口 ${r.port}）\n  home : ${r.home}\n  来自 : ${r.restored_from}`);
     refresh();
     openDetail(r.id);
   } catch (e) { $("#rs-err").textContent = e.message; }
@@ -1174,140 +793,68 @@ $("#btn-restore-go").onclick = async () => {
 };
 
 /* ── 详情抽屉 ─────────────────────────────────────── */
-const TABS = ["状态", "事件", "会话", "信箱", "服务", "工具", "Token", "日志"];
+const TABS = ["状态", "信箱", "日志"];
 async function openDetail(id) {
   cur = id; curTab = "状态";
   drawer.classList.add("open");
-  // 改参需要 admin；远端 agent 当前也开放（admin 凭 cluster_secret 透传到 peer）
   const editBtn = $("#d-edit");
-  editBtn.hidden = me?.role !== "admin";   // 非 admin 一律不露
+  editBtn.hidden = me?.role !== "admin";
   editBtn.title = "改参（admin）";
   $("#tabs").innerHTML = TABS.map(t => `<button data-t="${t}" onclick="switchTab('${t}')">${t}</button>`).join("");
-  // 观测台链接：双 token —— mtoken 过 /px 鉴权，token 给页面自身存 localStorage
-  //（页面从浏览器地址栏读 ?token=，注入必须落在 URL 上才有效）
-  let href = `/px/${id}/ui/?mtoken=${encodeURIComponent(tok)}`;
-  try {
-    const ts = await api(`/api/agents/${id}/tokens`);
-    if (ts[0]?.token) href += `&token=${encodeURIComponent(ts[0].token)}`;
-  } catch (e) { /* 取不到 token 也能开（后端会 302 补） */ }
-  $("#d-ui").href = href;
-  // 用户正在详情里看/操作：暂停全部自动刷新（看板 15s + 抽屉轮询），
-  // 数据在打开、切 tab、手动 ⟳ 或操作后按需拉取；关闭详情即恢复看板轮询。
   clearInterval(pollTimer); pollTimer = null;
   loadDetail();
 }
 function closeDetail() {
   cur = null; drawer.classList.remove("open");
-  if (!pollTimer && tok) refresh(true);   // 恢复看板轮询
+  if (!pollTimer && tok) refresh(true);
 }
 function switchTab(t) { curTab = t; loadDetail(); }
 
 async function loadDetail() {
-  if (xp.on) return;   // API 探索器开着时不重拉（防 10s 轮询刷掉表单）
   const id = cur;
-  paneSnap = snapshotPane();   // 10s 轮询重绘不打扰用户：草稿/展开态/焦点/滚动一并带走
+  paneSnap = snapshotPane();
   [...$("#tabs").children].forEach(b => b.classList.toggle("on", b.dataset.t === curTab));
   try {
     if (curTab === "状态") {
-      const s = await api(`/api/agents/${id}`);   // 聚合接口（process/health/agent_status）
+      const s = await api(`/api/agents/${id}`);
       if (id !== cur) return;
       $("#d-nm").textContent = s.name; $("#d-id").textContent = id;
-      const d = s.agent_status?.daemon || {};
-      let capsHtml = "";
-      try {
-        const cl = await api(`/api/agents/${id}/capabilities`);   // 问 agent 自己的源码副本
-        if (id !== cur) return;
-        capsHtml = capsPaneHtml(id, s, cl);
-      } catch (e) { capsHtml = `<h4 style="margin:14px 0 6px">能力包</h4><p class="err">${esc(e.message)}</p>`; }
+      const ic = s.interconnect || {};
+      const connRow = ic.token
+        ? `<b>互联</b><span><span class="chip conn">已发布</span> <span class="mono">${esc(ic.host || "127.0.0.1")}:${ic.port}</span> · ${fmtT(ic.published_at)}</span>`
+        : `<b>互联</b><span class="hint">未发布——agent 想互联时会经邮箱发 publish 信封（见节点对话框说明）</span>`;
       setPane(
 `
         <div class="kv">
           <b>id</b><span class="mono">${esc(id)}</span>
-          <b>期望态</b><span>${s.desired_state}</span>
-          ${s._via ? `<b>来自 peer</b><span>${esc((peersById[s._via]||{}).name || s._via)} <span class="mono">(${esc(s._via)})</span></span>` : ""}
-          <b>进程单元</b><span>${s.process?.active}/${esc(s.process?.sub || "")} · 自动重启 ${s.process?.auto_restarts ?? 0}</span>
-          <b>监听</b><span class="mono">${s.listen_host}:${s.port}${s.expose ? "（外网直连）" : "（仅本机，经反代）"}</span>
+          <b>期望态</b><span>${esc(s.desired_state)}</span>
+          <b>进程单元</b><span>${s.process?.active}/${esc(s.process?.sub || "")} · 自动重启 ${s.process?.auto_restarts ?? 0} · 在线 ${fmtDur(s.process?.active_since)}</span>
+          <b>监听</b><span class="mono">${esc(s.listen_host)}:${s.port}${s.expose ? "（外网直连）" : "（仅本机）"}</span>
           <b>大脑</b><span>${(s.brains || []).map(esc).join(" → ")}</span>
-          <b>源码</b><span>${s.source_version ? `xuseek-v2 ${esc(s.source_version)}（实例私有副本）` : "主源码（共享，逐步废弃中）"}</span>
-          <b>daemon</b><span>${esc(d.state || "-")} · 会话 ${d.session_count ?? "-"} · 待收信 ${d.mailbox_pending ?? "-"}</span>
-          <b>下次呼吸</b><span class="mono">${fmtT(d.next_wake_at)}</span>
-          <b>BOOT.md</b><span>${s.agent_status?.boot_file?.exists ? `${s.agent_status.boot_file.chars} 字` : "未写"}</span>
+          <b>源码</b><span>xuseek-v2 ${esc(s.source_version)}（实例私有副本）</span>
           <b>使命</b><span>${esc(s.mission)}</span>
           ${s.note ? `<b>备注</b><span>${esc(s.note)}</span>` : ""}
-          <b>访问</b><span class="mono" style="font-size:11.5px">直连 ${s.listen_host === "0.0.0.0" ? s.port + " 端口" : "未暴露"} · 反代 /px/${id}/ · App 端口 ${location.port} + agent token</span>
+          ${connRow}
         </div>
-        ${capsHtml}
-        <h4 style="margin:14px 0 6px">原始 status（只读 GET /v1/status）</h4>
-        <pre>${esc(JSON.stringify(s.agent_status || {note: `未运行（单元 ${s.process?.active || "?"}）`}, null, 2))}</pre>`
+        <h4 style="margin:14px 0 6px">互联信封（agent → 管理邮箱 → 自动登记/回执）</h4>
+        <pre>{"xusi":"publish","port":8770,"token":"&lt;agent 自签互联 token&gt;","host":"10.0.0.5"}
+{"xusi":"request_directory"}</pre>
+        <p class="hint" style="font-size:12px">发布 = 登记互联标注；目录申请 = 管理面自动回执其它已互联 agent 的地址与 token。</p>`
       );
-    } else if (curTab === "事件") {
-      const r = await api(`/api/agents/${id}/events?limit=80`);
-      if (id !== cur) return;
-      const evs = r.data || [];
-      setPane(evs.slice().reverse().map(e => {
-        const t = e.at || e.sent_at || e._logged_at || "";
-        const k = e.event || e.kind || "ev";
-        let body = "";
-        if (k === "llm_response") {
-          body = `${esc(e.brain || "")} 第${e.round ?? "?"}轮 · ${e.elapsed_s ?? "–"}s · ¥${e.round_cost_cny ?? 0} · ctx ${e.context_tokens ?? "–"} tok<br>` +
-                 `<span style="color:var(--sub)">${esc((e.content || "").slice(0, 160))}${(e.content || "").length > 160 ? "…" : ""}</span>`;
-        } else if (k === "llm_request") {
-          body = `<span style="color:var(--sub)">第${e.round ?? "?"}轮 · 请求大脑…</span>`;
-        } else if (k === "tool_exec") {
-          body = `<b>${esc(e.tool || "")}</b> <span class="mono" style="font-size:11.5px">${esc(String(e.args || "").slice(0, 110))}</span><br>` +
-                 `<span style="color:var(--sub)">${esc(String(e.preview || "").slice(0, 110))}</span>`;
-        } else if (k === "session_start") {
-          body = `<span style="color:var(--sub)">会话开始 ${esc(e.session_id || "")}</span>`;
-        } else {
-          body = esc(JSON.stringify(e).slice(0, 200));
-        }
-        return `<div class="ev"><span class="t">${fmtT(t)} · ${esc(k)}</span><br>${body}</div>`;
-      }).join("") || "<p>（事件流为空：agent 刚启动，或进程重启过——事件仅存于内存）</p>");
-    } else if (curTab === "会话") {
-      // 每口呼吸一条：点行展开完整总结（final_summary，markdown 渲染）
-      const [r, st] = await Promise.all([
-        api(`/api/agents/${id}/sessions?limit=30`), api(`/api/agents/${id}`)]);
-      if (id !== cur) return;
-      const ss = r.data || [];
-      const running = (st.agent_status?.daemon?.state) === "running_session";
-      const curId = st.agent_status?.daemon?.current_session;
-      setPane(
-        (running ? `<div class="mailrow" style="border-color:var(--acc)"><b>呼吸进行中</b> <span class="t">${esc(curId || "")}</span>——本口呼吸结束后出现在下方列表</div>` : "") +
-        ss.map(s => sessRowHtml(s)).join("") || (!running ? "<p>（还没有完成的呼吸）</p>" : ""));
     } else if (curTab === "信箱") {
-      const [m, o] = await Promise.all([
-        api(`/api/agents/${id}/messages?limit=30`), api(`/api/agents/${id}/outbox?limit=30`)]);
+      const [o, m] = await Promise.all([
+        api(`/api/agents/${id}/mailbox?box=outbox&limit=50`),
+        api(`/api/agents/${id}/mailbox?box=inbox&limit=50`)]);
       if (id !== cur) return;
       setPane(
 `
-        <h4 style="margin:4px 0 6px">投信（写入信箱文件，休眠中 5s 内唤醒）</h4>
-        <div class="sendbox"><textarea id="m-txt" placeholder="给大脑写信…"></textarea>
+        <h4 style="margin:4px 0 6px">投信（追加 mailbox.jsonl，休眠中 5s 内唤醒——唯一的 agent 通信通道）</h4>
+        <div class="sendbox"><textarea id="m-txt" placeholder="给大脑写信…（改 mission / 换大脑 / 调预算都在这里）"></textarea>
           <button class="pri" onclick="sendMail('${id}')">投递</button></div>
-        <h4 style="margin:12px 0 6px">来信历史（管理员 → 大脑）</h4>
-        ${(m.data || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)}</div>${esc(x.text)}</div>`).join("") || "<p>（还没有来信——用上方表单给大脑投第一封）</p>"}
-        <h4 style="margin:12px 0 6px">外发（大脑 → 管理员，send_mail）</h4>
-        ${(o.data || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)}</div>${esc(x.text)}</div>`).join("") || "<p>（大脑还没外发过——它有话想说时会出现在这里）</p>"}`
-      );
-    } else if (curTab === "服务") {
-      await renderSvcTab(id);
-    } else if (curTab === "工具") {
-      await renderToolsTab(id);
-    } else if (curTab === "Token") {
-      const ts = await api(`/api/agents/${id}/tokens`);
-      if (id !== cur) return;
-      const isAdmin = me?.role === "admin";
-      setPane(
-`
-        <p class="hint" style="color:var(--sub)">观察台 token = 访问该 agent 的凭证。用法：
-        ① 管理面反代 <code class="mono">/px/${id}/…</code>（管理面 token 认证，无需此 token）；
-        ② 直连 <code class="mono">http://&lt;IP&gt;:${location.port}</code> + 此 token（App「IP+端口+token」形态，零改动）；
-        ③ 暴露外网时直连 agent 端口 + 此 token。</p>
-        ${isAdmin ? `<button class="pri" onclick="newTok('${id}')">＋ 签发新 token</button>` : ""}
-        <div style="margin-top:10px">${ts.map(t => `<div class="tokrow">
-          <code id="tk-${t.token.slice(0, 8)}">${esc(t.token)}</code>
-          <span class="hint" style="color:var(--sub);font-size:12px">${esc(t.label || "")}</span>
-          ${isAdmin ? `<button class="danger" onclick="revTok('${id}','${t.token.slice(0, 10)}')">撤销</button>` : ""}
-        </div>`).join("") || "<p>（无）</p>"}</div>`
+        <h4 style="margin:12px 0 6px">来信（大脑 → 管理员）</h4>
+        ${(o.messages || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)} · ${esc(x.sender || "brain")}</div>${esc(x.text)}</div>`).join("") || "<p class='hint'>（大脑还没有来信——它有话想说时会出现在这里）</p>"}
+        <h4 style="margin:12px 0 6px">投信历史（管理员 → 大脑）</h4>
+        ${(m.messages || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)}</div>${esc(x.text)}</div>`).join("") || "<p class='hint'>（还没有投过信）</p>"}`
       );
     } else if (curTab === "日志") {
       const r = await api(`/api/agents/${id}/logs?limit=300`);
@@ -1323,118 +870,18 @@ async function sendMail(id) {
     $("#m-txt").value = ""; loadDetail(); } catch (e) { alert(e.message); }
 }
 
-/* ── 能力包（只读观察：种子已播入它的世界；用不用、装不装依赖归大脑）──── */
-function capsPaneHtml(id, s, cl) {
-  if (!s.source_version)
-    return `<h4 style="margin:14px 0 6px">能力包</h4>
-      <p class="hint" style="color:var(--sub)">共享主源码的旧版本内核，无能力包架构。</p>`;
-  const packs = cl.capabilities || [];
-  if (!packs.length)
-    return `<h4 style="margin:14px 0 6px">能力包</h4>
-      <p class="hint" style="color:var(--sub)">${esc(cl.note || "该源码版本无能力包")}</p>`;
-  const rows = packs.map(p => {
-    const costs = Object.entries(p.costs || {}).map(([k, v]) => `${k}: ${esc(v)}`).join("；");
-    return `<div class="svcrow">
-      <div class="hd">
-        <b>${esc(p.name)}</b>
-        <span class="chip">${p.enabled ? "已开启" : "种子已播 · 未开启"}</span>
-        <span class="chip" style="color:var(--sub)">v${esc(p.version || "?")}</span>
-      </div>
-      <div class="hint" style="color:var(--sub);font-size:12.5px;margin-top:4px">${esc(p.summary || "")}</div>
-      ${costs ? `<div class="hint" style="color:var(--warn);font-size:12px;margin-top:3px">成本（若启用）· ${costs}</div>` : ""}
-    </div>`;
-  }).join("");
-  return `<h4 style="margin:14px 0 6px">能力包（种子已无条件播入 workspace；启用与否、依赖安装归大脑）</h4>${rows}
-    <p class="hint" style="color:var(--sub);font-size:12px">管理面只播种、只观察，不替 agent 做决定：要不要用（register_skill）、
-    何时装依赖（run_shell 后台 pip，pack 的 playbook 指南有说明）都是大脑自己的事。</p>`;
-}
-
-/* ── 呼吸总结（会话列表）与工具统计 ─────────────────── */
-
-function sessRowHtml(s) {
-  const fs = s.final_summary || "";
-  const dur = Math.round(s.elapsed_s ?? 0);
-  const durTxt = dur >= 3600 ? `${Math.floor(dur / 3600)}时${Math.round(dur % 3600 / 60)}分` :
-                 dur >= 60 ? `${Math.floor(dur / 60)}分${dur % 60}秒` : `${dur}秒`;
-  const kv = [
-    s.context_tokens != null ? `上下文 ${s.context_tokens} tok` : "",
-    s.total_tokens != null ? `累计 ${s.total_tokens} tok` : "",
-    s.requested_sleep_seconds != null ? `请求休眠 ${s.requested_sleep_seconds}s` : "",
-    s.carry_context ? "携带上下文" : "",
-  ].filter(Boolean).map(x => `<span class="chip">${esc(x)}</span>`).join("");
-  return `<details class="sessrow" data-key="${esc(s.session_id || s.id || "")}">
-    <summary>
-      <span class="t" style="color:var(--sub);font-size:11.5px;font-family:var(--mono)">${fmtT(s.started_at || s.at)}</span>
-      <b>${s.rounds ?? "?"} 轮</b>
-      <span style="color:var(--sub)">${durTxt}</span>
-      <span>¥${(+s.total_cost_cny || 0).toFixed(2)}</span>
-      <span class="chip" style="color:var(--sub)">${esc(String(s.stop_reason || "").slice(0, 24))}</span>
-      <span style="margin-left:auto;color:var(--sub)">▾</span>
-    </summary>
-    <div class="sessbody">
-      <div class="sesskv"><span class="chip mono">${esc(s.session_id || s.id || "")}</span>${kv}</div>
-      ${fs ? `<div class="md">${mdRender(fs)}</div>` : '<p style="color:var(--sub)">（本口呼吸没有留下总结）</p>'}
-    </div>
-  </details>`;
-}
-
-async function renderToolsTab(id) {
-  // 工具/技能调用统计：聚合最近事件窗口里的 tool_exec / tool_error / tool_timeout。
-  // 事件仅存于 agent 进程内存（重启清零），属进程生命周期内的真实计数。
-  const r = await api(`/api/agents/${id}/events?limit=500`);
-  if (id !== cur) return;
-  const evs = r.data || [];
-  const stat = {};
-  const slot = t => (stat[t] ??= {n: 0, err: 0, tmo: 0, last: ""});
-  let llmRounds = 0, started = 0;
-  for (const e of evs) {
-    if (e.event === "llm_response") llmRounds++;
-    if (e.event === "session_start") started++;
-    if (!e.tool) continue;
-    if (e.event === "tool_exec") {
-      const s = slot(e.tool); s.n++;
-      if (!s.last || e.at > s.last) s.last = e.at;
-    } else if (e.event === "tool_error") slot(e.tool).err++;
-    else if (e.event === "tool_timeout") slot(e.tool).tmo++;
-  }
-  const rows = Object.entries(stat).sort((a, b) => b[1].n - a[1].n);
-  const tot = rows.reduce((m, [, s]) => ({n: m.n + s.n, err: m.err + s.err, tmo: m.tmo + s.tmo}),
-                          {n: 0, err: 0, tmo: 0});
-  setPane(
-`
-    <p class="hint" style="color:var(--sub)">工具与技能（自注册的技能也是一等工具）的调用统计。
-    数据来自事件流：仅存于 agent 进程内存，<b>进程重启后清零</b>；此处回看最近 500 条事件，
-    覆盖 ${started} 口呼吸 / ${llmRounds} 轮 LLM 调用。</p>
-    ${rows.length ? `<table class="jt"><thead><tr><th>工具</th><th>调用</th><th>失败</th><th>超时</th><th>最近调用</th></tr></thead>
-      <tbody>${rows.map(([t, s]) => `<tr>
-        <td class="mono">${esc(t)}</td>
-        <td><b>${s.n}</b></td>
-        <td>${s.err ? `<span style="color:var(--err)">${s.err}</span>` : "0"}</td>
-        <td>${s.tmo ? `<span style="color:var(--warn)">${s.tmo}</span>` : "0"}</td>
-        <td style="color:var(--sub)">${s.last ? fmtT(s.last) : "-"}</td>
-      </tr>`).join("")}
-      <tr><td><b>合计</b></td><td><b>${tot.n}</b></td><td>${tot.err}</td><td>${tot.tmo}</td><td></td></tr>
-      </tbody></table>` : "<p>（事件窗口内没有工具调用记录——agent 刚启动或进程重启过）</p>"}`
-  );
-}
-
-/* ── 改参（PATCH 热字段 + 可选重启字段）──────────────── */
-let editCur = null;   // 打开对话框时的完整档案（判断 port/expose 是否变化）
+/* ── 改参（簿记 + 进程层）────────────────────────── */
+let editCur = null;
 
 async function openEdit(id) {
   if (me?.role !== "admin") { alert("改参需要 admin token"); return; }
   try {
-    const [s, bs] = await Promise.all([api(`/api/agents/${id}`), api("/api/brains")]);
+    const s = await api(`/api/agents/${id}`);
     editCur = s;
     $("#e-name").value = s.name || "";
-    $("#e-mission").value = s.mission || "";
     $("#e-note").value = s.note || "";
     $("#e-expose").checked = !!s.expose;
-    const cur = s.brains || [];
-    $("#e-brains").innerHTML = bs.map(b =>
-      `<label><input type="checkbox" value="${esc(b.name)}" ${cur.includes(b.name) ? "checked" : ""} ${b.has_key ? "" : "disabled"}>
-        ${esc(b.name)}${b.has_key ? "" : "（缺key）"} <small style="color:var(--sub)">${esc(b.model)}</small></label>`).join("");
-    $("#e-port").innerHTML = `<option value="">保持 ${s.port}</option>`;   // 先占位，可选端口异步补
+    $("#e-port").innerHTML = `<option value="">保持 ${s.port}</option>`;
     api("/api/ports/available?count=12").then(ps => {
       $("#e-port").innerHTML = `<option value="">保持 ${s.port}</option>` +
         ps.ports.map(p => `<option value="${p}">${p}</option>`).join("");
@@ -1443,16 +890,12 @@ async function openEdit(id) {
     dlgEdit.showModal();
   } catch (e) { alert(e.message); }
 }
+$("#btn-edit-save").onclick = saveEdit;
 
 async function saveEdit() {
   const id = cur;
-  const brains = [...$("#e-brains").querySelectorAll("input:checked")].map(i => i.value);
-  const mission = $("#e-mission").value.trim();
-  if (!brains.length) { $("#e-err").textContent = "至少勾选一家大脑"; return; }
-  if (!mission) { $("#e-err").textContent = "mission 不能为空"; return; }
   const body = {
     name: $("#e-name").value.trim() || editCur.name,
-    mission, brains,
     expose: $("#e-expose").checked,
     note: $("#e-note").value.trim(),
   };
@@ -1462,7 +905,7 @@ async function saveEdit() {
   let applyRestart = false;
   if (needRestart) {
     applyRestart = confirm("端口 / 暴露开关变了：这两项改的是进程监听参数，需要重启进程。\n\n" +
-      "「确定」= 保存并立即重启（优雅停 → 新参数拉起 → 健康验收）；" +
+      "「确定」= 保存并立即重启（优雅停 → 新参数拉起 → 端口验收）；" +
       "「取消」= 仅保存，稍后用卡片上的「⟳ 重启」生效。");
   }
   $("#btn-edit-save").disabled = true; $("#e-err").textContent = "";
@@ -1470,573 +913,13 @@ async function saveEdit() {
     await api(`/api/agents/${id}?apply_restart=${applyRestart}`,
               {method: "PATCH", body: JSON.stringify(body)});
     dlgEdit.close();
-    if (!needRestart)
-      alert("已保存（热改参）：mission / 大脑 / 备注 写入注册表并重渲染 config.toml，下一口呼吸自动生效，当前会话不受影响。");
     refresh(); loadDetail();
   } catch (e) { $("#e-err").textContent = e.message; }
   finally { $("#btn-edit-save").disabled = false; }
 }
-async function newTok(id) {
-  const label = prompt("token 备注（label）：", "phone") || "";
-  try { const r = await api(`/api/agents/${id}/tokens`, {method: "POST", body: JSON.stringify({label})});
-    prompt("新 token（仅此一次完整显示）：", r.token); loadDetail(); } catch (e) { alert(e.message); }
-}
-async function revTok(id, prefix) {
-  if (!confirm(`撤销 token ${prefix}…？立即生效。`)) return;
-  try { await api(`/api/agents/${id}/tokens/${prefix}`, {method: "DELETE"}); loadDetail(); }
-  catch (e) { alert(e.message); }
-}
 
-/* ── 服务发现（agent 自建对外 API；全功能反代）──────── */
-async function renderSvcTab(id) {
-  const r = await api(`/api/agents/${id}/services`);
-  if (id !== cur) return;
-  const accessSvcs = (r.services || []).filter(s => s.public_access);
-  setPane(
-`
-    <p class="hint" style="color:var(--sub)">agent 自建的对外 API 服务（由 agent 在
-      <code class="mono">workspace/data/services.json</code> 自声明，换端口自动跟随）。
-      访问一律经 <code class="mono">/svc/${id}/&lt;服务名&gt;/</code> 全功能反代，服务 token 由管理面服务端注入；
-      方法放行与否由服务自己决定，写方法调用会记入审计。</p>
-    ${accessSvcs.length ? `
-    <div class="svcrow">
-      <div class="hd"><b>对外接入说明</b></div>
-      ${accessSvcs.map(s => `
-      <code class="mono"
-            style="display:block;white-space:pre-wrap;word-break:break-all;
-                   user-select:all;-webkit-user-select:all;margin-top:6px;
-                   font-size:12px;padding:8px 10px;background:var(--bg2);
-                   border-radius:6px">${esc(s.public_access)}</code>`).join("")}
-    </div>` : ""}
-    ${(r.errors || []).map(e => `<div class="mailrow" style="border-color:var(--warn);color:var(--warn)">⚠ ${esc(e)}</div>`).join("")}
-    ${(r.services || []).map(s => svcRowHtml(id, s)).join("") ||
-      "<p>（该 agent 暂无自建服务——它写 services.json 自声明即可被管理面发现）</p>"}`
-  );
-}
-
-function svcRowHtml(id, s) {
-  const h = s.health || {};
-  const dot = h.ok === undefined ? "" : (h.ok ? "ok" : "bad");
-  const htxt = h.ok === undefined ? "" :
-    (h.ok ? `活 · ${h.ms}ms` : `不可达${h.note ? "（" + h.note + "）" : ""}`);
-  return `<div class="svcrow">
-    <div class="hd"><span class="dot ${dot}"></span>
-      <b>${esc(s.title || s.name)}</b>
-      <span class="chip mono">:${s.port}</span>
-      ${s.auto ? '<span class="chip" style="color:var(--warn)">自动发现</span>' : ""}
-      ${s.auth ? `<span class="chip">token 注入${s.token_source === "auto" ? "·自动" : ""}</span>` : '<span class="chip" style="color:var(--warn)">无 token</span>'}
-      <span class="hint" style="color:var(--sub);font-size:12px">${esc(htxt)}</span></div>
-    ${s.note ? `<div class="hint" style="color:var(--sub);font-size:12.5px;margin-top:4px">${esc(s.note)}</div>` : ""}
-    ${s.openapi_found == null && s.openapi_source !== "none" ? `<div class="hint" style="color:var(--warn);font-size:12px;margin-top:4px">⚠ 未探测到 OpenAPI 自描述（探索器转手填模式）</div>` : ""}
-    ${s.warn ? `<div class="hint" style="color:var(--warn);font-size:12px;margin-top:4px">⚠ ${esc(s.warn)}</div>` : ""}
-    <div class="acts">
-      <button class="pri svc-xp" data-id="${id}" data-name="${esc(s.name)}">探索 API</button>
-      <button class="svc-doc" data-id="${id}" data-name="${esc(s.name)}">原生文档 ↗</button>
-    </div></div>`;
-}
-
-function svcDocs(id, name) {
-  // 新标签没有 Authorization 头，用 ?mtoken= 过 /svc 鉴权
-  window.open(`/svc/${id}/${name}/docs?mtoken=${encodeURIComponent(tok)}`, "_blank");
-}
-
-/* ── API 探索器（openapi.json 驱动，全动态）────────── */
-const xp = {on: false, id: null, name: null, svc: null, spec: null,
-            mode: "spec", ep: null, resp: null, busy: false};
-let xpViewN = 0;
-
-async function rawFetch(url, opts = {}) {
-  // 不走 api()：需要原始状态码/头/文本，非 2xx 也要把响应体展示出来
-  const t0 = performance.now();
-  const r = await fetch(url, {...opts, headers: {
-    "Authorization": "Bearer " + tok,
-    ...(opts.body ? {"Content-Type": "application/json"} : {}),
-    ...(opts.headers || {})},
-  });
-  const text = await r.text();
-  return {status: r.status, ct: r.headers.get("content-type") || "",
-          ms: Math.round(performance.now() - t0), text, size: text.length};
-}
-
-async function openExplorer(id, name) {
-  Object.assign(xp, {on: true, id, name, svc: null, spec: null, mode: "spec",
-                     ep: null, resp: null, busy: false});
-  $("#xp").classList.add("on");
-  $("#xp-title").textContent = name;
-  $("#xp-sub").textContent = "";
-  $("#xp-list").innerHTML = `<p class="hint" style="color:var(--sub)">加载 OpenAPI…</p>`;
-  $("#xp-main").innerHTML = "";
-  try {
-    const r = await api(`/api/agents/${id}/services?probe=false`);
-    xp.svc = (r.services || []).find(s => s.name === name) || null;
-  } catch (e) { /* 元信息拿不到也能继续 */ }
-  $("#xp-title").textContent = xp.svc?.title || name;
-  $("#xp-sub").textContent = `/svc/${id}/${name}/ · 127.0.0.1:${xp.svc?.port ?? "?"}`;
-  $("#xp-docs").href = `/svc/${id}/${name}/docs?mtoken=${encodeURIComponent(tok)}`;
-  if (xp.svc && xp.svc.openapi_found == null) {
-    xpManual(xp.svc.openapi_source === "none"
-      ? "清单声明该服务无 OpenAPI 自描述"
-      : "未探测到 OpenAPI 自描述（已按候选路径搜索）");
-    return;
-  }
-  try {
-    const r = await rawFetch(`/svc/${id}/${name}${xp.svc?.openapi_found || "/openapi.json"}`);
-    if (r.status !== 200) { xpManual(`OpenAPI 拉取失败（HTTP ${r.status}）`); return; }
-    const spec = JSON.parse(r.text);
-    if (!spec.paths || !Object.keys(spec.paths).length) { xpManual("OpenAPI 里没有 paths"); return; }
-    xp.spec = spec; xp.mode = "spec";
-    xpRenderList();
-    const eps = xpEndpoints();
-    const first = eps.find(e => e.method === "GET") || eps[0];
-    if (first) xpPick(first.method, first.path);
-  } catch (e) { xpManual("OpenAPI 解析失败：" + e.message); }
-}
-
-function closeExplorer() {
-  xp.on = false;
-  $("#xp").classList.remove("on");
-}
-
-function xpManual(reason) {
-  xp.mode = "manual"; xp.ep = null;
-  $("#xp-list").innerHTML = `<p class="hint" style="color:var(--warn);font-size:12px">⚠ ${esc(reason)}<br>已转手填模式</p>`;
-  xpRenderForm();
-}
-
-function xpEndpoints(filter = "") {
-  const eps = [], f = filter.trim().toLowerCase();
-  for (const [p, item] of Object.entries(xp.spec.paths || {})) {
-    for (const [m, op] of Object.entries(item)) {
-      if (!["get", "post", "put", "delete", "patch", "head", "options"].includes(m) || !op) continue;
-      const hay = `${p} ${op.summary || ""} ${op.description || ""} ${(op.tags || []).join(" ")}`.toLowerCase();
-      if (f && !hay.includes(f) && !p.toLowerCase().includes(f)) continue;
-      eps.push({method: m.toUpperCase(), path: p, op});
-    }
-  }
-  return eps;
-}
-
-function xpRenderList() {
-  const info = xp.spec?.info || {};
-  const q = $("#xp-q")?.value || "";
-  const hadFocus = document.activeElement?.id === "xp-q";
-  const eps = xpEndpoints(q);
-  const groups = new Map();
-  for (const e of eps) {
-    const g = (e.op.tags || [])[0] || "其他";
-    (groups.get(g) || groups.set(g, []).get(g)).push(e);
-  }
-  $("#xp-list").innerHTML = `
-    ${info.title ? `<b>${esc(info.title)}</b> <span class="hint" style="color:var(--sub)">v${esc(info.version || "?")}</span>` : ""}
-    ${info.description ? `<div class="md" style="font-size:12.5px;margin:4px 0 8px">${mdRender(info.description)}</div>` : ""}
-    <input id="xp-q" type="text" placeholder="搜索路径 / 摘要…" value="${esc(q)}"
-           oninput="xpRenderList()" style="margin-bottom:8px">
-    ${[...groups.entries()].map(([g, list]) => `
-      <div class="hint" style="color:var(--sub);font-size:11.5px;margin:8px 0 3px">${esc(g)} · ${list.length}</div>
-      ${list.map(e => `<div class="ep" data-m="${e.method}" data-p="${esc(e.path)}"
-        onclick="xpPick('${e.method}','${esc(e.path)}')">
-        <span class="mb m-${e.method.toLowerCase()}">${e.method}</span>
-        <span class="p">${esc(e.path)}</span></div>`).join("")}
-    `).join("") || "<p class='hint' style='color:var(--sub)'>无匹配端点</p>"}`;
-  if (hadFocus) { const i = $("#xp-q"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
-}
-
-function xpPick(method, path) {
-  xp.ep = {method, path, op: (xp.spec.paths[path] || {})[method.toLowerCase()]};
-  xpRenderForm();
-  document.querySelectorAll("#xp-list .ep").forEach(el =>
-    el.classList.toggle("on", el.dataset.m === method && el.dataset.p === path));
-}
-
-function deref(s, depth = 0) {
-  // 解开 #/components/… 的 $ref（depth 防环）
-  if (!s || depth > 5 || !s.$ref || typeof s.$ref !== "string" || !s.$ref.startsWith("#/")) return s;
-  let cur = xp.spec;
-  for (const part of s.$ref.slice(2).split("/")) {
-    cur = cur?.[part.replace(/~1/g, "/").replace(/~0/g, "~")];
-    if (cur === undefined) return s;
-  }
-  return deref(cur, depth + 1);
-}
-
-function xpRenderForm() {
-  const main = $("#xp-main");
-  if (xp.mode === "manual") {
-    main.innerHTML = `
-      <div class="respbar" style="margin:0"><b>手填模式</b>
-        <span>该服务未提供可用的 OpenAPI 自描述，直接填方法与路径</span></div>
-      <div id="xp-form">
-        <div style="display:flex;gap:8px">
-          <div class="fld" style="width:110px"><label>方法</label>
-            <select id="mf-m"><option>GET</option><option>POST</option><option>PUT</option>
-              <option>DELETE</option><option>PATCH</option></select></div>
-          <div class="fld" style="flex:1"><label>路径</label>
-            <input id="mf-p" class="mono" type="text" placeholder="/api/v1/status（可直接带 ?参数）"></div>
-        </div>
-        <details style="margin:4px 0"><summary style="cursor:pointer;font-size:12.5px;color:var(--sub)">请求体（JSON；写方法用）</summary>
-          <textarea id="mf-body" class="mono" style="min-height:90px;margin-top:6px"></textarea></details>
-      </div>
-      <div><button id="xp-send" class="pri" onclick="xpSend()">发送</button></div>
-      <div id="xp-resp"></div>`;
-    return;
-  }
-  if (!xp.ep) { main.innerHTML = "<p class='hint' style='color:var(--sub)'>左侧选择一个端点</p>"; return; }
-  const {method, path, op} = xp.ep;
-  const params = (op.parameters || []).map(p => ({...p, schema: deref(p.schema)}))
-    .filter(p => p.in === "path" || p.in === "query");
-  const others = (op.parameters || []).filter(p => p.in !== "path" && p.in !== "query");
-  const fields = [`<div class="fld"><label>路径</label><input class="mono" type="text" value="${esc(path)}" disabled></div>`];
-  for (const p of params) {
-    const t = p.schema?.type || "string";
-    const v = p.schema?.default ?? p.schema?.example ?? "";
-    const req = p.required ? ' <b style="color:var(--err)">*</b>' : "";
-    const lbl = `<label>${esc(p.name)}${req}<br><small style="color:var(--sub)">${p.in}${t !== "string" ? " · " + t : ""}</small></label>`;
-    if (t === "number" || t === "integer")
-      fields.push(`<div class="fld">${lbl}<input data-in="${p.in}" data-k="${esc(p.name)}" data-t="num" type="number" value="${v}"></div>`);
-    else if (t === "boolean")
-      fields.push(`<div class="fld">${lbl}<input data-in="${p.in}" data-k="${esc(p.name)}" data-t="bool" type="checkbox" ${v === true ? "checked" : ""}></div>`);
-    else
-      fields.push(`<div class="fld">${lbl}<input data-in="${p.in}" data-k="${esc(p.name)}" data-t="str" type="text" value="${esc(String(v))}" placeholder="${esc(p.description || "")}"></div>`);
-  }
-  let bodyHtml = "";
-  const schema = deref(op.requestBody?.content?.["application/json"]?.schema);
-  if (schema?.type === "object" && schema.properties) {
-    bodyHtml = `<h4 style="margin:6px 0 4px">请求体（JSON）</h4>` +
-      Object.entries(schema.properties).map(([k, ps0]) => {
-        const ps = deref(ps0) || {};
-        const req = (schema.required || []).includes(k);
-        const t = ps.type || "string";
-        const lbl = `<label>${esc(k)}${req ? ' <b style="color:var(--err)">*</b>' : ""}<br><small style="color:var(--sub)">${t}</small></label>`;
-        if (Array.isArray(ps.enum) && ps.enum.length)
-          return `<div class="fld">${lbl}<select data-bk="${esc(k)}" data-bt="str">${ps.enum.map(v2 => `<option value="${esc(String(v2))}">${esc(String(v2))}</option>`).join("")}</select></div>`;
-        if (t === "number" || t === "integer")
-          return `<div class="fld">${lbl}<input data-bk="${esc(k)}" data-bt="num" type="number" ${ps.default !== undefined ? `value="${ps.default}"` : ""}></div>`;
-        if (t === "boolean")
-          return `<div class="fld">${lbl}<input data-bk="${esc(k)}" data-bt="bool" type="checkbox"></div>`;
-        if (t === "object" || t === "array")
-          return `<div class="fld">${lbl}<textarea data-bk="${esc(k)}" data-bt="json" class="mono" placeholder='${esc(JSON.stringify(ps.default ?? (t === "array" ? [] : {})))}'></textarea></div>`;
-        return `<div class="fld">${lbl}<input data-bk="${esc(k)}" data-bt="str" type="text" ${ps.default !== undefined ? `value="${esc(String(ps.default))}"` : ""} placeholder="${esc(ps.description || "")}"></div>`;
-      }).join("");
-  } else if (schema) {
-    bodyHtml = `<h4 style="margin:6px 0 4px">请求体（JSON；schema 非扁平对象，整段编辑）</h4>
-      <textarea id="xp-body" class="mono" style="min-height:110px">{}</textarea>`;
-  }
-  main.innerHTML = `
-    <div class="respbar" style="margin:0">
-      <span class="mb m-${method.toLowerCase()}">${method}</span>
-      <b class="mono" style="font-size:13px">${esc(path)}</b>
-      <span class="hint" style="color:var(--sub)">${esc(op.summary || "")}</span>
-    </div>
-    ${op.description ? `<div class="md" style="font-size:12.5px">${mdRender(op.description)}</div>` : ""}
-    <div id="xp-form">
-      ${fields.join("")}
-      ${others.length ? `<p class="hint" style="color:var(--sub);font-size:12px">另有 ${others.length} 个 header/cookie 参数未列出（经反代通常无需）</p>` : ""}
-      ${bodyHtml}
-      ${method === "GET" ? `<details style="margin:4px 0"><summary style="cursor:pointer;font-size:12.5px;color:var(--sub)">附加 JSON 请求体（罕见；仅记录用）</summary>
-        <textarea id="xp-body-raw" class="mono" style="min-height:90px;margin-top:6px"></textarea></details>` : ""}
-    </div>
-    <div><button id="xp-send" class="pri" onclick="xpSend()">发送</button>
-      ${method !== "GET" && method !== "HEAD" ? '<span class="hint" style="color:var(--sub);margin-left:8px">写方法，将记入审计</span>' : ""}</div>
-    <div id="xp-resp"></div>`;
-}
-
-async function xpSend() {
-  if (xp.busy) return;
-  xp.busy = true; $("#xp-send").disabled = true; $("#xp-resp").innerHTML = "<p class='hint' style='color:var(--sub)'>请求中…</p>";
-  try {
-    let url, method, body = null;
-    if (xp.mode === "manual") {
-      method = $("#mf-m").value;
-      const p = $("#mf-p").value.trim();
-      if (!p.startsWith("/")) throw new Error("路径要以 / 开头");
-      url = `/svc/${xp.id}/${xp.name}${p}`;
-      body = $("#mf-body")?.value.trim() || null;
-    } else {
-      const {method: m, path} = xp.ep;
-      method = m;
-      let p = path;
-      const q = new URLSearchParams();
-      document.querySelectorAll("#xp-form [data-in]").forEach(el => {
-        const val = el.dataset.t === "bool" ? (el.checked ? "true" : "") : String(el.value).trim();
-        if (!val) return;
-        if (el.dataset.in === "path") p = p.split("{" + el.dataset.k + "}").join(encodeURIComponent(val));
-        else q.set(el.dataset.k, val);
-      });
-      url = `/svc/${xp.id}/${xp.name}${p}${q.toString() ? "?" + q.toString() : ""}`;
-      const rawJson = $("#xp-body-raw")?.value.trim();
-      if (rawJson) body = rawJson;
-      else {
-        const obj = {};
-        document.querySelectorAll("#xp-form [data-bk]").forEach(el => {
-          if (el.dataset.bt === "bool") { if (el.checked) obj[el.dataset.bk] = true; return; }
-          const v = String(el.value).trim();
-          if (!v) return;
-          if (el.dataset.bt === "num") obj[el.dataset.bk] = Number(v);
-          else if (el.dataset.bt === "json") {
-            try { obj[el.dataset.bk] = JSON.parse(v); }
-            catch (e) { throw new Error(`字段 ${el.dataset.bk} 不是合法 JSON：${e.message}`); }
-          } else obj[el.dataset.bk] = v;
-        });
-        if (Object.keys(obj).length) body = JSON.stringify(obj);
-      }
-    }
-    const opts = {method};
-    if (body !== null && method !== "GET" && method !== "HEAD") {
-      JSON.parse(body);   // 语法闸：坏 JSON 就地报错，不发出去
-      opts.body = body;
-    }
-    xp.resp = await rawFetch(url, opts);
-    xpRenderResp();
-  } catch (e) {
-    $("#xp-resp").innerHTML = `<p class="err">${esc(e.message)}</p>`;
-  } finally { xp.busy = false; $("#xp-send").disabled = false; }
-}
-
-function xpRenderResp() {
-  const r = xp.resp;
-  if (!r) return;
-  const good = r.status >= 200 && r.status < 300;
-  const text = r.size > 65536 ? r.text.slice(0, 65536) + "\n[…已截断，共 " + r.size + " 字符]" : r.text;
-  // 视图优先级：阅读（markdown 渲染）> 表格 > JSON；文本响应：渲染 > 原始。
-  // 缺省取第一个可用视图，其余可随时切换（原始数据永远可达）。
-  let views;
-  if (r.ct.includes("json")) {
-    try {
-      const j = JSON.parse(r.text);
-      views = [];
-      const mdv = buildMdView(j);
-      if (mdv) views.push({label: "阅读", html: mdv});
-      const rows = findRows(j);
-      if (rows) views.push({label: "表格", html: jsonToTable(rows)});
-      views.push({label: "JSON", html: `<pre>${esc(JSON.stringify(j, null, 2))}</pre>`});
-    } catch { views = [{label: "原始", html: `<pre>${esc(text)}</pre>`}]; }
-  } else if (r.ct.startsWith("text/")) {
-    // text/markdown 与 text/plain 都按 markdown 渲染（agent 输出常无细分 content-type）
-    views = [{label: "渲染", html: `<div class="md">${mdRender(text)}</div>`},
-             {label: "原始", html: `<pre>${esc(text)}</pre>`}];
-  } else {
-    views = [{label: "原始", html: `<pre>${esc(text)}</pre>`}];
-  }
-  $("#xp-resp").innerHTML = `
-    <div class="respbar">
-      <b style="color:${good ? "var(--ok)" : "var(--err)"}">HTTP ${r.status}</b>
-      <span>${r.ms}ms</span><span>${(r.size / 1024).toFixed(1)}KB</span>
-      <span class="mono" style="font-size:11.5px">${esc(r.ct)}</span></div>
-    ${viewBar(views)}`;
-}
-
-/* ── 响应视图：阅读（md 渲染）/ 表格 / JSON，可切换 ── */
-
-function viewBar(views) {
-  // views: [{label, html}]；第一个为缺省
-  const n = ++xpViewN;
-  const btns = views.map((v, i) =>
-    `<button id="vb${n}_${i}" class="${i === 0 ? "on" : ""}" onclick="xpSwitchView(${n},${i})">${v.label}</button>`).join("");
-  const divs = views.map((v, i) =>
-    `<div id="vv${n}_${i}" ${i === 0 ? "" : "hidden"}>${v.html}</div>`).join("");
-  return `<div class="vbar" id="vb${n}" data-c="${views.length}">${btns}</div>${divs}`;
-}
-
-function xpSwitchView(n, i) {
-  const c = +document.getElementById("vb" + n).dataset.c;
-  for (let k = 0; k < c; k++) {
-    document.getElementById(`vv${n}_${k}`).hidden = k !== i;
-    document.getElementById(`vb${n}_${k}`).classList.toggle("on", k === i);
-  }
-}
-
-function findRows(j) {
-  const isRows = a => Array.isArray(a) && a.length &&
-    typeof a[0] === "object" && a[0] !== null && !Array.isArray(a[0]);
-  if (isRows(j)) return j;
-  if (j && typeof j === "object" && !Array.isArray(j))
-    for (const v of Object.values(j)) if (isRows(v)) return v;
-  return null;
-}
-
-/* markdown 字段识别：常见键名优先，否则任意含 ≥2 种 md 语法的长字符串 */
-const MD_KEYS = ["body", "summary", "description", "content", "markdown", "md", "readme", "note", "text"];
-
-function mdLooksLike(s) {
-  if (typeof s !== "string" || s.length < 24) return false;
-  let n = 0;
-  if (/^#{1,6}\s+\S/m.test(s)) n++;
-  if (/\*\*[^*\n]+\*\*/.test(s)) n++;
-  if (/```/.test(s)) n++;
-  if (/^[-*+]\s+\S/m.test(s)) n++;
-  if (/\[[^\]\n]+\]\([^)\s]+\)/.test(s)) n++;
-  if (/^\|.*\|/m.test(s)) n++;
-  return n >= 2;
-}
-
-function mdFieldOf(obj) {
-  let best = null;
-  for (const [k, v] of Object.entries(obj)) {
-    if (typeof v !== "string" || !mdLooksLike(v)) continue;
-    const pri = MD_KEYS.includes(k.toLowerCase()) ? 1 : 0;
-    if (!best || pri > best.pri || (pri === best.pri && v.length > best.v.length))
-      best = {k, v, pri};
-  }
-  return best;
-}
-
-/* 记录是否"文本丰富"（适合阅读视图）：有 md 语法的字段，或字符串数组（文本块）。
-   纯数据记录（全是标量，如 trades 行）不触发——缺省走表格。 */
-function textRich(o) {
-  if (mdFieldOf(o)) return true;
-  return Object.values(o).some(v =>
-    Array.isArray(v) && v.length && typeof v[0] === "string" && v[0].length);
-}
-
-/* 记录卡片：短标量 → meta chips；md 字段 → 渲染正文；字符串数组 → 列表小节；
-   长字符串 → 小节段落；嵌套对象/数组 → 折叠明细（与表格同款 details） */
-function mdCard(o) {
-  if (!textRich(o)) return null;
-  const f = mdFieldOf(o);
-  const chips = [], secs = [];
-  for (const [k, v] of Object.entries(o)) {
-    if (v === null || v === undefined || (f && k === f.k)) continue;
-    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
-      if (String(v).length < 44 && chips.length < 8)
-        chips.push(`<span class="chip">${esc(k)}: ${esc(String(v))}</span>`);
-      else
-        secs.push(`<div class="mdsec"><div class="secl">${esc(k)}</div><div class="md">${mdRender(String(v))}</div></div>`);
-    } else if (Array.isArray(v) && v.length && typeof v[0] === "string") {
-      secs.push(`<div class="mdsec"><div class="secl">${esc(k)}</div><ul>` +
-        v.map(x => `<li>${mdRender(x)}</li>`).join("") + `</ul></div>`);
-    } else {
-      secs.push(`<div class="mdsec"><div class="secl">${esc(k)}</div>${cellHtml(v)}</div>`);
-    }
-  }
-  return `<div class="mdcard">` +
-    (chips.length ? `<div class="mdmeta">${chips.join("")}</div>` : "") +
-    (f ? `<div class="md">${mdRender(f.v)}</div>` : "") +
-    secs.join("") + `</div>`;
-}
-
-function buildMdView(j) {
-  if (typeof j === "string") return mdLooksLike(j) ? `<div class="md">${mdRender(j)}</div>` : null;
-  if (Array.isArray(j)) {
-    const cards = j.slice(0, 30)
-      .map(it => (it && typeof it === "object" && !Array.isArray(it)) ? mdCard(it) : null)
-      .filter(Boolean);
-    return cards.length
-      ? cards.join("") + (j.length > 30 ? `<p class="hint" style="color:var(--sub)">… 共 ${j.length} 条，仅显示前 30</p>` : "")
-      : null;
-  }
-  if (j && typeof j === "object") {
-    const card = mdCard(j);
-    if (card) return card;
-    // 包装对象（{count,ts,items:[…]}）：沿首个对象数组下钻（与表格取行同源）
-    const rows = findRows(j);
-    if (rows) return buildMdView(rows);
-  }
-  return null;
-}
-
-/* 表格：_ 前缀字段（如 _raw，原始明细）排最后、表头弱化、单元格折叠；
-   对象/数组单元格一律折叠成 details，点开看美化 JSON */
-function truncate(s, n) { return s.length > n ? s.slice(0, n) + "…" : s; }
-
-function cellHtml(v) {
-  if (v === null || v === undefined) return "";
-  if (typeof v === "object") {
-    const brief = esc(truncate(JSON.stringify(v), 48));
-    return `<details class="cell"><summary class="mono">{…} ${brief}</summary>` +
-           `<pre>${esc(JSON.stringify(v, null, 2))}</pre></details>`;
-  }
-  const s = String(v);
-  return s.length > 120 ? `<span title="${esc(s)}">${esc(truncate(s, 120))}</span>` : esc(s);
-}
-
-function jsonToTable(rows) {
-  const cols = [...new Set(rows.flatMap(r => Object.keys(r ?? {})))];
-  const normal = cols.filter(c => !c.startsWith("_")).slice(0, 10);
-  const under = cols.filter(c => c.startsWith("_")).slice(0, 4);
-  const order = [...normal, ...under];
-  const dropped = cols.length - order.length;
-  const th = order.map(c => `<th class="${c.startsWith("_") ? "dim" : ""}">${esc(c)}</th>`).join("");
-  const trs = rows.slice(0, 50).map(r =>
-    `<tr>${order.map(c => `<td>${cellHtml(r?.[c])}</td>`).join("")}</tr>`).join("");
-  const notes = [];
-  if (rows.length > 50) notes.push(`共 ${rows.length} 行，仅显示前 50`);
-  if (dropped > 0) notes.push(`另有 ${dropped} 列未显示`);
-  const foot = notes.length ? `<tr><td colspan="${order.length}" style="color:var(--sub)">… ${notes.join("；")}</td></tr>` : "";
-  return `<table class="jt"><thead><tr>${th}</tr></thead><tbody>${trs}${foot}</tbody></table>`;
-}
-
-/* ── mini-markdown 渲染器（先全文转义后变换，绝不透传 HTML）── */
-function mdRender(src) {
-  if (!src) return "";
-  let s = esc(String(src));
-  // 1) 围栏代码块整体抽走（内容已转义，防行内规则误伤）
-  const codes = [];
-  s = s.replace(/```[\w-]*\n?([\s\S]*?)(?:```|$)/g, (_, code) => {
-    codes.push(`<pre><code>${code.replace(/\n$/, "")}</code></pre>`);
-    return "\x00" + (codes.length - 1) + "\x00";
-  });
-  // 2) 行内码 → 哨兵
-  s = s.replace(/`([^`\n]+)`/g, (_, c) => "\x01" + c + "\x01");
-  // 3) 行内：图片降级为文字、链接白名单、粗/斜/删
-  s = s.replace(/!\[([^\]]*)\]\([^)\s]*\)/g, "$1");
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) =>
-    (/^(https?:|mailto:)/i.test(u) || u.startsWith("/"))
-      ? `<a href="${u}" target="_blank" rel="noopener">${t}</a>`
-      : `<span>${t} (${u})</span>`);
-  s = s.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
-  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<i>$2</i>");
-  s = s.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
-  // 4) 行结构：标题/分割线/引用/列表/表格/段落
-  const out = [];
-  let list = null, table = null, para = [];
-  const flushP = () => { if (para.length) { out.push(`<p>${para.join("<br>")}</p>`); para = []; } };
-  const flushL = () => { if (list) { out.push(`<${list.tag}>${list.items.map(i => `<li>${i}</li>`).join("")}</${list.tag}>`); list = null; } };
-  const flushT = () => {
-    if (!table) return;
-    const [hd, ...rows] = table;
-    out.push(`<table><thead><tr>${hd.map(c => `<th>${c}</th>`).join("")}</tr></thead><tbody>` +
-      rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join("")}</tr>`).join("") + "</tbody></table>");
-    table = null;
-  };
-  for (const ln of s.split("\n")) {
-    const t = ln.trim();
-    if (/^\x00\d+\x00$/.test(t)) {   // 代码块占位符独立成行：按块级还原，不进 <p>
-      flushP(); flushL(); out.push(t); continue;
-    }
-    if (t.startsWith("|") && t.endsWith("|") && t.length > 2) {
-      const cells = t.slice(1, -1).split("|").map(c => c.trim());
-      if (cells.every(c => /^:?-{2,}:?$/.test(c))) continue;   // 表格分隔行
-      flushP(); flushL(); (table ||= []).push(cells); continue;
-    }
-    flushT();
-    const h = t.match(/^(#{1,6})\s+(.*)$/);
-    if (h) { flushP(); flushL(); out.push(`<h${h[1].length}>${h[2]}</h${h[1].length}>`); continue; }
-    if (/^(---|\*\*\*|___)\s*$/.test(t)) { flushP(); flushL(); out.push("<hr>"); continue; }
-    if (t.startsWith("&gt;")) { flushP(); flushL(); out.push(`<blockquote>${t.replace(/^&gt;\s?/, "")}</blockquote>`); continue; }
-    const ul = t.match(/^[-*+]\s+(.*)$/), ol = t.match(/^\d+[.)]\s+(.*)$/);
-    if (ul || ol) {
-      flushP();
-      const tag = ul ? "ul" : "ol";
-      if (!list || list.tag !== tag) { flushL(); list = {tag, items: []}; }
-      list.items.push((ul || ol)[1]); continue;
-    }
-    if (!t) { flushP(); flushL(); continue; }
-    para.push(t);
-  }
-  flushP(); flushL(); flushT();
-  let html = out.join("");
-  // 5) 还原行内码与代码块
-  html = html.replace(/\x01([^\x01]*)\x01/g, "<code>$1</code>");
-  html = html.replace(/\x00(\d+)\x00/g, (_, i) => codes[+i] || "");
-  return html;
-}
-
-$("#tip-login").onclick = login;
-$("#tip-tok").addEventListener("keydown", e => { if (e.key === "Enter") login(); });
-$("#btn-logout").onclick = logout;
-$("#btn-new").onclick = openNew;
-$("#btn-create").onclick = create;
-$("#btn-edit-save").onclick = saveEdit;
+/* ── 启动：带 token（URL ?mtoken= / localStorage 记忆）立即拉数据并武装 15s
+   轮询；无 token 时 refresh 走 setLogin 显示认证提示 ── */
 refresh(true);
 </script>
 </body>

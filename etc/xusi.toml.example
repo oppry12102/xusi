@@ -9,8 +9,8 @@
 # ═══════════════════════════════════════════════════════════════════
 
 # ── 管理面自身的监听地址 ──
-# 0.0.0.0 = 对外（局域网 / voidhub 走这一端口反代访问所有 agent）
-# 所有 agent 的访问都经 8601 反代；agent 默认只听 127.0.0.1，不单独暴露
+# 0.0.0.0 = 对外（局域网浏览器访问管理页）。
+# agent 观察台默认只听 127.0.0.1（expose=true 时 0.0.0.0 直通 LAN，谨慎开启）。
 [server]
 host = "0.0.0.0"
 port = 8601
@@ -27,17 +27,13 @@ port_range = [8602, 8699]
 # 给用户展示用的时区
 display_timezone = "Asia/Shanghai"
 
-# ── 集群互联（Phase 1+）──
-# 同 cluster.secret 的所有 xusi 互信，token 用 HS256-JWT 跨节点通用（一个入口访问全部 agent）。
-# 留空 = 单节点模式（今天的行为，token 是本地明文）。
-[cluster]
-# secret = "请用 openssl rand -hex 32 生成；所有节点用同一个值"
+# ── admin token ──
+# 管理面唯一的凭证：所有 /api/* 的鉴权。留空 = 未初始化（xusi init 生成）。
+[admin]
+# secret = "请用 openssl rand -hex 32 生成"
 
 # ── 节点身份 ──
-# id 不在这里写——节点身份写到 etc/node.id（单行 URL-safe 8 字节；gitignored、
+# 不写在这里——节点身份写到 etc/node.id（单行 URL-safe 8 字节；gitignored、
 # 600；不可改）。load_config 首次启动自动生成。临时覆盖用环境变量 XUSI_NODE_ID。
 # 历史：Phase 1 曾把 id 写进 toml，git pull 会撞号；Phase 1.2 改读 /etc/machine-id
 # 仍不够（VM/容器克隆会复制 machine-id），现改为本地生成。
-[node]
-role = "worker"   # worker | backup | portal；改完需重启管理面生效
-# public_url = "http://your-host:8601"   # 给 peer 看自己的入口；空时按 host:port 自动探测

@@ -1,55 +1,45 @@
-"""备份 / 恢复路由。
+"""备份 / 恢复路由（全部本地——单 xusi）。
 
-- POST /api/agents/{id}/backup  支持远端 forward（peer 端用同一 cluster_secret
-  verify 后由 peer 自己 backup.snapshot，落到 peer 自己的 etc/backups/）
-- POST /api/restore  永远本地（写本机 instances/，与远端无关）
-- GET  /api/agents/{id}/backups  支持远端 forward
-- GET  /api/backups  本机备份清单（admin-only，与 peer 无关——peer 自己的
-  备份清单去 peer 的 WebUI 看）
+- POST /api/agents/{id}/backup
+- POST /api/restore  永远本地（写本机 instances/）
+- GET  /api/agents/{id}/backups
+- GET  /api/backups  本机备份清单（admin-only）
 """
 from pathlib import Path
 
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
-from .. import backup, proxy
-from .auth import require_admin, require_agent_or_remote, require_agent_or_remote_admin
+from .. import backup
+from .auth import require_agent, require_admin
 from .models import BackupReq, RestoreReq
 
 router = APIRouter()
 
 
 @router.post("/api/agents/{agent_id}/backup", status_code=201)
-async def api_agent_backup(request: Request, req: BackupReq,
-                           pair: tuple = Depends(require_agent_or_remote_admin)) -> Response:
-    """备份到 backend（默认 LocalBackend：etc/backups/）。前置：sleeping + grace。
-
-    远端 agent 走 forward——peer 端自己 snapshot，落 peer 自己的 etc/backups/。
-    想拉远端备份到本机：先在 peer 端备份，再用 peer 的 /api/backups/{key} 拉
-    tar.gz 流回本机——备份内容走的是路径，不走身份。"""
-    target, _rec = pair
-    if target.kind == "local":
-        # snapshot 含 SIGSTOP 冻结窗 + 双遍 tar（分钟级）——线程池跑，
-        # 别冻事件循环（否则备份期间所有反代 / 轮询 / fan-in 一起卡）
-        return JSONResponse(await asyncio.to_thread(
-            backup.snapshot, target.agent["id"], reason=req.reason))
-    return await proxy.forward_to_peer(target.peer, request, request.url.path)
+async def api_agent_backup(req: BackupReq,
+                           pair: tuple = Depends(require_agent)) -> JSONResponse:
+    """备份到 backend（默认 LocalBackend：etc/backups/）。"""
+    agent, _rec = pair
+    # snapshot 含 SIGSTOP 冻结窗 + 双遍 tar（分钟级）——线程池跑，
+    # 别冻事件循环（否则备份期间管理面请求一起卡）
+    return JSONResponse(await asyncio.to_thread(
+        backup.snapshot, agent["id"], reason=req.reason))
 
 
 @router.get("/api/agents/{agent_id}/backups")
-async def api_agent_backups_list(request: Request, with_meta: bool = False,
-                                 pair: tuple = Depends(require_agent_or_remote)) -> Response:
-    target, _rec = pair
-    if target.kind == "local":
-        # with_meta 要逐包开 tar 读头——线程池跑
-        if with_meta:
-            return JSONResponse(await asyncio.to_thread(
-                backup.list_with_meta, target.agent["id"]))
+async def api_agent_backups_list(with_meta: bool = False,
+                                 pair: tuple = Depends(require_agent)) -> JSONResponse:
+    agent, _rec = pair
+    # with_meta 要逐包开 tar 读头——线程池跑
+    if with_meta:
         return JSONResponse(await asyncio.to_thread(
-            backup.list_backups, target.agent["id"]))
-    return await proxy.forward_to_peer(target.peer, request, request.url.path)
+            backup.list_with_meta, agent["id"]))
+    return JSONResponse(await asyncio.to_thread(
+        backup.list_backups, agent["id"]))
 
 
 @router.get("/api/backups")

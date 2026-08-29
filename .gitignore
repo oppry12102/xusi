@@ -19,6 +19,8 @@ etc/inter_agent_tokens.json
 etc/agents.json
 # 管理操作审计
 etc/audit.jsonl
+# mailroom 的 outbox 扫描偏移（运行时簿记，与注册表同源不同档）
+etc/outbox_state.json
 # agent 实例目录（config.toml 含 key、data/ 含 token 与会话）
 instances/
 # xuseek-v2 源码（自管副本：部署时从 GitHub 拉取，见 etc/xusi.toml source_repo）
