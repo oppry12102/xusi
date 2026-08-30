@@ -974,7 +974,8 @@ async function renderToolsTab(id) {
   const r = await api(`/api/agents/${id}/events?limit=500`);
   if (id !== cur) return;
   const evs = r.events || [];
-  const stat = {};
+  // 空原型对象：技能名可能叫 constructor/toString 等，普通 {} 会命中原型继承成员
+  const stat = Object.create(null);
   const slot = t => (stat[t] ??= {n: 0, err: 0, tmo: 0, last: ""});
   let llmRounds = 0, started = 0;
   for (const e of evs) {

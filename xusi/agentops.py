@@ -26,6 +26,7 @@ spawn `xuseek.sh serve` / stop / SIGSTOP / SIGCONT / journalctl 日志。
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import shutil
@@ -513,7 +514,9 @@ def logs(agent_id: str, n: int = 200) -> dict:
 
 _OBSERVE_TIMEOUT = 6.0
 _TOKEN_LABEL = "xusi-observe"
+_TOKEN_CAP = 3          # 补签时 xusi-observe token 封顶——401 持续时文件不随请求增长
 _TOKEN_LOCK = threading.Lock()
+_TAIL_WINDOW = 256 * 1024   # _tail_jsonl 首读窗口；凑不足 limit 行再放大到整文件
 
 
 def _read_tokens(agent: dict) -> dict[str, dict]:
@@ -526,27 +529,46 @@ def _read_tokens(agent: dict) -> dict[str, dict]:
         return {}
 
 
+def _write_tokens(agent: dict, toks: dict[str, dict]) -> None:
+    """原子落盘：同目录临时文件 + os.replace。内核每请求重读该文件，
+    非原子写会让它读到半截 JSON（该请求的全部观察台凭证瞬时失效）。
+
+    与内核 tokens.py 的并发写没有共享锁：撤销与补签同一毫秒窗时可能把刚
+    撤销的 token 写回去（窗口极小、双方都是低频管理操作）——原子写至少
+    保证内核永不见半截文件。"""
+    p = _home(agent) / "data" / "webui_tokens.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f"{p.name}.tmp-{uuid.uuid4().hex[:6]}")
+    tmp.write_text(json.dumps(toks, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, p)
+
+
 def _observe_token(agent: dict, *, force_new: bool = False) -> str:
     """观察台 token：读文件首个；文件空/缺失或 force_new（401 后补签）时自动
     签发一枚并 merge 写回——锁内重读再写，并发签发不互相覆盖（merge 不覆盖）。
 
-    写的是内核 tokens.py 的原始文件格式（json.dumps ensure_ascii=False indent=2），
-    token 用 secrets.token_urlsafe(32) 与内核一致；内核 require_token 每请求重读
-    该文件，免重启生效。"""
+    补签时按 created_at 修剪自家旧 token（保最新 _TOKEN_CAP 枚，别人的不碰）：
+    若内核是不逐请求重读 token 文件的旧版本（每 agent 自带源码快照），401 会
+    持续，不修剪则文件随请求无限增长。写的是内核 tokens.py 的原始文件格式
+    （json.dumps ensure_ascii=False indent=2），token 用 secrets.token_urlsafe(32)
+    与内核一致；内核 require_token 每请求重读该文件，免重启生效。"""
     with _TOKEN_LOCK:
         toks = _read_tokens(agent)
         if toks and not force_new:
             return next(iter(toks))
-        home = _home(agent)
-        if not home.exists():
+        if not _home(agent).exists():
             raise AgentError("实例目录不存在")
         raw = secrets.token_urlsafe(32)
         toks = _read_tokens(agent) or {}   # 锁内重读：保留并发写下的其它 token
+        if force_new:
+            mine = sorted(
+                ((t, m) for t, m in toks.items()
+                 if isinstance(m, dict) and m.get("label") == _TOKEN_LABEL),
+                key=lambda x: (x[1] or {}).get("created_at", ""))
+            for t, _m in mine[:max(0, len(mine) - (_TOKEN_CAP - 1))]:
+                del toks[t]
         toks[raw] = {"label": _TOKEN_LABEL, "created_at": _iso()}
-        p = home / "data" / "webui_tokens.json"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(toks, ensure_ascii=False, indent=2),
-                     encoding="utf-8")
+        _write_tokens(agent, toks)
         return raw
 
 
@@ -556,6 +578,41 @@ def _get(agent: dict, path: str, token: str) -> httpx.Response:
                      timeout=_OBSERVE_TIMEOUT)
 
 
+def _tail_jsonl(path: Path, limit: int) -> list[dict]:
+    """追加型 jsonl 取尾部 limit 行（坏行/非 dict 跳过，文件序返回）。
+
+    mailbox() 与 sessions() 共用。只回读尾部窗口（默认 256KB）——长跑 agent
+    的 jsonl 随呼吸无界增长，整读是 O(文件大小)/请求；窗口内凑不足 limit 行
+    再放大到整文件兜底。"""
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+    except OSError:
+        return []
+    window = _TAIL_WINDOW
+    while True:
+        start = max(0, size - window)
+        with path.open("rb") as f:
+            f.seek(start)
+            chunk = f.read()
+        lines = chunk.decode("utf-8", errors="replace").splitlines()
+        if start > 0:
+            lines = lines[1:]   # 窗口切在行中间：首行是残行，丢弃
+        if len(lines) >= limit or start == 0:
+            break
+        window = size
+    rows: list[dict] = []
+    for line in lines[-limit:]:
+        try:
+            obj = json.loads(line)
+            if isinstance(obj, dict):
+                rows.append(obj)
+        except ValueError:
+            continue
+    return rows
+
+
 def observe(agent_id: str, what: str, limit: int = 80) -> Any:
     """只读观察：events / status 两条窄通道（详情页事件流/工具统计/会话 banner）。
 
@@ -563,8 +620,13 @@ def observe(agent_id: str, what: str, limit: int = 80) -> Any:
     仍 401 才报错（文件被外部撤销/替换）。events 在 agent 进程内存
     （环形缓冲，重启即清零），status 原样透传内核 dict。"""
     agent = get_agent_or_404(agent_id)
-    if systemdctl.unit_state(_unit(agent)) != "active":
+    unit = _unit(agent)
+    if systemdctl.unit_state(unit) != "active":
         raise AgentError("agent 未在运行")
+    if systemdctl.main_stopped(unit):
+        # 暂停（SIGSTOP）单元仍 active、端口还挂着，但进程不响应——
+        # 不拦的话每个 tab 挂满 6s 超时才失败；先探 /proc（同 stop/restart）
+        raise AgentError("agent 进程已暂停（SIGSTOP 冻结）——先「续跑」再观察")
     if what not in ("events", "status"):
         raise AgentError("观察项须为 events/status 之一")
     limit = max(1, min(int(limit), 500))
@@ -578,9 +640,13 @@ def observe(agent_id: str, what: str, limit: int = 80) -> Any:
             raise AgentError("观察台 token 全部失效（重新签发一个）")
         if r.status_code != 200:
             raise AgentError(f"上游 HTTP {r.status_code}")
+        try:
+            data = r.json()
+        except ValueError:
+            # 端口被非 xuseek 服务占用等：200 但响应不是 JSON
+            raise AgentError("上游响应不是 JSON（端口可能被非 xuseek 服务占用）")
     except httpx.HTTPError as e:
         raise AgentError(f"无法连接 agent 内核（{type(e).__name__}）") from None
-    data = r.json()
     if what == "events" and isinstance(data, dict):
         return data.get("events", [])
     return data
@@ -592,19 +658,7 @@ def sessions(agent_id: str, limit: int = 30) -> dict:
     （追加型文件尾部可能有半行）。实现与 mailbox() 同构。"""
     agent = get_agent_or_404(agent_id)
     limit = max(1, min(int(limit), 200))   # 与内核 /v1/sessions 上限一致
-    p = _home(agent) / "data" / "sessions.jsonl"
-    try:
-        text = p.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        text = ""
-    rows: list[dict] = []
-    for line in text.splitlines()[-limit:]:
-        try:
-            obj = json.loads(line)
-            if isinstance(obj, dict):
-                rows.append(obj)
-        except ValueError:
-            continue
+    rows = _tail_jsonl(_home(agent) / "data" / "sessions.jsonl", limit)
     rows.reverse()
     return {"id": agent_id, "sessions": rows}
 
@@ -653,19 +707,7 @@ def mailbox(agent_id: str, limit: int = 50, *, box: str = "outbox") -> dict:
     name = {"outbox": "outbox.jsonl", "inbox": "mailbox_log.jsonl"}.get(box)
     if not name:
         raise AgentError(f"未知邮箱文件：{box}（可选 outbox/inbox）")
-    p = _home(agent) / "data" / name
-    try:
-        text = p.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        text = ""
-    rows: list[dict] = []
-    for line in text.splitlines()[-limit:]:
-        try:
-            obj = json.loads(line)
-            if isinstance(obj, dict):
-                rows.append(obj)
-        except ValueError:
-            continue
+    rows = _tail_jsonl(_home(agent) / "data" / name, limit)
     return {"id": agent_id, "box": box, "messages": rows}
 
 
