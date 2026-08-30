@@ -20,8 +20,10 @@ manager 与 agent 之间只有**一条写**通道——管理邮箱：
 spawn `xuseek.sh serve` / stop / SIGSTOP / SIGCONT / journalctl 日志。
 
 参数事实源：注册表（etc/agents.json）只记簿记（name/note/port/expose 等）与
-互联标注；mission/brains/budgets 在创建时渲染进 config.toml 后不再管理，
-改它们走投信让 agent 自己改（内核每轮热重载）。
+互联标注；mission/budgets 在创建时渲染进 config.toml 后不再管理，
+改它们走投信让 agent 自己改（内核每轮热重载）。**brains 例外**——
+patch_agent 按密钥池手术式重渲染 [brain] + [brains.*] 段，其余段逐字节
+保留（下次呼吸生效，不重启，见 _rewrite_brain_sections）。
 """
 from __future__ import annotations
 
@@ -33,6 +35,7 @@ import shutil
 import socket
 import threading
 import time
+import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -130,6 +133,95 @@ def _validate_brains(bl: list[str]) -> None:
         brains.validate_selection(bl)
     except ValueError as e:
         raise AgentError(str(e)) from None
+
+
+_HEADER_RE = re.compile(r"^\s*\[([A-Za-z0-9_.\-]+)\]\s*(?:#.*)?(?:\r?\n)?$")
+
+
+def _rewrite_brain_sections(agent: dict, chosen: list[str]) -> None:
+    """手术式改写 <home>/config.toml：只替换 [brain] 段与全部 [brains.*]
+    顶层块，其余内容（mission/display_timezone/[limits]/[agent]/
+    [capabilities]/注释/agent 自加的自定义段）逐字节保留。渲染自密钥池
+    （render_brain_section，与出生配置同源）。
+
+    逐块删除（不用连续区域——[brains.*] 出现在 [limits] 等段之后时连续
+    区域会误吞非大脑段）：每个大脑相关块的边界 = 段头行到下一个任意
+    顶层段头之前（或文件尾）。写完先 tomllib 校验（解析成功 + brains
+    键序与 default 完全一致）再 os.replace——任何一步失败原文件不动
+    （内核对坏 TOML 保持旧值：写坏 = 本次修改静默失效，必须避免）。"""
+    p = _home(agent) / "config.toml"
+    # 1) 读原文件（utf-8 严格：TOML 源文件坏字节 = agent 写坏，报错别糊弄）
+    try:
+        text = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise AgentError(f"{p} 不存在（agent 首启前被删？）——无法改写大脑段，请先确认实例目录")
+    except OSError as e:
+        raise AgentError(f"读取 {p} 失败：{e}")
+    # 2) 行游走识别顶层段头。段头 = 行首(可空白)单个方括号 [名字]，允许尾随
+    #    注释；keepends 保行尾逐字节原样。[[x]] 数组表不匹配（要求 ] 后只有
+    #    空白/注释/换行）。
+    lines = text.splitlines(keepends=True)
+    hdr: list[tuple[int, str]] = []
+    for i, ln in enumerate(lines):
+        m = _HEADER_RE.match(ln)
+        if m:
+            hdr.append((i, m.group(1)))
+    # 3) 大脑相关 = [brain] 或 [brains.<name>]（[brains.x.extra] 子表会匹配
+    #    startswith("brains.")——它随父块一起进入待删区；不单独放行，
+    #    否则删除父块后它变孤儿段，校验会拦下）
+    is_brain = lambda n: n == "brain" or (n.startswith("brains.") and len(n) > 7)
+    deleted = [i for i, n in hdr if is_brain(n)]
+    # 末尾补一个 \n = 与后续保留内容之间留空行分隔（被删块原本带的空行随块
+    # 一起删掉了；render_brain_section 只保证块间空行，不保证块尾空行）
+    rendered = "\n".join(brains.render_brain_section(chosen)) + "\n"
+    if deleted:
+        # 每个被删块到下一个任意顶层段头（或文件尾）；区间列表删掉，
+        # 新渲染段插入第一个被删块的位置
+        all_hdr = [i for i, _n in hdr]
+        ranges: list[tuple[int, int]] = []
+        for i in deleted:
+            nxt = next((j for j in all_hdr if j > i), len(lines))
+            ranges.append((i, nxt))
+        merged: list[tuple[int, int]] = []
+        for s, e in ranges:
+            if merged and s <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+            else:
+                merged.append((s, e))
+        parts: list[str] = []
+        pos = 0
+        for s, e in merged:
+            parts.append("".join(lines[pos:s]))
+            pos = e
+        parts.append("".join(lines[pos:]))
+        new_text = parts[0] + rendered + "".join(parts[1:])
+    else:
+        # 文件里没有任何大脑段（agent 全删了）：整段追加到文件尾
+        new_text = text if text.endswith("\n") else text + "\n"
+        new_text += "\n" + rendered
+    # 4) 落盘前校验：解析必须成功，且 brains 键序 == chosen、default ==
+    #    chosen[0]（顺序即故障转移序——tomllib 保文档序）。不符多半是撞上
+    #    agent 并发编辑（或文件里藏着解析不到的大脑段变体）。
+    try:
+        parsed = tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError as e:
+        raise AgentError(f"改写后的 config.toml 无法解析（原文件未动）：{e}")
+    names = list((parsed.get("brains") or {}).keys())
+    dflt = str((parsed.get("brain") or {}).get("default") or "")
+    if names != chosen or dflt != chosen[0]:
+        raise AgentError("改写后的大脑段与所选不一致（原文件未动）——可能撞上 agent 并发编辑，请重试")
+    # 5) 原子落盘（同 _write_tokens：同目录临时文件 + os.replace；600 含 api_key）
+    tmp = p.with_name(f"{p.name}.tmp-{uuid.uuid4().hex[:6]}")
+    tmp.write_text(new_text, encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass
+    try:
+        os.replace(tmp, p)
+    except OSError as e:
+        tmp.unlink(missing_ok=True)
+        raise AgentError(f"改写 {p} 失败（原文件未动）：{e}")
 
 
 def create_agent(name: str, mission: str, brain_list: list[str], *,
@@ -399,21 +491,22 @@ def delete(agent_id: str) -> dict:
 
 # ── 改参 ─────────────────────────────────────────────────────────────
 
-# 可改字段 = 簿记层（name/note）+ 进程层（port/expose）。
-# mission/brains/budgets 在创建后归 agent 自治——改它们请投信让 agent 自己
+# 可改字段 = 簿记层（name/note）+ 进程层（port/expose）+ 大脑（brains，
+# 手术式重渲染 config.toml 的 [brain] + [brains.*] 段，下次呼吸生效）。
+# mission/budgets 在创建后归 agent 自治——改它们请投信让 agent 自己
 # 修改自己的 config.toml（内核每轮热重载）。
-_PATCHABLE = {"name", "note", "port", "expose"}
+_PATCHABLE = {"name", "note", "port", "expose", "brains"}
 
 _AGENT_OWNED = {
     "mission": "使命已由 agent 自治：请投信让它自己修改 config.toml（内核每轮热重载）",
-    "brains": "大脑已由 agent 自治：请投信让它自己修改 config.toml 的 [brains.*]（新 api_key 可向管理员索取）",
     "budgets": "预算已由 agent 自治：请投信让它自己修改 config.toml 的 [limits] 段（v2.7.5+；旧内核为 [agent] 段）",
 }
 
 
 def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) -> dict:
     """改参。name/note 写注册表即生效；port/expose 改的是进程监听参数，
-    返回 restart_required，?apply=restart 立即执行。"""
+    返回 restart_required，?apply=restart 立即执行；brains 手术式重渲染
+    config.toml 大脑段（下次呼吸生效，不重启），返回 brains_effective。"""
     agent = get_agent_or_404(agent_id)
     bad = set(changes) - _PATCHABLE
     owned = sorted(b for b in bad if b in _AGENT_OWNED)
@@ -423,6 +516,17 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
             f"{_AGENT_OWNED[owned[0]]}")
     if bad:
         raise AgentError(f"不可修改的字段：{', '.join(sorted(bad))}（可改：{', '.join(sorted(_PATCHABLE))}）")
+
+    # 大脑段手术放最前（最易失败——失败时其余字段一律未落，400 语义干净）。
+    # 幂等 resync：与注册表快照相同也重渲染（轮换 brains.toml 的 key 后
+    # 对 agent 做任意 PATCH 即触发重渲染，下次呼吸生效）。
+    brains_new = None
+    if "brains" in changes:
+        bl = [str(b) for b in (changes["brains"] or [])]
+        _validate_brains(bl)
+        _rewrite_brain_sections(agent, bl)
+        registry.update_agent(agent_id, {"brains": bl})   # 快照即真相（卡片/状态 tab）
+        brains_new = bl
 
     hot = {}       # 写注册表即生效
     need_restart = False
@@ -455,9 +559,15 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     if need_restart and apply_restart:
         _respawn(next_rec)
         restarted = True
-    audit("agent.patch", agent=agent_id, fields=sorted(changes), restarted=restarted)
+    ad: dict[str, Any] = {"fields": sorted(changes), "restarted": restarted}
+    if brains_new is not None:
+        ad.update(brains=brains_new, brains_effective="next_breath")
+    audit("agent.patch", agent=agent_id, **ad)
     out = get_agent_or_404(agent_id)
-    return {**out, "restart_required": need_restart, "restarted": restarted}
+    out = {**out, "restart_required": need_restart, "restarted": restarted}
+    if brains_new is not None:
+        out["brains_effective"] = "next_breath"   # 下次呼吸生效，不重启
+    return out
 
 
 def _respawn(agent: dict) -> None:
@@ -669,6 +779,24 @@ def sessions(agent_id: str, limit: int = 30) -> dict:
     rows = _tail_jsonl(_home(agent) / "data" / "sessions.jsonl", limit)
     rows.reverse()
     return {"id": agent_id, "sessions": rows}
+
+
+_BOOT_CAP = 64_000   # Boot tab 展示封顶（超出截断打标；内核注入硬截 32k，展示墙放宽一档）
+
+
+def boot(agent_id: str) -> dict:
+    """Boot 自述全文：读 workspace/BOOT.md（磁盘事实，agent 停机也能看）。
+    与内核注入同口径 errors="replace"（文件 100% 归大脑自管，坏字节 → U+FFFD
+    不炸管理面）；缺失（首口呼吸前的年轻 agent）→ exists=False。"""
+    agent = get_agent_or_404(agent_id)
+    p = _home(agent) / "workspace" / "BOOT.md"
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"id": agent_id, "exists": False, "text": "", "truncated": False}
+    truncated = len(text) > _BOOT_CAP
+    return {"id": agent_id, "exists": True,
+            "text": text[:_BOOT_CAP] if truncated else text, "truncated": truncated}
 
 
 # ── 投信 / 收信（唯一的写通道）──────────────────────────────────────

@@ -5,7 +5,8 @@
 - 生命周期：5 个 POST /api/agents/{id}/{action}
 - 邮箱（唯一的写通道）：POST mail 投信 / GET mailbox 收信
 - 日志：GET logs（journalctl，进程宿主职责）
-- 观察（只读）：GET events / status（窄通道，详情页用）；会话：GET sessions（磁盘）
+- 观察（只读）：GET events / status（窄通道，详情页用）；会话：GET sessions（磁盘）；
+  Boot 自述：GET boot（workspace/BOOT.md，磁盘）
 
 单 xusi：所有 agent 都在本机 registry。写端点（PATCH / DELETE / 5 lifecycle /
 mail）走 `require_agent`（admin + 本地存在性）。
@@ -149,3 +150,12 @@ async def api_agent_sessions(limit: int = 30, pair: tuple = Depends(require_agen
     # 追加型文件取尾部要先整读——走线程池，别冻事件循环
     return JSONResponse(await asyncio.to_thread(
         agentops.sessions, agent["id"], limit))
+
+
+@router.get("/api/agents/{agent_id}/boot")
+async def api_agent_boot(pair: tuple = Depends(require_agent)) -> JSONResponse:
+    """Boot 自述：读磁盘 workspace/BOOT.md 全文（内核 /v1/status 只回
+    {exists, chars}，全文走这里；agent 停机也能看）。缺失（首口呼吸前）
+    → exists=false；超 64k 截断打 truncated。"""
+    agent, _rec = pair
+    return JSONResponse(await asyncio.to_thread(agentops.boot, agent["id"]))

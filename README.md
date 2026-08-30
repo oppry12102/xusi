@@ -86,9 +86,10 @@ xusi 只当**公告板**，不替 agent 做任何决定：
 
 **与 agent 之间只有一条写通道——管理邮箱**，绝不 import xuseek 代码、绝不调
 xuseek CLI、绝不反代、绝不改写 config.toml（创建时渲染一次
-出生配置，此后归 agent 自治）；只读观察两条 HTTP GET
-（/v1/events、/v1/status——详情页事件流/工具统计/会话 banner，token 缺失
-自动签发），会话索引读磁盘：
+出生配置，此后归 agent 自治；**唯一例外**：改参接口按密钥池手术式重渲染
+`[brain]`+`[brains.*]` 段，下次呼吸生效，其余段绝不触碰）；只读观察两条
+HTTP GET（/v1/events、/v1/status——详情页事件流/工具统计/会话 banner，
+token 缺失自动签发），会话索引与 Boot 自述读磁盘：
 
 - **投信**：追加 `<home>/data/mailbox.jsonl`（sender=admin，与内核 post() 同语义，
   双写 mailbox_log.jsonl 保历史；daemon 5s 轮询唤醒）；
@@ -131,10 +132,13 @@ xusi/
   ② 管理面启动时 reconcile——机器重启后按注册表期望态（running/stopped/paused）拉齐。
 - **暂停** = SIGSTOP 冻结大脑（它自起的后台服务继续跑）；停止/重启一律优雅停，
   轮边界把会话落盘后再退。
-- **改参边界**：管理面只能改簿记（name/note）与进程监听（port/expose，需重启）。
-  mission / 大脑 / 预算在创建后归 **agent 自治**——投信让它自己改 config.toml
-  （内核每口呼吸热重载；改前建议让 agent 自行备份）。
-- **密钥轮换**：改 `etc/brains.toml` → 投信把新 key 给 agent → agent 自己改 config。
+- **改参边界**：管理面可改簿记（name/note）、进程监听（port/expose，需重启）与
+  大脑成员/默认（brains——手术式重渲染 config.toml 的 [brain]+[brains.*] 段，
+  **下次呼吸生效、不重启**；其余段逐字节保留）。mission / 预算在创建后归
+  **agent 自治**——投信让它自己改 config.toml（内核每口呼吸热重载；改前建议
+  让 agent 自行备份）。
+- **密钥轮换**：改 `etc/brains.toml` → 对 agent 做一次 PATCH（改 brains 或任意
+  字段触发重渲染）→ 下次呼吸生效。卡片上点大脑 chip 可直接切换默认。
 - **备份**：停止态可用；运行中为 SIGSTOP 冻结窗快照（jsonl 均为追加型文件，一致性
   风险低）。agent 自己的凭证文件（webui_tokens.json）不进备份包，恢复后由 agent
   自行重建。
@@ -160,5 +164,7 @@ xusi/
 
 - **xuseek-v2**：agent 的源码与运行时（`--home` 挂接 `instances/<id>`，目录即自主体）。
   xusi 只在创建时渲染一次 `config.toml`（出生配置：mission/brains/api_key/budgets），
-  此后该文件、该目录里的任何东西都归 agent 自己（唯一例外：详情页只读观察在
-  `data/webui_tokens.json` 缺失时自动补签一枚 `xusi-observe` token，merge 不覆盖）。
+  此后该文件、该目录里的任何东西都归 agent 自己。三个例外：① 改参按密钥池
+  手术式重渲染 `[brain]`+`[brains.*]` 段（下次呼吸生效，agent 在这两段的手改
+  会被覆盖）；② 详情页只读观察在 `data/webui_tokens.json` 缺失时自动补签一枚
+  `xusi-observe` token（merge 不覆盖）；③ 投信追加 `data/mailbox*.jsonl`。

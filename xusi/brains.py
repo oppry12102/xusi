@@ -1,9 +1,11 @@
 """主密钥池：etc/brains.toml —— 管理员维护的大脑（LLM 厂商）模板。
 
 创建 agent 时从这里取模板，连同 api_key 直写进 agent 的 config.toml（600）
-——**只渲染这一次出生配置**。此后 config.toml 归 agent 自治：改 mission /
-换大脑 / 轮换 key / 调预算一律投信让 agent 自己改（内核每个大循环热重载，
-无需重启）。xusi 不再重渲染、不再读回 config.toml。
+——出生配置。此后 config.toml 归 agent 自治：改 mission / 调预算投信让
+agent 自己改（内核每个大循环热重载，无需重启）。**唯一例外**：大脑段——
+改参接口按密钥池手术式重渲染 [brain] + [brains.*] 段（agentops
+_rewrite_brain_sections，下次呼吸生效，不重启），其余段绝不触碰。
+xusi 不读回 config.toml（手术改写是唯一写入口）。
 """
 from __future__ import annotations
 
@@ -108,6 +110,50 @@ def _q(s: Any) -> str:
     return json.dumps(str(s), ensure_ascii=False)
 
 
+def render_brain_blocks(chosen: list[str]) -> list[str]:
+    """每个所选大脑一个 [brains.<name>] 块（含 note/economy 提示注释、
+    api_key/base_url/model、_OPTIONAL_FIELDS 透传，块尾 "" 空行）。
+
+    chosen 已去重保序。render_agent_config（出生配置）与 agentops 的
+    改参手术共用这份渲染——两处必须同源。"""
+    pool = _load_pool()
+    lines: list[str] = []
+    for name in chosen:
+        spec = pool[name]
+        lines.append(f"[brains.{name}]")
+        # 面向智能体的使用提示（渲染注释通道，内核解析值不受影响）：note 是
+        # 该脑特有事实（如"免费（自托管）"）；economy 档再补一条档位通用提示
+        # （上下文受限、子 agent/批量任务优先）。"免费"不是档位的定义，各家
+        # 脑用 note 自述，代码不替它说。
+        note = spec.get("note")
+        if isinstance(note, str) and note.strip():
+            for ln in note.strip().splitlines():
+                lines.append(f"# {ln.strip()}")
+        if str(spec.get("tier") or "") == "economy":
+            win = spec.get("context_window")
+            lim = (f"（上限 {int(win)} tokens）"
+                   if isinstance(win, (int, float)) and int(win) > 0 else "")
+            lines.append(f"# 经济档（tier=economy）：上下文受限{lim}。")
+            lines.append("# 子 agent 与批量粗活（摘要/分类/记忆分析）优先走这家；长会话主回路不适合。")
+        lines.append(f"api_key = {_q(spec.get('api_key', ''))}")
+        lines.append(f"base_url = {_q(spec.get('base_url', ''))}")
+        lines.append(f"model = {_q(spec.get('model', ''))}")
+        for k in _OPTIONAL_FIELDS:
+            if k in spec and spec[k] not in ("", None):
+                v = spec[k]
+                lines.append(f"{k} = {_q(v)}" if isinstance(v, str) else f"{k} = {v}")
+        lines.append("")
+    return lines
+
+
+def render_brain_section(chosen: list[str]) -> list[str]:
+    """[brain] default 段 + 全部 [brains.*] 块（chosen[0] = default）。
+
+    render_agent_config 与 agentops 改参手术共用——出生配置与手术改写
+    必须逐字节同源。"""
+    return ["[brain]", f"default = {_q(chosen[0])}", ""] + render_brain_blocks(chosen)
+
+
 def render_agent_config(mission: str, brains: list[str], budgets: dict | None = None,
                         display_timezone: str | None = None,
                         source_version: str = "") -> str:
@@ -138,43 +184,17 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     lines = [
         "# ═══════════════════════════════════════════════════════════════════",
         "# 本文件由墟司（xusi 管理面）在创建时渲染一次——出生配置。",
-        "# 此后归你（agent）自治：xusi 不再改写本文件；改 mission / 换大脑 / 调",
-        "# 预算请直接编辑（内核每个大循环热重载，无需重启；改前建议自行备份）。",
+        "# 此后归你（agent）自治：改 mission / 调预算请直接编辑（内核每个大循环",
+        "# 热重载，无需重启；改前建议自行备份）。例外：大脑段 [brain] + [brains.*]",
+        "# 由管理面改参按密钥池重渲染——你在这两段里的手改会被覆盖（下次呼吸生效）。",
         "# 新大脑的 api_key 可经管理邮箱向管理员索取。",
         "# ═══════════════════════════════════════════════════════════════════",
         "",
         f"mission = {_q(mission)}",
         f'display_timezone = {_q(tz)}',
         "",
-        "[brain]",
-        f"default = {_q(chosen[0])}",
-        "",
     ]
-    for name in chosen:
-        spec = pool[name]
-        lines.append(f"[brains.{name}]")
-        # 面向智能体的使用提示（渲染注释通道，内核解析值不受影响）：note 是
-        # 该脑特有事实（如"免费（自托管）"）；economy 档再补一条档位通用提示
-        # （上下文受限、子 agent/批量任务优先）。"免费"不是档位的定义，各家
-        # 脑用 note 自述，代码不替它说。
-        note = spec.get("note")
-        if isinstance(note, str) and note.strip():
-            for ln in note.strip().splitlines():
-                lines.append(f"# {ln.strip()}")
-        if str(spec.get("tier") or "") == "economy":
-            win = spec.get("context_window")
-            lim = (f"（上限 {int(win)} tokens）"
-                   if isinstance(win, (int, float)) and int(win) > 0 else "")
-            lines.append(f"# 经济档（tier=economy）：上下文受限{lim}。")
-            lines.append("# 子 agent 与批量粗活（摘要/分类/记忆分析）优先走这家；长会话主回路不适合。")
-        lines.append(f"api_key = {_q(spec.get('api_key', ''))}")
-        lines.append(f"base_url = {_q(spec.get('base_url', ''))}")
-        lines.append(f"model = {_q(spec.get('model', ''))}")
-        for k in _OPTIONAL_FIELDS:
-            if k in spec and spec[k] not in ("", None):
-                v = spec[k]
-                lines.append(f"{k} = {_q(v)}" if isinstance(v, str) else f"{k} = {v}")
-        lines.append("")
+    lines.extend(render_brain_section(chosen))
     # 预算段：格式随内核版本（schema 不匹配 = 限额静默失效，见模块头常量）。
     # 两个分支都只写管理员显式给的键（0 = 不限），不做推导；缺省不写段，
     # 由内核按自身默认（v2.7.5 按大脑窗口自动派生）处理。

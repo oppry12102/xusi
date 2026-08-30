@@ -55,17 +55,25 @@ curl -X POST http://SERVER:8601/api/agents \
   已删除、max_context_tokens 由内核按大脑窗口自动派生）；更早内核认 `[agent]`
   三段。渲染格式随 `source_version` 自动分叉
 - 创建时 xusi 渲染一次 `config.toml`（出生配置：mission/brains/api_key/budgets，
-  chmod 600），**此后 xusi 不再改写该文件**
+  chmod 600），**此后 xusi 不再改写该文件**（唯一例外：改参按密钥池手术式
+  重渲染 [brain] + [brains.*] 段，见下）
 - 启动验收 = systemd 单元 active + 端口进入监听（不再探 agent 的 HTTP）
 
 ### 改参（PATCH）
 
-只接受：`name` / `note` / `port` / `expose`。
+只接受：`name` / `note` / `port` / `expose` / `brains`。
 
 - `name`/`note`：写注册表即生效
 - `port`/`expose`：进程监听参数，返回 `restart_required: true`；
   `?apply_restart=1` 保存并立即重启
-- **mission / brains / budgets 已归 agent 自治**——PATCH 它们返回 400，并提示
+- `brains`：大脑列表（首个为默认，顺序 = 故障转移序；非空、无重复、都在
+  密钥池且已配 key）。手术式重渲染 config.toml 的 `[brain]` + `[brains.*]`
+  段（按密钥池模板，其余段逐字节保留）→ 原子落盘（先 tomllib 校验，任何
+  失败**原文件不动**）→ 注册表快照同步。**下次呼吸生效，不重启**（内核
+  每口呼吸热重载；会话中的呼吸不受影响）；返回 `brains_effective:
+  "next_breath"`。与当前快照相同也重渲染（幂等 resync——轮换 brains.toml
+  的 key 后对 agent 做任意 PATCH 即触发）
+- **mission / budgets 已归 agent 自治**——PATCH 它们返回 400，并提示
   投信让 agent 自己修改自己的 config.toml（内核每口呼吸热重载）
 
 ## 3. 管理邮箱（唯一的写通道）
@@ -80,7 +88,7 @@ curl -X POST http://SERVER:8601/api/agents/{id}/mail \
 
 - 追加 `<home>/data/mailbox.jsonl`（sender=admin，双写 mailbox_log.jsonl 保历史）
 - daemon 每 5s 轮询，休眠中有信立即唤醒；会话中下一口呼吸收信
-- 改 mission / 换大脑 / 调预算 / 教 agent 互联信封格式——都走这里
+- 改 mission / 调预算 / 教 agent 互联信封格式——都走这里（换大脑用改参 PATCH，直路且立即反馈）
 
 ### 收信
 
@@ -100,6 +108,7 @@ curl 'http://SERVER:8601/api/agents/{id}/mailbox?box=outbox&limit=50' \
 | `GET /api/agents/{id}/events?limit=80` | admin | 只读转发内核 `/v1/events`：`{"id","events":[...]}`。事件仅存于 agent 进程内存（环形缓冲，进程重启即清零）；limit 钳 1..500 |
 | `GET /api/agents/{id}/status` | admin | 只读转发内核 `/v1/status`（原样透传：daemon 状态 / 下次呼吸 / 工具统计） |
 | `GET /api/agents/{id}/sessions?limit=30` | admin | 会话索引：读磁盘 `data/sessions.jsonl` 尾部（最新在前）：`{"id","sessions":[...]}`。limit 钳 1..200 |
+| `GET /api/agents/{id}/boot` | admin | Boot 自述：读磁盘 `workspace/BOOT.md` 全文（超 64000 字符截断打 `truncated`；缺失 → `exists:false`）。agent 停机也能看 |
 
 - 观察台 token：`data/webui_tokens.json` 缺失/为空时，xusi **自动签发一枚**写进
   该文件（`secrets.token_urlsafe(32)`、label=`xusi-observe`、merge 不覆盖）；

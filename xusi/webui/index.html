@@ -51,6 +51,8 @@
   .row{display:flex;gap:8px;flex-wrap:wrap;color:var(--sub);font-size:12.5px;align-items:center}
   .chip{background:#f0f2f7;border-radius:6px;padding:0 7px;font-size:12px;color:var(--ink)}
   .chip.bcur{background:#eaf0fb;color:var(--acc);font-weight:700}
+  .chip.bclk{cursor:pointer}
+  .chip.bclk:hover{background:#e3e9f7;color:var(--acc)}
   .chip.conn{background:#e3f4ea;color:var(--ok)}
   .mono{font-family:var(--mono)}
   .acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
@@ -314,10 +316,13 @@
       </div></div>
     </div>
     <div><label>备注（可选）</label><input id="e-note" type="text"></div>
+    <div><label>大脑（首个勾选为默认；顺序 = 故障转移序）<span class="hint" style="font-weight:400">——下次呼吸生效，不重启</span></label>
+      <div id="e-brains" class="check"></div></div>
     <div id="e-err" class="err"></div>
     <div class="hint" style="color:var(--sub);font-size:12px">
-      这里只能改簿记与进程监听参数。mission / 大脑 / 预算在创建后归 <b>agent 自治</b>——
-      改它们请到「信箱」tab 投信，让 agent 自己修改自己的 config.toml（每口呼吸热重载）。
+      大脑（brains）改的是 config.toml 的 [brain] + [brains.*] 段（按密钥池模板重渲染，
+      其余段原样保留），<b>下次呼吸生效、不重启</b>；mission / 预算在创建后仍归
+      <b>agent 自治</b>——改它们请到「信箱」tab 投信（每口呼吸热重载）。
     </div>
   </div>
   <div class="dlg-f"><button onclick="dlgEdit.close()">取消</button>
@@ -519,7 +524,7 @@ function renderCards(list) {
         ${interconnectChip(a)}
         ${(a.brains || []).map((b, i) => i === 0
           ? `<b class="chip bcur" title="默认大脑">${esc(b)}</b>`
-          : `<span class="chip">${esc(b)}</span>`).join("")}
+          : `<span class="chip bclk" data-id="${a.id}" data-brain="${esc(b)}" title="点击切换为默认大脑（下次呼吸生效，不重启）">${esc(b)}</span>`).join("")}
       </div>
       <div class="row">
         <span>自动重启 <b>${(a.process || {}).auto_restarts ?? 0}</b></span>
@@ -544,7 +549,9 @@ document.addEventListener("click", () => {
 
 $("#cards").addEventListener("click", e => {
   const delBtn = e.target.closest(".ov-del");
-  if (delBtn) { del(delBtn.dataset.id, delBtn.dataset.name); }
+  if (delBtn) { del(delBtn.dataset.id, delBtn.dataset.name); return; }
+  const chip = e.target.closest(".chip.bclk");
+  if (chip) switchDefault(chip.dataset.id, chip.dataset.brain);
 });
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -600,6 +607,21 @@ async function del(id, name) {
   try { const r = await api(`/api/agents/${id}`, {method: "DELETE"});
     alert(`已删除。目录移至：${r.moved_to}`); refresh(); if (cur === id) closeDetail(); }
   catch (e) { alert(e.message); }
+}
+
+async function switchDefault(id, name) {
+  if (me?.role !== "admin") return;                       // 与 openEdit 同口径
+  const a = agentsCache.find(x => x.id === id);
+  const rest = (a?.brains || []).filter(b => b !== name);
+  if (!rest.length) return;
+  if (!confirm(`把「${a?.name || id}」的默认大脑切换为「${name}」？\n` +
+      `故障转移序将变为：${[name, ...rest].join(" → ")}\n下次呼吸生效，不重启。`)) return;
+  try {
+    await api(`/api/agents/${id}`, {method: "PATCH",
+      body: JSON.stringify({brains: [name, ...rest]})});  // 前置重排 = 切换默认
+    refresh();
+    if (cur === id) loadDetail();                         // 抽屉开着就刷详情
+  } catch (e) { alert(e.message); }
 }
 
 /* ── 新建 ─────────────────────────────────────────── */
@@ -823,7 +845,7 @@ $("#btn-restore-go").onclick = async () => {
 };
 
 /* ── 详情抽屉 ─────────────────────────────────────── */
-const TABS = ["状态", "事件", "会话", "信箱", "工具", "日志"];
+const TABS = ["状态", "事件", "会话", "信箱", "工具", "Boot", "日志"];
 async function openDetail(id) {
   cur = id; curTab = "状态";
   drawer.classList.add("open");
@@ -925,6 +947,15 @@ async function loadDetail() {
       );
     } else if (curTab === "工具") {
       await renderToolsTab(id);
+    } else if (curTab === "Boot") {
+      const r = await api(`/api/agents/${id}/boot`);
+      if (id !== cur) return;
+      setPane(
+        (r.truncated ? `<p class="hint">（BOOT.md 超过 64000 字符，仅显示前段——完整内容见实例目录 workspace/BOOT.md）</p>` : "") +
+        (r.exists && r.text
+          ? `<div class="md">${mdRender(r.text)}</div>`      // mdRender 先转义后变换，XSS 安全
+          : `<p class="hint">（还没有 BOOT.md——agent 首口呼吸后才会写自述）</p>`)
+      );
     } else if (curTab === "日志") {
       const r = await api(`/api/agents/${id}/logs?limit=300`);
       if (id !== cur) return;
@@ -1077,6 +1108,7 @@ function mdRender(src) {
 
 /* ── 改参（簿记 + 进程层）────────────────────────── */
 let editCur = null;
+let editBrainsOk = false;
 
 async function openEdit(id) {
   if (me?.role !== "admin") { alert("改参需要 admin token"); return; }
@@ -1091,6 +1123,14 @@ async function openEdit(id) {
       $("#e-port").innerHTML = `<option value="">保持 ${s.port}</option>` +
         ps.ports.map(p => `<option value="${p}">${p}</option>`).join("");
     }).catch(() => {});
+    try {
+      _brainsPool = await api("/api/brains");   // 每次重取，别用新建对话框的旧池
+      renderBrainChecks("#e-brains", s.brains || []);
+      editBrainsOk = true;
+    } catch (e) {
+      $("#e-brains").innerHTML = `<span class="hint">（密钥池加载失败：${esc(e.message)}——本次不提交大脑改动）</span>`;
+      editBrainsOk = false;
+    }
     $("#e-err").textContent = "";
     dlgEdit.showModal();
   } catch (e) { alert(e.message); }
@@ -1106,6 +1146,13 @@ async function saveEdit() {
   };
   const p = $("#e-port").value;
   if (p) body.port = parseInt(p, 10);
+  if (editBrainsOk) {
+    // 池序收集勾选——与创建对话框同语义：首个勾选（池序）= 默认，顺序 = 故障转移序
+    const brains = _brainsPool.map(b => b.name).filter(n =>
+      [...$("#e-brains").querySelectorAll("input:checked")].some(i => i.value === n));
+    if (!brains.length) { $("#e-err").textContent = "至少勾选一家大脑"; return; }
+    if (JSON.stringify(brains) !== JSON.stringify(editCur.brains || [])) body.brains = brains;
+  }
   const needRestart = (p && parseInt(p, 10) !== editCur.port) || (body.expose !== !!editCur.expose);
   let applyRestart = false;
   if (needRestart) {
@@ -1115,9 +1162,10 @@ async function saveEdit() {
   }
   $("#btn-edit-save").disabled = true; $("#e-err").textContent = "";
   try {
-    await api(`/api/agents/${id}?apply_restart=${applyRestart}`,
+    const r = await api(`/api/agents/${id}?apply_restart=${applyRestart}`,
               {method: "PATCH", body: JSON.stringify(body)});
     dlgEdit.close();
+    if (r.brains_effective === "next_breath") alert("大脑已保存——下次呼吸生效（不重启）");
     refresh(); loadDetail();
   } catch (e) { $("#e-err").textContent = e.message; }
   finally { $("#btn-edit-save").disabled = false; }

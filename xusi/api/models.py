@@ -19,9 +19,11 @@ class CreateAgentReq(BaseModel):
 
 
 class PatchAgentReq(BaseModel):
-    """可改字段只有簿记层（name/note）与进程层（port/expose）。
+    """可改字段：簿记层（name/note）、进程层（port/expose，需重启）、
+    大脑（brains——手术式重渲染 config.toml 的 [brain] + [brains.*] 段，
+    下次呼吸生效，不重启）。
 
-    mission/brains/budgets 在创建后归 agent 自治——额外字段放行（extra="allow"），
+    mission/budgets 在创建后归 agent 自治——额外字段放行（extra="allow"），
     由 patch_agent 给出「请投信让 agent 自己修改 config.toml」的友好 400。
     """
     model_config = ConfigDict(extra="allow")
@@ -29,6 +31,8 @@ class PatchAgentReq(BaseModel):
     note: str | None = None
     expose: bool | None = None
     port: int | None = None
+    brains: list[str] | None = Field(None, description="大脑列表（首个为默认，顺序=故障转移序；"
+                                                        "下次呼吸生效，不重启）")
 
 
 class MailReq(BaseModel):
