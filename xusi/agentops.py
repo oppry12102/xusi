@@ -38,8 +38,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from . import brains, ports, registry, systemdctl, versions
 from .config import get_config
 
@@ -572,7 +570,11 @@ def _observe_token(agent: dict, *, force_new: bool = False) -> str:
         return raw
 
 
-def _get(agent: dict, path: str, token: str) -> httpx.Response:
+def _get(agent: dict, path: str, token: str) -> "httpx.Response":
+    """观察 GET。httpx 在函数内惰性 import：它是观察通道独有的第三方依赖，
+    模块级 import 会让「venv 缺 httpx」炸掉整个 agentops（api 与 CLI 全量
+    import 本模块），惰性后只废 observe 一条窄通道。"""
+    import httpx
     url = f"http://127.0.0.1:{agent['port']}{path}"
     return httpx.get(url, headers={"Authorization": f"Bearer {token}"},
                      timeout=_OBSERVE_TIMEOUT)
@@ -631,6 +633,12 @@ def observe(agent_id: str, what: str, limit: int = 80) -> Any:
         raise AgentError("观察项须为 events/status 之一")
     limit = max(1, min(int(limit), 500))
     path = f"/v1/{what}" if what == "status" else f"/v1/events?limit={limit}"
+    try:
+        import httpx
+    except ImportError:
+        raise AgentError(
+            "缺少 httpx 依赖（pip install httpx）——只读观察不可用，"
+            "管理面其余功能不受影响") from None
     try:
         r = _get(agent, path, _observe_token(agent))
         if r.status_code == 401:
