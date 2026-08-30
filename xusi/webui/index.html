@@ -48,6 +48,8 @@
   .badge{display:inline-block;padding:1px 9px;border-radius:99px;font-size:12px;white-space:nowrap}
   .b-run{background:#e3f4ea;color:var(--ok)} .b-pau{background:#efe9fa;color:var(--pause)}
   .b-stop{background:#f0f1f4;color:var(--sub)} .b-err{background:#fae5e5;color:var(--err)}
+  .b-sleep{background:#e8eefb;color:#3f66c2} .b-park{background:#f6f7fa;color:#8a93a8}
+  .b-init{background:#fdf3e3;color:var(--warn)}
   .row{display:flex;gap:8px;flex-wrap:wrap;color:var(--sub);font-size:12.5px;align-items:center}
   .chip{background:#f0f2f7;border-radius:6px;padding:0 7px;font-size:12px;color:var(--ink)}
   .chip.bcur{background:#eaf0fb;color:var(--acc);font-weight:700}
@@ -469,11 +471,34 @@ async function refresh(first = false) {
   } catch (e) { if (String(e.message) !== "401") $("#summary").textContent = "⚠ " + e.message; }
 }
 
+const DAEMON_STATE_NAMES = {init: "初始化", running_session: "呼吸中", sleeping: "休眠",
+                            parked: "泊停（等来信唤醒）", stopped: "停止中"};
+
+function daemonRowHtml(s) {
+  const dm = s.daemon;
+  if (!dm) return `<span class="hint">（观察不可达——进程存活）</span>`;
+  const parts = [`<b>${esc(DAEMON_STATE_NAMES[dm.state] || dm.state || "?")}</b>`,
+                 `第 ${dm.session_count ?? 0} 口呼吸`];
+  if (dm.state === "sleeping" && dm.next_wake_at) parts.push(`下次呼吸 ${fmtT(dm.next_wake_at)}`);
+  if (dm.state === "running_session" && dm.current_session) parts.push(`会话 ${esc(dm.current_session)}`);
+  if (dm.mailbox_pending) parts.push(`信箱待读 ${dm.mailbox_pending}`);
+  return parts.join(" · ");
+}
+
 function stateBadge(a) {
   const p = a.process || {};
   if (p.active !== "active") return `<span class="badge b-stop">已停止</span>`;
   if (a.desired_state === "paused") return `<span class="badge b-pau">已暂停 ⏸</span>`;
-  return `<span class="badge b-run">运行中</span>`;
+  const dm = a.daemon || {};
+  const st = dm.state;
+  if (st === "running_session") return `<span class="badge b-run">呼吸中</span>`;
+  if (st === "sleeping") {
+    const t = dm.next_wake_at ? `，下次呼吸 ${fmtT(dm.next_wake_at)}` : "";
+    return `<span class="badge b-sleep" title="休眠中${t}">休眠</span>`;
+  }
+  if (st === "parked") return `<span class="badge b-park" title="大脑主动停机驻留——仅管理员来信可再唤醒">泊停</span>`;
+  if (st === "init") return `<span class="badge b-init">初始化</span>`;
+  return `<span class="badge b-run">运行中</span>`;   // 观察不可达 → 回退进程存活语义
 }
 
 function interconnectChip(a) {
@@ -881,6 +906,7 @@ async function loadDetail() {
           <b>id</b><span class="mono">${esc(id)}</span>
           <b>期望态</b><span>${esc(s.desired_state)}</span>
           <b>进程单元</b><span>${s.process?.active}/${esc(s.process?.sub || "")} · 自动重启 ${s.process?.auto_restarts ?? 0} · 在线 ${fmtDur(s.process?.active_since)}</span>
+          <b>呼吸</b><span>${daemonRowHtml(s)}</span>
           <b>监听</b><span class="mono">${esc(s.listen_host)}:${s.port}${s.expose ? "（外网直连）" : "（仅本机）"}</span>
           <b>大脑</b><span>${(s.brains || []).map(esc).join(" → ")}</span>
           <b>源码</b><span>xuseek-v2 ${esc(s.source_version)}（实例私有副本）</span>

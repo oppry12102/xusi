@@ -37,6 +37,7 @@ import threading
 import time
 import tomllib
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -588,7 +589,7 @@ def _respawn(agent: dict) -> None:
 # ── 状态（systemd + 注册表；只读观察另见 observe）────────────────────
 
 def status(agent_id: str) -> dict:
-    """状态聚合：注册表 + systemd 单元 + 互联标注。不再探 agent 的 HTTP。"""
+    """状态聚合：注册表 + systemd 单元 + 互联标注 + 内核呼吸状态（只读观察）。"""
     agent = get_agent_or_404(agent_id)
     out: dict[str, Any] = {
         "id": agent["id"],
@@ -608,7 +609,21 @@ def status(agent_id: str) -> dict:
         "fetched_at": _iso(),
     }
     out["process"] = systemdctl.unit_brief(_unit(agent))
+    out["daemon"] = _daemon_probe(agent)
     return out
+
+
+def _daemon_probe(agent: dict) -> dict | None:
+    """内核自报呼吸状态（/v1/status 的 daemon 段，只读观察）。
+
+    任何失败 → None——卡片/详情回退「进程存活」语义，不因观察不可达报错
+    （观察失败的原因已由事件 tab 的错误路径各自呈现）。"""
+    try:
+        st = observe(agent["id"], "status")
+    except Exception:
+        return None
+    d = (st or {}).get("daemon") if isinstance(st, dict) else None
+    return d if isinstance(d, dict) else None
 
 
 def logs(agent_id: str, n: int = 200) -> dict:
@@ -891,4 +906,10 @@ def reconcile() -> list[dict]:
 
 
 def list_status() -> list[dict]:
-    return [status(a["id"]) for a in registry.list_agents()]
+    ids = [a["id"] for a in registry.list_agents()]
+    if not ids:
+        return []
+    # 每 agent 一次 systemd 子进程 + 一次只读观察 HTTP（最长 6s 超时）——
+    # 串行会把看板 15s 轮询拖成 N×6s，小线程池并行
+    with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
+        return list(ex.map(status, ids))
