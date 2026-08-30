@@ -148,6 +148,11 @@ xusi/
   目录移入 `instances/.trash/`（遗留数据由管理员自行 rm）。
 - **暴露面**：`expose=true` 让 agent 直接监听 `0.0.0.0:<port>`——对外的访问凭证
   由 agent 自己管理，谨慎开启。
+- **只读观察依赖 httpx**：仅观察通道（events/status）用到，函数内惰性 import——
+  venv 缺它只废观察、其余功能不受影响；`pip install httpx` 补齐。
+- **WebUI 渲染纪律**：agent 的一切输出（会话总结/事件字段/来信）都是不可信内容——
+  详情页全量 `esc()` 转义后才进 DOM，新增展示字段不得例外（agent 可写自己的
+  data/，不转义就是 agent → 管理员浏览器的存储型 XSS 通道）。
 - **admin token 轮换**：`xusi init --rotate` 或改 `etc/xusi.toml` 的 `[admin].secret` →
   `systemctl --user restart xusi`，浏览器重新登录一次。
 

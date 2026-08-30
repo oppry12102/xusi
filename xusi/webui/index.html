@@ -880,10 +880,10 @@ async function loadDetail() {
         const k = e.event || e.kind || "ev";
         let body = "";
         if (k === "llm_response") {
-          body = `${esc(e.brain || "")} 第${e.round ?? "?"}轮 · ${e.elapsed_s ?? "–"}s · ¥${e.round_cost_cny ?? 0} · ctx ${e.context_tokens ?? "–"} tok<br>` +
+          body = `${esc(e.brain || "")} 第${esc(String(e.round ?? "?"))}轮 · ${esc(String(e.elapsed_s ?? "–"))}s · ¥${esc(String(e.round_cost_cny ?? 0))} · ctx ${esc(String(e.context_tokens ?? "–"))} tok<br>` +
                  `<span style="color:var(--sub)">${esc((e.content || "").slice(0, 160))}${(e.content || "").length > 160 ? "…" : ""}</span>`;
         } else if (k === "llm_request") {
-          body = `<span style="color:var(--sub)">第${e.round ?? "?"}轮 · 请求大脑…</span>`;
+          body = `<span style="color:var(--sub)">第${esc(String(e.round ?? "?"))}轮 · 请求大脑…</span>`;
         } else if (k === "tool_exec") {
           body = `<b>${esc(e.tool || "")}</b> <span class="mono" style="font-size:11.5px">${esc(String(e.args || "").slice(0, 110))}</span><br>` +
                  `<span style="color:var(--sub)">${esc(String(e.preview || "").slice(0, 110))}</span>`;
@@ -955,7 +955,7 @@ function sessRowHtml(s) {
   return `<details class="sessrow" data-key="${esc(s.session_id || s.id || "")}">
     <summary>
       <span class="t" style="color:var(--sub);font-size:11.5px;font-family:var(--mono)">${fmtT(s.started_at || s.at)}</span>
-      <b>${s.rounds ?? "?"} 轮</b>
+      <b>${esc(String(s.rounds ?? "?"))} 轮</b>
       <span style="color:var(--sub)">${durTxt}</span>
       <span>¥${(+s.total_cost_cny || 0).toFixed(2)}</span>
       <span class="chip" style="color:var(--sub)">${esc(String(s.stop_reason || "").slice(0, 24))}</span>
