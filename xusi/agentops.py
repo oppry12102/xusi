@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import socket
 import time
 import uuid
 from datetime import datetime, timezone
@@ -163,22 +164,34 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
             "created_at": registry.now_iso(),
             "updated_at": registry.now_iso(),
         }
+
+        def _fail(e: Exception) -> None:
+            """回滚 + 统一报错——锁内落盘失败与锁外拉起失败同一条收尾。"""
+            _rollback_create(unit, home, agent_id)
+            raise AgentError(f"创建失败已回滚：{e}") from e
+
         try:
             _init_workspace(rec, src_ver)
             # 注册（期望态 running）
             registry.add_agent(rec)
         except Exception as e:
-            _rollback_create(unit, home, agent_id)
-            raise AgentError(f"创建失败已回滚：{e}") from e
+            _fail(e)
 
     # 锁外拉起：落盘后端口已被三重检验挡住，并发 create 不再互相等 90s 验收。
     # 失败路径同样回滚——「锁外等价」含失败语义，否则验收不过的 agent 会以
-    # desired=running 赖在注册表里，靠 reconcile 反复拉起一个起不来的单元
+    # desired=running 赖在注册表里，靠 reconcile 反复拉起一个起不来的单元。
+    # 例外：验收超时但单元仍在跑 = 首启装依赖慢于验收窗——再等一轮，别把
+    # 能起来的 agent 误销毁；单元已死（spawn 失败/崩溃循环）才立即回滚。
     try:
         spawn_and_verify(rec)
     except Exception as e:
-        _rollback_create(unit, home, agent_id)
-        raise AgentError(f"创建失败已回滚：{e}") from e
+        if systemdctl.unit_state(unit) == "active":
+            try:
+                wait_health(rec["port"], rec["id"])
+            except Exception:
+                _fail(e)
+        else:
+            _fail(e)
 
     audit("agent.create", agent=agent_id, name=rec["name"], port=port,
           expose=expose, brains=brain_list, source=src_ver,
@@ -218,11 +231,19 @@ def wait_health(port: int, agent_id: str, timeout: float = 90.0) -> None:
     HTTP /v1/health 探活已取消（xusi 与 agent 只剩邮箱通道）——内核 serve 先
     跑 preflight（config 缺失则写模板、同档无可用大脑则退出）才起 uvicorn：
     端口进入监听 = preflight 已通过；preflight 失败时端口不会绑定，错误经
-    单元日志尾部暴露。绑端口之后的崩溃由 systemd Restart=always 兜底。"""
+    单元日志尾部暴露。绑端口之后的崩溃由 systemd Restart=always 兜底。
+
+    主机缺 ss 时降级为 loopback connect 试探——ss 缺失会让
+    _kernel_listening_ports 恒空集，健康 agent 也会验收超时（被误销毁）。"""
+    have_ss = shutil.which("ss") is not None
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if (systemdctl.unit_state(get_config().unit_name(agent_id)) == "active"
-                and port in ports._kernel_listening_ports()):
+        if systemdctl.unit_state(get_config().unit_name(agent_id)) != "active":
+            time.sleep(0.6)
+            continue
+        listening = (port in ports._kernel_listening_ports()
+                     if have_ss else _loopback_listening(port))
+        if listening:
             return
         time.sleep(0.6)
     log = systemdctl.journal_tail(get_config().unit_name(agent_id), 20)
@@ -230,19 +251,35 @@ def wait_health(port: int, agent_id: str, timeout: float = 90.0) -> None:
                      f"（单元未 active 或端口 {port} 未监听）。日志尾部：\n{log}")
 
 
+def _loopback_listening(port: int) -> bool:
+    """缺 ss 时的端口验收降级：TCP connect 试探 127.0.0.1（agent 监听
+    0.0.0.0 或 127.0.0.1 均可达）。"""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
 def _rollback_create(unit: str, home: Path, agent_id: str) -> None:
-    try:
-        systemdctl.stop(unit)
-    except Exception:
-        pass
-    try:
-        systemdctl.reset_failed(unit)
-    except Exception:
-        pass
+    """create 失败收尾：停单元、挪 home 进 .trash、注销、记审计。
+
+    注销是硬要求——失败必须冒泡（注册表留 desired=running 的僵尸会被
+    reconcile 反复拉起一个起不来的单元）；挪 home 是尽力而为，挪不动就
+    原地留着（注销之后 reconcile 看不见它，孤儿目录交管理员清）。"""
+    for fn in (systemdctl.stop, systemdctl.reset_failed):
+        try:
+            fn(unit)
+        except Exception:
+            pass
     if home.exists():
-        dest = get_config().trash_dir / f"{agent_id}-{uuid.uuid4().hex[:6]}"
-        shutil.move(str(home), str(dest))
+        try:
+            dest = get_config().trash_dir / f"{agent_id}-{uuid.uuid4().hex[:6]}"
+            shutil.move(str(home), str(dest))
+        except Exception:
+            pass
     registry.remove_agent(agent_id)
+    audit("agent.create.rollback", agent=agent_id)
 
 
 def get_agent_or_404(agent_id: str) -> dict:

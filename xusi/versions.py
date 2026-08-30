@@ -62,12 +62,25 @@ def at_least(v: str, floor: str) -> bool:
     return True if a is None or b is None else a >= b
 
 
+def _sort_key(v: str):
+    """自然段序：按 . _ - 切段，数字段按数值比较（v2.10 > v2.9）。
+    同数值核心版本的后缀平局裁决用（2.7.5-10 > 2.7.5-2）。"""
+    return tuple((0, int(p)) if p.isdigit() else (1, p)
+                 for p in re.split(r"[._-]", v))
+
+
 def _rank(v: str):
-    """仓库清单排序键：数值核心优先（与 at_least 同一把尺——v 前缀混用时按
-    字符串段比较会把无前缀包（如 2.8.0 vs v2.7.5）误判为最旧，缺省版本选择
-    跟着错）；无数值核心的（自打包/开发版）排最尾，缺省版本不会误选它。"""
+    """仓库清单排序键（list_versions 用）：
+
+    - 非数字开头或无数值核心的（自打包/开发版，如 dev2026）：排最尾，
+      缺省版本不会误选它。注意这与 at_least 相反——at_least 把解析不出
+      数字段的按「新版」处理（预算语义），两条路各取所需，别混用；
+    - 数字开头：数值核心优先（v 前缀混用时按字符串段比会把无前缀包如
+      2.8.0 误判为最旧，缺省版本选择跟着错），同核心再按自然段序比后缀。"""
     nc = numeric_core(v)
-    return (1, nc, v) if nc is not None else (0, (), v)
+    if nc is None or not v[:1].isdigit():
+        return (0, (), v)
+    return (1, nc, _sort_key(v))
 
 
 def list_versions() -> list[dict]:

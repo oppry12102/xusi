@@ -60,6 +60,20 @@ def port_free(port: int) -> bool:
     return _can_bind(port, "0.0.0.0") and _can_bind(port, "127.0.0.1")
 
 
+def port_host_state(port: int) -> str:
+    """主机级端口三态（跳过注册表腿——doctor 查管理面端口用；分配层保留
+    管理面端口，port_free 恒 False，其余场景一律走 port_free 别另抄检验）：
+
+    - "free"：无内核监听、双 bind 试探通过（可直接起服务）
+    - "listening"：内核已有进程监听（ss -tlnH 可见）
+    - "blocked"：无可见监听但 bind 被拒（刚停止的 TIME_WAIT 窗口或 ss 盲区）"""
+    if port in _kernel_listening_ports():
+        return "listening"
+    if _can_bind(port, "0.0.0.0") and _can_bind(port, "127.0.0.1"):
+        return "free"
+    return "blocked"
+
+
 def in_range(port: int) -> bool:
     cfg = get_config()
     return cfg.port_lo <= port <= cfg.port_hi

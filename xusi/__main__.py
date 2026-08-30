@@ -211,13 +211,23 @@ def cmd_doctor(_args) -> int:
     check("密钥池至少一家可用", any(b["has_key"] for b in pool),
           f"{len(pool)} 家：{', '.join(b['name'] + ('(有key)' if b['has_key'] else '(缺key)') for b in pool)}")
     # port_free(cfg.port) 恒 False（管理面端口在分配层被保留），旧写法因此
-    # 恒等 manager_running()——install 前跑 doctor 必误报。显式查内核监听 +
-    # bind 试探，空闲或在跑本服务都算过。
+    # 恒等 manager_running()——install 前跑 doctor 必误报。改用 ports 的
+    # 主机级三态检验：空闲、或在跑本服务都算过，其余按状态给可行动的提示。
     mgr_running = systemdctl.manager_running()
-    mgr_free = (cfg.port not in ports._kernel_listening_ports()
-                and ports._can_bind(cfg.port, "0.0.0.0"))
-    check("管理面端口空闲或已由本服务监听", mgr_free or mgr_running,
-          "" if mgr_free or mgr_running else f"端口 {cfg.port} 被其它进程占用")
+    state = ports.port_host_state(cfg.port)
+    if state == "free":
+        check("管理面端口空闲或已由本服务监听", True)
+    elif state == "listening":
+        # 内核有监听但 systemd 看不到单元：多半是本服务没带 XDG_RUNTIME_DIR
+        # 启动（unit_state 全 not-found），也可能是别的进程抢了端口
+        check("管理面端口空闲或已由本服务监听", mgr_running,
+              "" if mgr_running else
+              f"端口 {cfg.port} 已被监听但本服务单元不可见——xusi 若在运行，"
+              f"确认以 XDG_RUNTIME_DIR 启动（否则 systemd --user 看不到单元）；"
+              f"否则为其它进程占用")
+    else:
+        check("管理面端口空闲或已由本服务监听", False,
+              f"端口 {cfg.port} 无监听但 bind 被拒——可能刚停止（TIME_WAIT 窗口），稍候重试")
     check("agent 端口段有富余", len(ports.available_ports(5)) >= 5,
           f"可用示例 {ports.available_ports(5)}")
     check("管理面 token 已初始化", bool(get_config().admin_secret),
