@@ -1,7 +1,9 @@
 # 墟司（xusi）—— xuseek 智能体管理面
 
 > 一个自洽目录，管理多个墟寻（xuseek-v2）自主体：创建/启停/暂停/删除。
-> **xusi 与 agent 之间只有一条通道：管理邮箱**——投信/收信。
+> **xusi 与 agent 之间只有一条写通道：管理邮箱**——投信/收信；只读观察收窄为
+> 两条（详情页事件流/会话 banner：GET /v1/events·status，token 缺失自动签发；
+> 会话索引读磁盘 sessions.jsonl）。
 > agent 间的互联 token 由 agent 自己发行，经邮箱发布登记，xusi 只做公告板；
 > agent 的对外呈现（观察台、自建服务）是 agent 自家业务，xusi 不参与。
 
@@ -29,10 +31,12 @@ python3 -m xusi doctor       # 环境自检
 由 `xusi install` / `xusi init` 生成。它通吃所有 `/api/*` 端点。
 
 agent 侧的凭证（观察台、自建服务等）全部由 agent 自己管理，xusi 不签不发不撤不碰——
-那是 xuseek 自家业务。唯一例外是**互联 token**（agent ↔ agent 直连用）：agent 自己
-发行，经管理邮箱发布/索取，xusi 作为公告板存储与转述（见下）。
+那是 xuseek 自家业务。例外之一：**详情页只读观察**（/v1/events、/v1/status）在
+`data/webui_tokens.json` 缺失时，xusi 自动签发一枚 `xusi-observe` token 写进该文件
+（merge 不覆盖，内核免重启生效）；例外之二：**互联 token**（agent ↔ agent 直连用）：
+agent 自己发行，经管理邮箱发布/索取，xusi 作为公告板存储与转述（见下）。
 
-**xusi 不再签发、不再撤销任何 agent 侧的 token。**
+**xusi 不再签发、不再撤销任何其它 agent 侧的 token。**
 
 ## 互联（agent ↔ agent）
 
@@ -69,19 +73,22 @@ xusi 只当**公告板**，不替 agent 做任何决定：
                     │  密钥池 etc/brains.toml（仅创建时渲染一次）              │
                     │  admin token etc/xusi.toml [admin].secret             │
                     │  mailroom 线程：5s 扫各 agent outbox（互联信封）        │
-                    └──────┬──────────────────┬─────────────────────────────┘
-                     systemd-run 单元     管理邮箱（唯一通信通道）
-                     Restart=always      mailbox.jsonl ⇄ outbox.jsonl
-                    ┌──────▼──────────────────▼─────────────────────────────┐
+                    └──────┬─────────────┬────────┬──────────────────────────┘
+                     systemd-run 单元  管理邮箱  只读观察（详情页）
+                     Restart=always  mailbox ⇄  GET /v1/events·status
+                                      outbox    （token 缺失自动签发）
+                    ┌──────▼─────────────▼────────▼──────────────────────────┐
                     │  xuseek-v2 agent ×N：instances/<id>/（目录即自主体）   │
                     │  systemd 单元 xusi-a-<id>；对外呈现（观察台/服务）归    │
                     │  agent 自治，xusi 不参与                              │
                     └────────────────────────────────────────────────────────┘
 ```
 
-**与 agent 之间只有一条通道——管理邮箱**，绝不 import xuseek 代码、绝不调
-xuseek CLI、绝不 HTTP 观察、绝不反代、绝不改写 config.toml（创建时渲染一次
-出生配置，此后归 agent 自治）：
+**与 agent 之间只有一条写通道——管理邮箱**，绝不 import xuseek 代码、绝不调
+xuseek CLI、绝不反代、绝不改写 config.toml（创建时渲染一次
+出生配置，此后归 agent 自治）；只读观察两条 HTTP GET
+（/v1/events、/v1/status——详情页事件流/工具统计/会话 banner，token 缺失
+自动签发），会话索引读磁盘：
 
 - **投信**：追加 `<home>/data/mailbox.jsonl`（sender=admin，与内核 post() 同语义，
   双写 mailbox_log.jsonl 保历史；daemon 5s 轮询唤醒）；
@@ -96,7 +103,7 @@ systemd 进程与信号（spawn/stop/SIGSTOP/SIGCONT/journalctl）是宿主职�
 xusi/
 ├── xusi/                管理面源码（Python 3.12，stdlib + fastapi/uvicorn）
 │   ├── api/             路由（agent_routes / backup_routes / meta_routes / auth / models）
-│   ├── agentops.py      agent 全生命周期 + 投信/收信（唯一实现邮箱通道的地方）
+│   ├── agentops.py      agent 全生命周期 + 投信/收信（邮箱写通道）+ 只读观察与会话
 │   ├── mailroom.py      互联信箱：outbox 增量扫描 + 信封解析/登记/回执
 │   ├── systemdctl.py    systemd 用户单元封装（spawn 注入 PyPI 镜像 env）
 │   ├── registry.py      注册表（簿记 + 互联标注）etc/agents.json（600）
@@ -148,4 +155,5 @@ xusi/
 
 - **xuseek-v2**：agent 的源码与运行时（`--home` 挂接 `instances/<id>`，目录即自主体）。
   xusi 只在创建时渲染一次 `config.toml`（出生配置：mission/brains/api_key/budgets），
-  此后该文件、该目录里的任何东西都归 agent 自己。
+  此后该文件、该目录里的任何东西都归 agent 自己（唯一例外：详情页只读观察在
+  `data/webui_tokens.json` 缺失时自动补签一枚 `xusi-observe` token，merge 不覆盖）。

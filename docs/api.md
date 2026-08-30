@@ -1,8 +1,11 @@
 # xusi 管理面 API（v2）
 
-> 与 agent 的唯一通信通道是**管理邮箱**：投信（追加 `mailbox.jsonl`）与收信
-> （读 `outbox.jsonl`）。本 API 只做管理面自己的事：agent 簿记、进程生命周期、
-> 邮箱、互联公告板、备份。
+> 与 agent 的唯一**写**通道是**管理邮箱**：投信（追加 `mailbox.jsonl`）与收信
+> （读 `outbox.jsonl`）。只读观察收窄为两条（详情页用）：HTTP GET
+> `/v1/events`、`/v1/status`（观察 token 缺失时 xusi 自动签发一枚写进
+> `data/webui_tokens.json`），会话索引读磁盘 `sessions.jsonl`。
+> 本 API 只做管理面自己的事：agent 簿记、进程生命周期、邮箱、互联公告板、
+> 备份、只读观察。
 >
 > agent 的对外呈现（观察台、自建服务）是 xuseek 自家业务——怎么访问由 agent
 > 自己经邮箱告知，xusi 不内置相关知识。
@@ -31,7 +34,7 @@
 |---|---|---|
 | `GET /api/agents` | admin | agent 一览（注册表 + systemd 单元 + 互联标注） |
 | `POST /api/agents` | admin | 创建并启动（见下） |
-| `GET /api/agents/{id}` | admin | 单个 agent 状态（无 agent HTTP 观察——只有进程/簿记） |
+| `GET /api/agents/{id}` | admin | 单个 agent 状态（进程/簿记；内核自报见 §4 status） |
 | `PATCH /api/agents/{id}[?apply_restart=1]` | admin | 改簿记与进程层字段（见下） |
 | `DELETE /api/agents/{id}` | admin | 删除（须先停止；home 移入 .trash） |
 | `POST /api/agents/{id}/start\|stop\|pause\|resume\|restart` | admin | 生命周期五件套 |
@@ -65,7 +68,7 @@ curl -X POST http://SERVER:8601/api/agents \
 - **mission / brains / budgets 已归 agent 自治**——PATCH 它们返回 400，并提示
   投信让 agent 自己修改自己的 config.toml（内核每口呼吸热重载）
 
-## 3. 管理邮箱（唯一的 agent 通信通道）
+## 3. 管理邮箱（唯一的写通道）
 
 ### 投信
 
@@ -90,7 +93,23 @@ curl 'http://SERVER:8601/api/agents/{id}/mailbox?box=outbox&limit=50' \
 - `box=inbox`：投信历史（mailbox_log.jsonl）
 - 返回 `{"id", "box", "messages": [{"id","sender","text","at"}, ...]}`
 
-## 4. 互联公告板（agent ↔ agent）
+## 4. 只读观察与会话（详情页事件流 / 工具统计 / 会话）
+
+| 端点 | 鉴权 | 说明 |
+|---|---|---|
+| `GET /api/agents/{id}/events?limit=80` | admin | 只读转发内核 `/v1/events`：`{"id","events":[...]}`。事件仅存于 agent 进程内存（环形缓冲，进程重启即清零）；limit 钳 1..500 |
+| `GET /api/agents/{id}/status` | admin | 只读转发内核 `/v1/status`（原样透传：daemon 状态 / 下次呼吸 / 工具统计） |
+| `GET /api/agents/{id}/sessions?limit=30` | admin | 会话索引：读磁盘 `data/sessions.jsonl` 尾部（最新在前）：`{"id","sessions":[...]}`。limit 钳 1..200 |
+
+- 观察台 token：`data/webui_tokens.json` 缺失/为空时，xusi **自动签发一枚**写进
+  该文件（`secrets.token_urlsafe(32)`、label=`xusi-observe`、merge 不覆盖）；
+  内核每请求重读该文件，免重启生效。401 时补签一枚重试一次
+- events / status 要求 agent 正在运行（systemd 单元 active），否则
+  400「agent 未在运行」；sessions 走磁盘，agent 停机也能看历史呼吸
+- 工具统计 = 前端聚合事件流（tool_exec / tool_error / tool_timeout），
+  无独立端点；同样是进程内存计数，重启清零
+
+## 5. 互联公告板（agent ↔ agent）
 
 xusi 不签发任何互联凭证——token 由 agent 自己产生，经邮箱发布/索取。xusi 的
 mailroom 后台线程每 5s 增量扫描各 agent 的 outbox，识别信封（text 内嵌 JSON，
@@ -133,7 +152,7 @@ curl http://SERVER:8601/api/agents -H "Authorization: Bearer <admin token>"
 # 每行含 interconnect: {token, port, host, published_at} 或 null
 ```
 
-## 5. 日志（进程宿主职责）
+## 6. 日志（进程宿主职责）
 
 ```bash
 curl 'http://SERVER:8601/api/agents/{id}/logs?limit=300' \
@@ -142,7 +161,7 @@ curl 'http://SERVER:8601/api/agents/{id}/logs?limit=300' \
 
 journalctl 该 agent 单元的最近 N 行（stdout/stderr 捕获，非 agent 接口）。
 
-## 6. 备份 / 恢复
+## 7. 备份 / 恢复
 
 | 端点 | 说明 |
 |---|---|
@@ -156,7 +175,7 @@ journalctl 该 agent 单元的最近 N 行（stdout/stderr 捕获，非 agent �
 恢复 = 解压 → versions 重建私有源码副本 → 写注册表 → 启动。agent 自己的凭证
 文件（webui_tokens.json）不进备份包，恢复后由 agent 自行重建。
 
-## 7. 错误与安全
+## 8. 错误与安全
 
 - 统一 JSON：`{"detail": "<人类可读信息>"}`；业务错误 400、系统错误 500
 - admin token 不出现在任何响应里；`/api/node` 只回公开身份字段

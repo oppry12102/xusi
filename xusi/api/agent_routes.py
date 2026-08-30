@@ -3,8 +3,9 @@
 按生命周期分：
 - CRUD：list / create / get / patch / delete
 - 生命周期：5 个 POST /api/agents/{id}/{action}
-- 邮箱（唯一的 agent 通信通道）：POST mail 投信 / GET mailbox 收信
+- 邮箱（唯一的写通道）：POST mail 投信 / GET mailbox 收信
 - 日志：GET logs（journalctl，进程宿主职责）
+- 观察（只读）：GET events / status（窄通道，详情页用）；会话：GET sessions（磁盘）
 
 单 xusi：所有 agent 都在本机 registry。写端点（PATCH / DELETE / 5 lifecycle /
 mail）走 `require_agent`（admin + 本地存在性）。
@@ -91,7 +92,7 @@ for _action in _LIFECYCLE_ACTIONS:
         _make_lifecycle_handler(_action))
 
 
-# ── 邮箱（唯一的 agent 通信通道）与日志 ────────────────────────────
+# ── 邮箱（唯一的写通道）与日志 ────────────────────────────────────
 
 @router.post("/api/agents/{agent_id}/mail")
 async def api_agent_mail(req: MailReq, pair: tuple = Depends(require_agent)) -> JSONResponse:
@@ -119,3 +120,32 @@ async def api_agent_logs(limit: int = 200, pair: tuple = Depends(require_agent))
     agent, _rec = pair
     return JSONResponse(await asyncio.to_thread(
         agentops.logs, agent["id"], limit))
+
+
+# ── 观察（只读 HTTP 窄通道）与会话（磁盘）───────────────────────────
+
+@router.get("/api/agents/{agent_id}/events")
+async def api_agent_events(limit: int = 80, pair: tuple = Depends(require_agent)) -> JSONResponse:
+    """事件流：只读转发内核 /v1/events（内存环形缓冲，进程重启即清零）。
+    token 缺失时 xusi 自动签发一枚写进 data/webui_tokens.json。"""
+    agent, _rec = pair
+    return JSONResponse({"id": agent["id"], "events": await asyncio.to_thread(
+        agentops.observe, agent["id"], "events", limit)})
+
+
+@router.get("/api/agents/{agent_id}/status")
+async def api_agent_status(pair: tuple = Depends(require_agent)) -> JSONResponse:
+    """内核自报 status（daemon 状态/下次呼吸/工具统计）：只读转发 /v1/status。"""
+    agent, _rec = pair
+    return JSONResponse(await asyncio.to_thread(
+        agentops.observe, agent["id"], "status"))
+
+
+@router.get("/api/agents/{agent_id}/sessions")
+async def api_agent_sessions(limit: int = 30, pair: tuple = Depends(require_agent)) -> JSONResponse:
+    """会话索引：读 data/sessions.jsonl 尾部（最新在前）。不走 HTTP——索引本就是
+    磁盘事实，agent 停机也能看历史呼吸。"""
+    agent, _rec = pair
+    # 追加型文件取尾部要先整读——走线程池，别冻事件循环
+    return JSONResponse(await asyncio.to_thread(
+        agentops.sessions, agent["id"], limit))

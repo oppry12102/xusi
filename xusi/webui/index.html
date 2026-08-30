@@ -110,6 +110,34 @@
   .mailrow{padding:7px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:7px;font-size:13px;
            white-space:pre-wrap;word-break:break-word}
   .mailrow .t{color:var(--sub);font-size:11.5px;font-family:var(--mono)}
+  .ev{border-left:3px solid var(--line);padding:4px 10px;margin-bottom:6px;font-size:12.5px}
+  .ev .t{color:var(--sub);font-family:var(--mono);font-size:11.5px}
+  /* 呼吸（会话）总结列表：点行展开全文 */
+  details.sessrow{border:1px solid var(--line);border-radius:8px;margin-bottom:7px;overflow:hidden}
+  details.sessrow summary{cursor:pointer;padding:7px 10px;font-size:12.5px;display:flex;gap:8px;
+      align-items:center;flex-wrap:wrap;list-style:none;color:var(--ink)}
+  details.sessrow summary::-webkit-details-marker{display:none}
+  details.sessrow summary:hover{background:#f6f7fa}
+  details.sessrow[open] summary{border-bottom:1px solid var(--line);background:#f9fafc}
+  .sessbody{padding:8px 12px}
+  .sesskv{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;font-size:11.5px;color:var(--sub)}
+  table.jt{border-collapse:collapse;font-size:12px;margin-top:6px}
+  table.jt th,table.jt td{border:1px solid var(--line);padding:4px 8px;text-align:left;max-width:280px;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  table.jt th{background:#f6f7fa;font-weight:600}
+  .md{line-height:1.7;font-size:13.5px}
+  .md h1,.md h2,.md h3,.md h4{margin:.7em 0 .35em}
+  .md h1{font-size:1.35em}.md h2{font-size:1.2em}.md h3{font-size:1.08em}
+  .md p{margin:.45em 0}
+  .md pre{background:#f6f7fa;border-radius:8px;padding:10px;overflow:auto;font-family:var(--mono);font-size:12px}
+  .md code{font-family:var(--mono);background:#f0f2f7;border-radius:4px;padding:0 4px;font-size:.92em}
+  .md pre code{background:none;padding:0}
+  .md ul,.md ol{margin:.45em 0;padding-left:1.6em}
+  .md blockquote{margin:.5em 0;padding:2px 12px;border-left:3px solid var(--line);color:var(--sub)}
+  .md table{border-collapse:collapse;margin:.6em 0;font-size:12.5px}
+  .md th,.md td{border:1px solid var(--line);padding:4px 9px}
+  .md th{background:#f6f7fa}
+  .md a{color:var(--acc)}
   .sendbox{display:flex;gap:8px;margin:10px 0}
   .sendbox textarea{min-height:52px}
   #login-tip{margin:60px auto;max-width:440px;text-align:center;color:var(--sub)}
@@ -143,7 +171,9 @@
       <div style="display:flex;gap:8px;margin-top:9px" id="dnode-actions"></div>
     </div>
     <div style="border:1px dashed var(--line);border-radius:10px;padding:14px;color:var(--sub);font-size:12.5px;margin-top:12px">
-      与 agent 的唯一通道是<b>管理邮箱</b>：你投信（agent 呼吸时收取）；agent 回信写 outbox（这里展示）。
+      与 agent 的唯一<b>写</b>通道是<b>管理邮箱</b>：你投信（agent 呼吸时收取）；agent 回信写 outbox（这里展示）。
+      详情页的事件流 / 会话 / 工具统计是<b>只读观察</b>（/v1/events·status，token 缺失时管理面自动签发一枚；
+      会话索引读磁盘，agent 停机也能看）。
       agent 之间的互联：agent 自发行互联 token + 端口，经邮箱发布登记；也可经邮箱申请其它 agent 的地址与 token。
     </div>
   </div>
@@ -793,7 +823,7 @@ $("#btn-restore-go").onclick = async () => {
 };
 
 /* ── 详情抽屉 ─────────────────────────────────────── */
-const TABS = ["状态", "信箱", "日志"];
+const TABS = ["状态", "事件", "会话", "信箱", "工具", "日志"];
 async function openDetail(id) {
   cur = id; curTab = "状态";
   drawer.classList.add("open");
@@ -841,6 +871,43 @@ async function loadDetail() {
 {"xusi":"request_directory"}</pre>
         <p class="hint" style="font-size:12px">发布 = 登记互联标注；目录申请 = 管理面自动回执其它已互联 agent 的地址与 token。</p>`
       );
+    } else if (curTab === "事件") {
+      const r = await api(`/api/agents/${id}/events?limit=80`);
+      if (id !== cur) return;
+      const evs = r.events || [];
+      setPane(evs.slice().reverse().map(e => {
+        const t = e.at || e.sent_at || e._logged_at || "";
+        const k = e.event || e.kind || "ev";
+        let body = "";
+        if (k === "llm_response") {
+          body = `${esc(e.brain || "")} 第${e.round ?? "?"}轮 · ${e.elapsed_s ?? "–"}s · ¥${e.round_cost_cny ?? 0} · ctx ${e.context_tokens ?? "–"} tok<br>` +
+                 `<span style="color:var(--sub)">${esc((e.content || "").slice(0, 160))}${(e.content || "").length > 160 ? "…" : ""}</span>`;
+        } else if (k === "llm_request") {
+          body = `<span style="color:var(--sub)">第${e.round ?? "?"}轮 · 请求大脑…</span>`;
+        } else if (k === "tool_exec") {
+          body = `<b>${esc(e.tool || "")}</b> <span class="mono" style="font-size:11.5px">${esc(String(e.args || "").slice(0, 110))}</span><br>` +
+                 `<span style="color:var(--sub)">${esc(String(e.preview || "").slice(0, 110))}</span>`;
+        } else if (k === "session_start") {
+          body = `<span style="color:var(--sub)">会话开始 ${esc(e.session_id || "")}</span>`;
+        } else {
+          body = esc(JSON.stringify(e).slice(0, 200));
+        }
+        return `<div class="ev"><span class="t">${fmtT(t)} · ${esc(k)}</span><br>${body}</div>`;
+      }).join("") || "<p>（事件流为空：agent 刚启动，或进程重启过——事件仅存于内存）</p>");
+    } else if (curTab === "会话") {
+      // 每口呼吸一条：点行展开完整总结（final_summary，markdown 渲染）
+      // status 观察失败（agent 停机/无 token）时静默降级：banner 不显示，磁盘会话照常
+      const [r, st] = await Promise.all([
+        api(`/api/agents/${id}/sessions?limit=30`),
+        api(`/api/agents/${id}/status`).catch(() => null)]);
+      if (id !== cur) return;
+      const ss = r.sessions || [];
+      const d = (st && st.daemon) || {};
+      const running = d.state === "running_session";
+      const curId = d.current_session;
+      setPane(
+        (running ? `<div class="mailrow" style="border-color:var(--acc)"><b>呼吸进行中</b> <span class="t">${esc(curId || "")}</span>——本口呼吸结束后出现在下方列表</div>` : "") +
+        ss.map(s => sessRowHtml(s)).join("") || (!running ? "<p>（还没有完成的呼吸）</p>" : ""));
     } else if (curTab === "信箱") {
       const [o, m] = await Promise.all([
         api(`/api/agents/${id}/mailbox?box=outbox&limit=50`),
@@ -848,7 +915,7 @@ async function loadDetail() {
       if (id !== cur) return;
       setPane(
 `
-        <h4 style="margin:4px 0 6px">投信（追加 mailbox.jsonl，休眠中 5s 内唤醒——唯一的 agent 通信通道）</h4>
+        <h4 style="margin:4px 0 6px">投信（追加 mailbox.jsonl，休眠中 5s 内唤醒——唯一的写通道；事件/会话观察为只读）</h4>
         <div class="sendbox"><textarea id="m-txt" placeholder="给大脑写信…（改 mission / 换大脑 / 调预算都在这里）"></textarea>
           <button class="pri" onclick="sendMail('${id}')">投递</button></div>
         <h4 style="margin:12px 0 6px">来信（大脑 → 管理员）</h4>
@@ -856,6 +923,8 @@ async function loadDetail() {
         <h4 style="margin:12px 0 6px">投信历史（管理员 → 大脑）</h4>
         ${(m.messages || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)}</div>${esc(x.text)}</div>`).join("") || "<p class='hint'>（还没有投过信）</p>"}`
       );
+    } else if (curTab === "工具") {
+      await renderToolsTab(id);
     } else if (curTab === "日志") {
       const r = await api(`/api/agents/${id}/logs?limit=300`);
       if (id !== cur) return;
@@ -868,6 +937,141 @@ async function sendMail(id) {
   const t = $("#m-txt").value.trim(); if (!t) return;
   try { await api(`/api/agents/${id}/mail`, {method: "POST", body: JSON.stringify({text: t})});
     $("#m-txt").value = ""; loadDetail(); } catch (e) { alert(e.message); }
+}
+
+/* ── 呼吸总结（会话列表）与工具统计 ─────────────────── */
+
+function sessRowHtml(s) {
+  const fs = s.final_summary || "";
+  const dur = Math.round(s.elapsed_s ?? 0);
+  const durTxt = dur >= 3600 ? `${Math.floor(dur / 3600)}时${Math.round(dur % 3600 / 60)}分` :
+                 dur >= 60 ? `${Math.floor(dur / 60)}分${dur % 60}秒` : `${dur}秒`;
+  const kv = [
+    s.context_tokens != null ? `上下文 ${s.context_tokens} tok` : "",
+    s.total_tokens != null ? `累计 ${s.total_tokens} tok` : "",
+    s.requested_sleep_seconds != null ? `请求休眠 ${s.requested_sleep_seconds}s` : "",
+    s.carry_context ? "携带上下文" : "",
+  ].filter(Boolean).map(x => `<span class="chip">${esc(x)}</span>`).join("");
+  return `<details class="sessrow" data-key="${esc(s.session_id || s.id || "")}">
+    <summary>
+      <span class="t" style="color:var(--sub);font-size:11.5px;font-family:var(--mono)">${fmtT(s.started_at || s.at)}</span>
+      <b>${s.rounds ?? "?"} 轮</b>
+      <span style="color:var(--sub)">${durTxt}</span>
+      <span>¥${(+s.total_cost_cny || 0).toFixed(2)}</span>
+      <span class="chip" style="color:var(--sub)">${esc(String(s.stop_reason || "").slice(0, 24))}</span>
+      <span style="margin-left:auto;color:var(--sub)">▾</span>
+    </summary>
+    <div class="sessbody">
+      <div class="sesskv"><span class="chip mono">${esc(s.session_id || s.id || "")}</span>${kv}</div>
+      ${fs ? `<div class="md">${mdRender(fs)}</div>` : '<p style="color:var(--sub)">（本口呼吸没有留下总结）</p>'}
+    </div>
+  </details>`;
+}
+
+async function renderToolsTab(id) {
+  // 工具/技能调用统计：聚合最近事件窗口里的 tool_exec / tool_error / tool_timeout。
+  // 事件仅存于 agent 进程内存（重启清零），属进程生命周期内的真实计数。
+  const r = await api(`/api/agents/${id}/events?limit=500`);
+  if (id !== cur) return;
+  const evs = r.events || [];
+  const stat = {};
+  const slot = t => (stat[t] ??= {n: 0, err: 0, tmo: 0, last: ""});
+  let llmRounds = 0, started = 0;
+  for (const e of evs) {
+    if (e.event === "llm_response") llmRounds++;
+    if (e.event === "session_start") started++;
+    if (!e.tool) continue;
+    if (e.event === "tool_exec") {
+      const s = slot(e.tool); s.n++;
+      if (!s.last || e.at > s.last) s.last = e.at;
+    } else if (e.event === "tool_error") slot(e.tool).err++;
+    else if (e.event === "tool_timeout") slot(e.tool).tmo++;
+  }
+  const rows = Object.entries(stat).sort((a, b) => b[1].n - a[1].n);
+  const tot = rows.reduce((m, [, s]) => ({n: m.n + s.n, err: m.err + s.err, tmo: m.tmo + s.tmo}),
+                          {n: 0, err: 0, tmo: 0});
+  setPane(
+`
+    <p class="hint" style="color:var(--sub)">工具与技能（自注册的技能也是一等工具）的调用统计。
+    数据来自事件流：仅存于 agent 进程内存，<b>进程重启后清零</b>；此处回看最近 500 条事件，
+    覆盖 ${started} 口呼吸 / ${llmRounds} 轮 LLM 调用。</p>
+    ${rows.length ? `<table class="jt"><thead><tr><th>工具</th><th>调用</th><th>失败</th><th>超时</th><th>最近调用</th></tr></thead>
+      <tbody>${rows.map(([t, s]) => `<tr>
+        <td class="mono">${esc(t)}</td>
+        <td><b>${s.n}</b></td>
+        <td>${s.err ? `<span style="color:var(--err)">${s.err}</span>` : "0"}</td>
+        <td>${s.tmo ? `<span style="color:var(--warn)">${s.tmo}</span>` : "0"}</td>
+        <td style="color:var(--sub)">${s.last ? fmtT(s.last) : "-"}</td>
+      </tr>`).join("")}
+      <tr><td><b>合计</b></td><td><b>${tot.n}</b></td><td>${tot.err}</td><td>${tot.tmo}</td><td></td></tr>
+      </tbody></table>` : "<p>（事件窗口内没有工具调用记录——agent 刚启动或进程重启过）</p>"}`
+  );
+}
+
+/* ── mini-markdown 渲染器（先全文转义后变换，绝不透传 HTML）── */
+function mdRender(src) {
+  if (!src) return "";
+  let s = esc(String(src));
+  // 1) 围栏代码块整体抽走（内容已转义，防行内规则误伤）
+  const codes = [];
+  s = s.replace(/```[\w-]*\n?([\s\S]*?)(?:```|$)/g, (_, code) => {
+    codes.push(`<pre><code>${code.replace(/\n$/, "")}</code></pre>`);
+    return "\x00" + (codes.length - 1) + "\x00";
+  });
+  // 2) 行内码 → 哨兵
+  s = s.replace(/`([^`\n]+)`/g, (_, c) => "\x01" + c + "\x01");
+  // 3) 行内：图片降级为文字、链接白名单、粗/斜/删
+  s = s.replace(/!\[([^\]]*)\]\([^)\s]*\)/g, "$1");
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) =>
+    (/^(https?:|mailto:)/i.test(u) || u.startsWith("/"))
+      ? `<a href="${u}" target="_blank" rel="noopener">${t}</a>`
+      : `<span>${t} (${u})</span>`);
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<i>$2</i>");
+  s = s.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+  // 4) 行结构：标题/分割线/引用/列表/表格/段落
+  const out = [];
+  let list = null, table = null, para = [];
+  const flushP = () => { if (para.length) { out.push(`<p>${para.join("<br>")}</p>`); para = []; } };
+  const flushL = () => { if (list) { out.push(`<${list.tag}>${list.items.map(i => `<li>${i}</li>`).join("")}</${list.tag}>`); list = null; } };
+  const flushT = () => {
+    if (!table) return;
+    const [hd, ...rows] = table;
+    out.push(`<table><thead><tr>${hd.map(c => `<th>${c}</th>`).join("")}</tr></thead><tbody>` +
+      rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join("")}</tr>`).join("") + "</tbody></table>");
+    table = null;
+  };
+  for (const ln of s.split("\n")) {
+    const t = ln.trim();
+    if (/^\x00\d+\x00$/.test(t)) {   // 代码块占位符独立成行：按块级还原，不进 <p>
+      flushP(); flushL(); out.push(t); continue;
+    }
+    if (t.startsWith("|") && t.endsWith("|") && t.length > 2) {
+      const cells = t.slice(1, -1).split("|").map(c => c.trim());
+      if (cells.every(c => /^:?-{2,}:?$/.test(c))) continue;   // 表格分隔行
+      flushP(); flushL(); (table ||= []).push(cells); continue;
+    }
+    flushT();
+    const h = t.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { flushP(); flushL(); out.push(`<h${h[1].length}>${h[2]}</h${h[1].length}>`); continue; }
+    if (/^(---|\*\*\*|___)\s*$/.test(t)) { flushP(); flushL(); out.push("<hr>"); continue; }
+    if (t.startsWith("&gt;")) { flushP(); flushL(); out.push(`<blockquote>${t.replace(/^&gt;\s?/, "")}</blockquote>`); continue; }
+    const ul = t.match(/^[-*+]\s+(.*)$/), ol = t.match(/^\d+[.)]\s+(.*)$/);
+    if (ul || ol) {
+      flushP();
+      const tag = ul ? "ul" : "ol";
+      if (!list || list.tag !== tag) { flushL(); list = {tag, items: []}; }
+      list.items.push((ul || ol)[1]); continue;
+    }
+    if (!t) { flushP(); flushL(); continue; }
+    para.push(t);
+  }
+  flushP(); flushL(); flushT();
+  let html = out.join("");
+  // 5) 还原行内码与代码块
+  html = html.replace(/\x01([^\x01]*)\x01/g, "<code>$1</code>");
+  html = html.replace(/\x00(\d+)\x00/g, (_, i) => codes[+i] || "");
+  return html;
 }
 
 /* ── 改参（簿记 + 进程层）────────────────────────── */

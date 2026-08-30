@@ -1,13 +1,20 @@
 """agent 生命周期操作：创建/启停/暂停/续跑/重启/改参/删除/观察/投信/收信。
 
-manager 与 agent 之间只有**一条**通道——管理邮箱：
+manager 与 agent 之间只有**一条写**通道——管理邮箱：
 - 投信：追加 `<home>/data/mailbox.jsonl`（sender=admin，与内核 post() 同语义，
   双写 mailbox_log.jsonl 保历史）；
 - 收信：读 `<home>/data/outbox.jsonl`（内核 send_mail 工具写，sender=brain）。
 
-其余界面全部取消：不再 HTTP GET /v1/*、不再调 xuseek CLI（init/token/capabilities）、
+只读观察收窄为两条（详情页事件流/工具统计/会话 banner 用）：
+- HTTP GET /v1/events、/v1/status（observe，见下）；观察台 token 缺失时
+  xusi 自动签发一枚写进 data/webui_tokens.json（内核每次校验都重读该文件，
+  免重启生效）；
+- 会话索引读磁盘 data/sessions.jsonl（sessions，不依赖 HTTP/token，
+  agent 停机也能看历史呼吸）。
+
+其余界面全部取消：不调 xuseek CLI（init/token/capabilities）、
 不再渲染（重写）config.toml（创建时渲染一次出生配置，此后归 agent 自治）、
-不再读 webui_tokens.json（agent 自己的凭证文件，xusi 不碰）。
+不反代。
 
 进程与信号（systemd）不是"通信"——它是管理面不可削减的宿主职责：
 spawn `xuseek.sh serve` / stop / SIGSTOP / SIGCONT / journalctl 日志。
@@ -20,13 +27,17 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import shutil
 import socket
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from . import brains, ports, registry, systemdctl, versions
 from .config import get_config
@@ -465,7 +476,7 @@ def _respawn(agent: dict) -> None:
     wait_health(agent["port"], agent["id"])
 
 
-# ── 状态（systemd + 注册表，无 HTTP 观察）────────────────────────────
+# ── 状态（systemd + 注册表；只读观察另见 observe）────────────────────
 
 def status(agent_id: str) -> dict:
     """状态聚合：注册表 + systemd 单元 + 互联标注。不再探 agent 的 HTTP。"""
@@ -498,7 +509,107 @@ def logs(agent_id: str, n: int = 200) -> dict:
     return {"id": agent_id, "lines": text.splitlines()[-n:]}
 
 
-# ── 投信 / 收信（唯一的 agent 通信通道）──────────────────────────────
+# ── 观察（只读 HTTP 两条：events/status）与会话（磁盘）────────────────
+
+_OBSERVE_TIMEOUT = 6.0
+_TOKEN_LABEL = "xusi-observe"
+_TOKEN_LOCK = threading.Lock()
+
+
+def _read_tokens(agent: dict) -> dict[str, dict]:
+    """agent 的 data/webui_tokens.json：{token: {label, created_at}}。缺失/坏文件 → {}。"""
+    p = _home(agent) / "data" / "webui_tokens.json"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _observe_token(agent: dict, *, force_new: bool = False) -> str:
+    """观察台 token：读文件首个；文件空/缺失或 force_new（401 后补签）时自动
+    签发一枚并 merge 写回——锁内重读再写，并发签发不互相覆盖（merge 不覆盖）。
+
+    写的是内核 tokens.py 的原始文件格式（json.dumps ensure_ascii=False indent=2），
+    token 用 secrets.token_urlsafe(32) 与内核一致；内核 require_token 每请求重读
+    该文件，免重启生效。"""
+    with _TOKEN_LOCK:
+        toks = _read_tokens(agent)
+        if toks and not force_new:
+            return next(iter(toks))
+        home = _home(agent)
+        if not home.exists():
+            raise AgentError("实例目录不存在")
+        raw = secrets.token_urlsafe(32)
+        toks = _read_tokens(agent) or {}   # 锁内重读：保留并发写下的其它 token
+        toks[raw] = {"label": _TOKEN_LABEL, "created_at": _iso()}
+        p = home / "data" / "webui_tokens.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(toks, ensure_ascii=False, indent=2),
+                     encoding="utf-8")
+        return raw
+
+
+def _get(agent: dict, path: str, token: str) -> httpx.Response:
+    url = f"http://127.0.0.1:{agent['port']}{path}"
+    return httpx.get(url, headers={"Authorization": f"Bearer {token}"},
+                     timeout=_OBSERVE_TIMEOUT)
+
+
+def observe(agent_id: str, what: str, limit: int = 80) -> Any:
+    """只读观察：events / status 两条窄通道（详情页事件流/工具统计/会话 banner）。
+
+    token 缺失自动签发（写 data/webui_tokens.json）；401 补签一枚重试一次，
+    仍 401 才报错（文件被外部撤销/替换）。events 在 agent 进程内存
+    （环形缓冲，重启即清零），status 原样透传内核 dict。"""
+    agent = get_agent_or_404(agent_id)
+    if systemdctl.unit_state(_unit(agent)) != "active":
+        raise AgentError("agent 未在运行")
+    if what not in ("events", "status"):
+        raise AgentError("观察项须为 events/status 之一")
+    limit = max(1, min(int(limit), 500))
+    path = f"/v1/{what}" if what == "status" else f"/v1/events?limit={limit}"
+    try:
+        r = _get(agent, path, _observe_token(agent))
+        if r.status_code == 401:
+            # 内核判定手里 token 失效（文件被改/撤销）——补签一枚再试一次
+            r = _get(agent, path, _observe_token(agent, force_new=True))
+        if r.status_code == 401:
+            raise AgentError("观察台 token 全部失效（重新签发一个）")
+        if r.status_code != 200:
+            raise AgentError(f"上游 HTTP {r.status_code}")
+    except httpx.HTTPError as e:
+        raise AgentError(f"无法连接 agent 内核（{type(e).__name__}）") from None
+    data = r.json()
+    if what == "events" and isinstance(data, dict):
+        return data.get("events", [])
+    return data
+
+
+def sessions(agent_id: str, limit: int = 30) -> dict:
+    """会话索引：读 data/sessions.jsonl 尾部 N 行，最新在前。纯磁盘读取——
+    索引是每口呼吸追加的落盘事实，agent 停机也能看历史呼吸。坏行跳过
+    （追加型文件尾部可能有半行）。实现与 mailbox() 同构。"""
+    agent = get_agent_or_404(agent_id)
+    limit = max(1, min(int(limit), 200))   # 与内核 /v1/sessions 上限一致
+    p = _home(agent) / "data" / "sessions.jsonl"
+    try:
+        text = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    rows: list[dict] = []
+    for line in text.splitlines()[-limit:]:
+        try:
+            obj = json.loads(line)
+            if isinstance(obj, dict):
+                rows.append(obj)
+        except ValueError:
+            continue
+    rows.reverse()
+    return {"id": agent_id, "sessions": rows}
+
+
+# ── 投信 / 收信（唯一的写通道）──────────────────────────────────────
 
 _MAIL_FIELDS = ("id", "sender", "text", "at")
 

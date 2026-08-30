@@ -1,6 +1,6 @@
 """互联信箱（mailroom）：agent 经管理邮箱发布的互联声明与目录申请处理。
 
-通道与方向（唯一接口 = 管理邮箱）：
+通道与方向（唯一写接口 = 管理邮箱）：
 - agent → xusi：内核 send_mail 工具写 <home>/data/outbox.jsonl（sender=brain）；
   xusi 的后台扫描线程每 5s 增量读取（字节偏移持久化到 etc/outbox_state.json）。
 - xusi → agent：复用 agentops.mail() 追加 mailbox.jsonl（sender=admin，内核同语义）。

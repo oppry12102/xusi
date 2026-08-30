@@ -4,14 +4,16 @@
   /api/*        管理 API（管理面 token：Bearer 或 ?mtoken=）
   /             WebUI；/docs Swagger；/api/docs.md 中文文档
 
-与 agent 的唯一通信接口是管理邮箱（投信 mailbox.jsonl / 读 outbox.jsonl，
-收信处理由 mailroom 后台线程完成）——本应用不反代、不观察、不调 xuseek CLI。
+与 agent 的唯一写接口是管理邮箱（投信 mailbox.jsonl / 读 outbox.jsonl，
+收信处理由 mailroom 后台线程完成）；观察收窄为只读两条 HTTP GET
+（/v1/events、/v1/status，详情页事件流/工具统计/会话 banner；观察 token
+缺失时自动签发一枚写 data/webui_tokens.json）。本应用不反代、不调 xuseek CLI。
 
 子模块：
 - auth.py        鉴权依赖（require_auth / require_admin / require_agent）
 - models.py      Pydantic 请求/响应模型
 - meta_routes.py    /api/health, /api/whoami, /api/node, /api/brains, /api/versions, /api/ports, /, /api/docs.md
-- agent_routes.py   /api/agents/* CRUD + 生命周期 + 投信 + 收信 + 日志
+- agent_routes.py   /api/agents/* CRUD + 生命周期 + 投信 + 收信 + 日志 + 只读观察（events/status）+ 会话（sessions，磁盘）
 - backup_routes.py  /api/agents/{id}/backup, /api/agents/{id}/backups, /api/backups/*, /api/restore
 """
 from __future__ import annotations
@@ -64,7 +66,7 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="墟司 xusi —— xuseek 智能体管理面",
-    description="创建/启停/暂停/删除 xuseek-v2 自主体；与 agent 的唯一接口是管理邮箱（投信/收信）。",
+    description="创建/启停/暂停/删除 xuseek-v2 自主体；唯一写接口是管理邮箱（投信/收信），观察为只读 events/status 两条。",
     version=__version__,
     openapi_url="/api/openapi.json", docs_url="/docs", redoc_url=None,
     lifespan=_lifespan,
