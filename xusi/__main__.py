@@ -6,7 +6,6 @@
     python -m xusi uninstall             # 停止并移除管理面服务（不动 agent 数据）
     python -m xusi status                # 全部 agent 一览（含互联标注）
     python -m xusi doctor                # 环境自检
-    python -m xusi post-upgrade-note     # 升级后向 agent 投递迁移说明信（管理邮箱）
 """
 from __future__ import annotations
 
@@ -311,44 +310,6 @@ def cmd_restore(args) -> int:
     return 0
 
 
-# ── post-upgrade-note（升级迁移信：经管理邮箱投递，管理员手动触发）─────
-
-_UPGRADE_NOTE_TMPL = """【墟司管理面升级通知】
-墟司已重构：你我之间现在只有一条管理邮箱通道（其余通信方式全部取消）。
-你的对外呈现（观察台、自建服务等）是你的自家业务——怎么让人找到你，由你自己
-决定，并经 send_mail 告知管理员。
-1. 与其它 agent 互联（可选）：自生成互联 token 与互联端口，回信发布登记：
-   {{"xusi":"publish","port":<互联端口>,"token":"<互联token>","host":"<其它机器可达地址，同机可省略>"}}
-   重复发布 = 更新，随时可换端口换 token。
-2. 需要其它 agent 的互联地址与 token：回信 {{"xusi":"request_directory"}}，管理面自动回执目录。
-3. mission / brains / budgets 今后由你自己改：管理员不再改写你的 config.toml
-   （仅在创建时渲染一次）。需要新大脑的 api_key 时向管理员索取，用 run_shell 编辑
-   config.toml，每口呼吸热重载（改动前建议先自行备份）。"""
-
-
-def cmd_post_upgrade_note(args) -> int:
-    """升级后向 agent 投迁移说明信。管理员手动触发（不做升级自动投——
-    管理员先验收再通知）。"""
-    from . import agentops, registry
-    agents = registry.list_agents()
-    if args.agent_id:
-        agents = [a for a in agents if a["id"] == args.agent_id]
-        if not agents:
-            print(f"error: agent 不存在：{args.agent_id}", file=sys.stderr)
-            return 2
-    if not agents:
-        print("(注册表中没有 agent)")
-        return 0
-    for a in agents:
-        try:
-            r = agentops.mail(a["id"], _UPGRADE_NOTE_TMPL)
-            print(f"  ✓ 已投递 {a['id']:28}（{r['id']}）")
-        except agentops.AgentError as e:
-            print(f"  · {a['id']:28} 跳过：{e}", file=sys.stderr)
-    agentops.audit("migration.note", agents=[a["id"] for a in agents])
-    return 0
-
-
 def main() -> int:
     p = argparse.ArgumentParser(prog="xusi", description="墟司 —— xuseek 智能体管理面")
     p.add_argument("--version", action="version", version=f"xusi {__version__}")
@@ -371,11 +332,6 @@ def main() -> int:
     init_.add_argument("--rotate", action="store_true",
                        help="已有 secret 时强制轮换（重新生成）")
     init_.set_defaults(fn=cmd_init)
-
-    upn_ = sub.add_parser("post-upgrade-note", help="升级后向 agent 投递迁移说明信（管理邮箱）")
-    upn_.add_argument("--agent", dest="agent_id", default="",
-                      help="只投给指定 agent；缺省 = 全部")
-    upn_.set_defaults(fn=cmd_post_upgrade_note)
 
     bp_ = sub.add_parser("backup", help="备份 agent 的 data + workspace（冻结窗快照）")
     bp_.add_argument("agent_id", nargs="?", default="")
