@@ -171,9 +171,14 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
             _rollback_create(unit, home, agent_id)
             raise AgentError(f"创建失败已回滚：{e}") from e
 
-    # 锁外拉起：落盘后端口已被三重检验挡住，锁外 spawn 语义等价，
-    # 并发 create 不再互相等 90s 验收
-    spawn_and_verify(rec)
+    # 锁外拉起：落盘后端口已被三重检验挡住，并发 create 不再互相等 90s 验收。
+    # 失败路径同样回滚——「锁外等价」含失败语义，否则验收不过的 agent 会以
+    # desired=running 赖在注册表里，靠 reconcile 反复拉起一个起不来的单元
+    try:
+        spawn_and_verify(rec)
+    except Exception as e:
+        _rollback_create(unit, home, agent_id)
+        raise AgentError(f"创建失败已回滚：{e}") from e
 
     audit("agent.create", agent=agent_id, name=rec["name"], port=port,
           expose=expose, brains=brain_list, source=src_ver,

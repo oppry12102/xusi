@@ -210,9 +210,14 @@ def cmd_doctor(_args) -> int:
     pool = brains.pool_summary()
     check("密钥池至少一家可用", any(b["has_key"] for b in pool),
           f"{len(pool)} 家：{', '.join(b['name'] + ('(有key)' if b['has_key'] else '(缺key)') for b in pool)}")
-    check("管理面端口空闲或已由本服务监听",
-          not ports.port_free(cfg.port) and systemdctl.manager_running()
-          or ports.port_free(cfg.port))
+    # port_free(cfg.port) 恒 False（管理面端口在分配层被保留），旧写法因此
+    # 恒等 manager_running()——install 前跑 doctor 必误报。显式查内核监听 +
+    # bind 试探，空闲或在跑本服务都算过。
+    mgr_running = systemdctl.manager_running()
+    mgr_free = (cfg.port not in ports._kernel_listening_ports()
+                and ports._can_bind(cfg.port, "0.0.0.0"))
+    check("管理面端口空闲或已由本服务监听", mgr_free or mgr_running,
+          "" if mgr_free or mgr_running else f"端口 {cfg.port} 被其它进程占用")
     check("agent 端口段有富余", len(ports.available_ports(5)) >= 5,
           f"可用示例 {ports.available_ports(5)}")
     check("管理面 token 已初始化", bool(get_config().admin_secret),
@@ -325,9 +330,8 @@ def cmd_post_upgrade_note(args) -> int:
         print("(注册表中没有 agent)")
         return 0
     for a in agents:
-        text = _UPGRADE_NOTE_TMPL.format(port=a["port"])
         try:
-            r = agentops.mail(a["id"], text)
+            r = agentops.mail(a["id"], _UPGRADE_NOTE_TMPL)
             print(f"  ✓ 已投递 {a['id']:28}（{r['id']}）")
         except agentops.AgentError as e:
             print(f"  · {a['id']:28} 跳过：{e}", file=sys.stderr)
@@ -365,7 +369,7 @@ def main() -> int:
 
     bp_ = sub.add_parser("backup", help="备份 agent 的 data + workspace（冻结窗快照）")
     bp_.add_argument("agent_id", nargs="?", default="")
-    bp_.add_argument("--all", action="store_true", help="备份所有 sleeping 的 agent")
+    bp_.add_argument("--all", action="store_true", help="备份所有 agent（运行中走 SIGSTOP 冻结窗快照）")
     bp_.add_argument("--reason", default="manual", help="备份原因（manual/pre-modify/...）")
     bp_.set_defaults(fn=cmd_backup)
 

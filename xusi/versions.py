@@ -41,12 +41,6 @@ def repo_dir() -> Path:
     return get_config().versions_dir
 
 
-def _sort_key(v: str):
-    """自然版本排序键：按 . _ - 切段，数字段按数值比较（v2.10 > v2.9）。"""
-    return tuple((0, int(p)) if p.isdigit() else (1, p)
-                 for p in re.split(r"[._-]", v))
-
-
 _NUMCORE_RE = re.compile(r"(\d+(?:\.\d+)*)")
 
 
@@ -55,7 +49,7 @@ def numeric_core(v: str) -> tuple[int, ...] | None:
     '2.7.5'→(2,7,5)。无数字段（如 'dev'）返回 None。
 
     跨版本语义阈值比较用——版本仓库的命名历史有 v 前缀混用（v2.5.5 与
-    2.7.5 并存），直接拿字符串/`_sort_key` 比会得出 v2.5.5 > 2.7.5。"""
+    2.7.5 并存），直接按字符串段比会得出 v2.5.5 > 2.7.5。"""
     m = _NUMCORE_RE.search(v or "")
     return tuple(int(p) for p in m.group(1).split(".")) if m else None
 
@@ -66,6 +60,14 @@ def at_least(v: str, floor: str) -> bool:
     让新核静默丢限额）。"""
     a, b = numeric_core(v), numeric_core(floor)
     return True if a is None or b is None else a >= b
+
+
+def _rank(v: str):
+    """仓库清单排序键：数值核心优先（与 at_least 同一把尺——v 前缀混用时按
+    字符串段比较会把无前缀包（如 2.8.0 vs v2.7.5）误判为最旧，缺省版本选择
+    跟着错）；无数值核心的（自打包/开发版）排最尾，缺省版本不会误选它。"""
+    nc = numeric_core(v)
+    return (1, nc, v) if nc is not None else (0, (), v)
 
 
 def list_versions() -> list[dict]:
@@ -85,7 +87,7 @@ def list_versions() -> list[dict]:
                 "mtime": datetime.fromtimestamp(st.st_mtime, timezone.utc)
                            .strftime("%Y-%m-%dT%H:%M:%SZ"),
             })
-    out.sort(key=lambda r: _sort_key(r["version"]), reverse=True)
+    out.sort(key=lambda r: _rank(r["version"]), reverse=True)
     return out
 
 

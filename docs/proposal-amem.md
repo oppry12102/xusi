@@ -71,7 +71,7 @@ amem = true
 ```
 1) 渲染 config.toml（创建时唯一一次）——原提案的 `init --capability` 已随
    v2.7.4 撤 init 作废；[capabilities] 开关由管理员自写或投信让 agent 自改
-2)~5) 注册 / systemd 拉起 / 验收 / 签 token   # 其余不变
+2)~4) 注册 / systemd 拉起 / 验收   # v2 起无「签 token」步（xusi 不代签任何凭证）
 ```
 
 **依赖安装不需要墟司做任何事**：首次 serve 时 `xuseek.sh` 按双指纹自检补装

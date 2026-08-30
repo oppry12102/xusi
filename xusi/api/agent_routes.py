@@ -108,7 +108,9 @@ async def api_agent_mailbox(limit: int = 50, box: str = "outbox",
 
     只读展示；信封（互联发布/目录申请）的自动处理由 mailroom 后台线程完成。"""
     agent, _rec = pair
-    return JSONResponse(agentops.mailbox(agent["id"], limit, box=box))
+    # 邮箱文件只增不删、取尾部要先整读——走线程池，别冻事件循环
+    return JSONResponse(await asyncio.to_thread(
+        agentops.mailbox, agent["id"], limit, box=box))
 
 
 @router.get("/api/agents/{agent_id}/logs")

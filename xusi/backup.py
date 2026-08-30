@@ -222,11 +222,13 @@ def snapshot(agent_id: str, *, reason: str = "manual",
     xuseek_ver = _detect_xuseek_version(agent)
     unit = get_config().unit_name(agent_id)
 
-    # 估算 home 大小（仅 data + workspace，excluded 之后）
+    # 估算 home 大小（仅 data + workspace，excluded 之后；config.toml 归 agent
+    # 自治、可能被它删掉——缺失按 0 计，别让估算把备份崩成未捕获的 500）
+    cfg_toml = home / "config.toml"
     home_size = sum(
         p.stat().st_size for p in (home / "data").rglob("*") if p.is_file()) \
         + sum(p.stat().st_size for p in (home / "workspace").rglob("*") if p.is_file()) \
-        + (home / "config.toml").stat().st_size
+        + (cfg_toml.stat().st_size if cfg_toml.is_file() else 0)
 
     # SIGSTOP 冻结 → tar → SIGCONT（即使 tar 抛错也解冻）
     # 进程已停止时跳过 SIGSTOP/SIGCONT（无进程可冻结，且 kill 会失败）
@@ -391,7 +393,13 @@ def restore(backup_path: Path, *, new_id: str | None = None,
     now = registry.now_iso()
     with ports.ALLOC_LOCK:
         if port is not None:
-            pass                            # 用户传的优先
+            # 用户传的优先，但与 create 同一把尺：in_range + 三重检验——否则
+            # 注册表会落一个撞车/越界端口，到 wait_health 90s 超时才暴露
+            try:
+                ports.allocate(port)
+            except ValueError as e:
+                shutil.rmtree(home, ignore_errors=True)
+                raise BackupError(f"端口 {port} 不可用：{e}") from None
         elif preserved_port is not None and ports.port_free(preserved_port):
             port = preserved_port
         else:

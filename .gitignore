@@ -1,7 +1,7 @@
 # ═══ 密钥与运行时数据 —— 永不入库 ═══
 # 管理面本地配置（端口、源路径、role 等；每台机器独立——git pull 会撞配置）
 etc/xusi.toml
-# peer 注册表（每台机器独立的"邻居清单"——git pull 会互相覆盖）
+# 历史残留：v2 已删对等互联（peers.py），旧文件防入库
 etc/peers.toml
 # 节点身份（URL-safe 8 字节；首次 serve 自动生成；每台机器必须独立）
 etc/node.id
@@ -9,13 +9,11 @@ etc/node.id
 etc/node.json
 # 四家 LLM 的 api_key（用 brains.toml.example 起手）
 etc/brains.toml
-# 管理面 token（admin/user）——明文 PLAIN + 历史残留 JWT
-# 丢了只能重新签，调用方（WebUI / curl / voidhub）需同步替换
+# 历史残留：v2 已删反代（/px /svc）与反代 token，旧文件防入库
 etc/tokens.json
-# 智能体互联 token（同集群 agent ↔ agent 互调 /svc 的入场券，每 xusi 一把）
-# revoke 后所有 agent 互调立即中断，需重新签发并通告 agent 重读 /api/agent-peers
+# 历史残留：v2 已删互联 token 签发（互联改由 agent 自签、经管理邮箱发布）
 etc/inter_agent_tokens.json
-# 注册表（含各 agent 的观察台 token）
+# 注册表（agent 簿记 + 期望态 + 互联标注，含 agent 发布的互联 token 明文）
 etc/agents.json
 # 管理操作审计
 etc/audit.jsonl
