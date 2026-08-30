@@ -48,6 +48,9 @@ curl -X POST http://SERVER:8601/api/agents \
 - `brains`：首个为默认大脑，顺序 = 故障转移序；必须都在密钥池且已配 key
 - `source_version`：缺省 = 仓库最新版（解压成实例私有副本）；versions/ 是源码唯一
   事实源，仓库为空时创建报错
+- `budgets`：{max_rounds}——v2.7.5+ 内核只认 `[limits] max_rounds`（max_seconds
+  已删除、max_context_tokens 由内核按大脑窗口自动派生）；更早内核认 `[agent]`
+  三段。渲染格式随 `source_version` 自动分叉
 - 创建时 xusi 渲染一次 `config.toml`（出生配置：mission/brains/api_key/budgets，
   chmod 600），**此后 xusi 不再改写该文件**
 - 启动验收 = systemd 单元 active + 端口进入监听（不再探 agent 的 HTTP）

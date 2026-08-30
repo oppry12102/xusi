@@ -13,15 +13,17 @@ from pathlib import Path
 from typing import Any
 
 from .config import get_config
+from .versions import at_least
 
 # 渲染进 agent config.toml 时允许透传的可选字段（v2 config 认识的）
 _OPTIONAL_FIELDS = ("temperature", "timeout", "tier", "price_prompt", "price_completion",
                     "context_window")
 
-# 上下文护栏的输出余量（tokens）：vLLM 对 prompt == max_model_len 直接 400，
-# 内核「超顶优雅结束」又按上次成功调用的 prompt_tokens 事后判定——不留余量
-# 的话护栏永远晚一步。预留 8k 让 80% 提醒/优雅收尾先于硬错触发。
-_CONTEXT_RESERVE_TOKENS = 8_192
+# 内核 v2.7.5 起清理了 [agent] 预算段：max_seconds 删除、max_context_tokens
+# 改为自动派生（同档可用脑最小窗口 − 8k，现场活算）；可配置限额只剩
+# [limits] max_rounds。更早内核仍认 [agent] 三段——出生配置按所选内核
+# 版本渲染，写错段 = 限额静默失效（旧核不认 [limits]，新核不认 [agent]）。
+_LIMITS_STYLE_SINCE = "2.7.5"
 
 
 def _load_pool() -> dict[str, dict]:
@@ -106,31 +108,23 @@ def _q(s: Any) -> str:
     return json.dumps(str(s), ensure_ascii=False)
 
 
-def _failover_class(spec: dict) -> str:
-    """大脑的经济分档（[brains.X] tier；未打标签视同 power——与内核 v2.5.5+
-    的 _tier_of 同义：历史存量的未标注脑都是主力型号）。
-
-    内核事实（xuseek-v2 v2.5.5+ llm.py）：故障转移**同档循环**——主循环与
-    llm_call(tier=) 一样只在同档大脑之间转移，跨档切换走管理员（PATCH 换
-    default，重渲染即生效）。更早内核（≤v2.5.3）主循环是全池轮转，跨档也会
-    接盘——但小窗脑超窗 400/预检跳过，接不住胖会话。预算按 default 同档取
-    最小对两类内核都成立：同档是全部可能接盘者，且大窗脑不该被跨档小窗脑
-    拖累。"""
-    return str(spec.get("tier") or "power")
-
-
 def render_agent_config(mission: str, brains: list[str], budgets: dict | None = None,
-                        display_timezone: str | None = None) -> str:
+                        display_timezone: str | None = None,
+                        source_version: str = "") -> str:
     """渲染 agent 的 config.toml 全文（注册表数据 → 配置文件，单向渲染）。
 
-    ⚠ brains 列表顺序即语义：chosen[0] 渲染为 [brain] default——它既是主
-    回路首选脑，也是预算推导（同档取最小）与故障转移分档的锚点。管理员
-    调换 brains 顺序 = 静默换默认大脑（PATCH brains 原样写回也会重渲染换锚），
-    换锚后预算随新档重算。
+    ⚠ brains 列表顺序即语义：chosen[0] 渲染为 [brain] default——主回路
+    首选脑与故障转移分档的锚点。
 
-    budgets 为 None 且 default 大脑的同类（tier 相同，未打标签视同 power）都
-    未声明 context_window 时，[agent] 预算段一个键都不写（内核默认 = 全不限）；
-    否则只写给出的/推导出的键（0 = 不限）。"""
+    预算只透传管理员的显式 budgets（0 = 不限）；不做推导——会话预算的
+    缺省推导（同档最小窗口 − 8k）是内核自己的事务（xuseek 现场活算、显式
+    值优先、热重载即时生效），管理面不替它做决策，也不烙过期快照。
+
+    预算段的格式随 source_version（创建时选定的内核版本）走：
+    - ≥2.7.5：[limits] 段只写 max_rounds——内核已删 max_seconds、
+      max_context_tokens 改自动派生，这两个键收到也渲染不进配置；
+    - 更早版本：[agent] 段写 max_rounds / max_seconds / max_context_tokens。
+    出生配置必须匹配内核认识的 schema（写错段 = 限额静默失效）。"""
     pool = _load_pool()
     # 去重保序：重复名会渲染出两个同名段 → 坏 TOML（validate_selection 已
     # 拦常规路径，这里防直调绕过）
@@ -140,24 +134,6 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     cfg = get_config()
     tz = display_timezone or cfg.display_timezone
     b = dict(budgets or {})
-
-    # 上下文护栏：内核缺省 max_context_tokens=1M，小于此的服务（如 190k 级
-    # 自托管 vLLM）会在护栏触发前撞硬错。取 default 同档（tier 相同，未打
-    # 标签视同 power）已声明 context_window 的最小值，扣输出余量折进预算：
-    # 内核 v2.5.4+ 故障转移同档循环，同档即全部自动接盘者；更早内核全池轮转
-    # 时跨档小窗脑也接不住胖会话（超窗 400/预检被跳过）——两种情况下预算都
-    # 不该被跨档小窗脑拖累。人工换档走 PATCH 重渲染，预算随新 default 重算。
-    # 显式预算优先（0=不限是管理员的显式意志，渲染注释承诺的语义不破坏）；
-    # 推导只补缺。显式值宽于物理窗口时不静默收紧——事实写进渲染注释，硬墙
-    # 由内核按脑预检兜底，注册表回显与实际生效值保持一致。同档都没声明则不动。
-    cls = _failover_class(pool[chosen[0]])
-    declared = [int(pool[n]["context_window"]) for n in chosen
-                if _failover_class(pool[n]) == cls
-                and isinstance(pool[n].get("context_window"), (int, float))
-                and int(pool[n]["context_window"]) > 0]
-    cap = min(declared) - _CONTEXT_RESERVE_TOKENS if declared else 0
-    if cap > 0 and "max_context_tokens" not in b:
-        b["max_context_tokens"] = cap
 
     lines = [
         "# ═══════════════════════════════════════════════════════════════════",
@@ -199,37 +175,42 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
                 v = spec[k]
                 lines.append(f"{k} = {_q(v)}" if isinstance(v, str) else f"{k} = {v}")
         lines.append("")
-    # 预算段：缺省一个都不写（xuseek 自身默认 = 全不限，LLM 完全自主）；
-    # 仅写给出的键（0 = 不限）。max_context_tokens 可能来自上面的物理护栏推导
+    # 预算段：格式随内核版本（schema 不匹配 = 限额静默失效，见模块头常量）。
+    # 两个分支都只写管理员显式给的键（0 = 不限），不做推导；缺省不写段，
+    # 由内核按自身默认（v2.7.5 按大脑窗口自动派生）处理。
     if b:
-        lines.append("# 探索回路安全网（显式键优先，0 = 不限；缺省补窗口推导；热重载即时生效）")
-        lines.append("[agent]")
-        for k in ("max_rounds", "max_seconds", "max_context_tokens"):
-            if k in b:
-                lines.append(f"{k} = {int(b[k])}")
-        if cap > 0:
-            lines.append(f"# 物理护栏参考：default 同档最小窗口 ≈ {cap}（context_window 推导，扣 8k 余量）")
-            # 显式 max_context_tokens 超过物理窗口：渲染里给醒目告警。
-            # 真要收紧：把 b[k] 改写成 min(int(b[k]), cap)，并在 #4
-            # 那段设计注释里去掉"硬墙由内核按脑预检兜底"那一句。
-            explicit_mct = b.get("max_context_tokens")
-            if isinstance(explicit_mct, (int, float)) and int(explicit_mct) > cap:
-                lines.append(
-                    f"# ⚠ max_context_tokens={int(explicit_mct)} 超过 default 物理护栏 {cap}，"
-                    f"按设计不收紧；硬墙依赖内核按脑预检，若预检未生效会超窗 400。"
-                )
+        if at_least(source_version, _LIMITS_STYLE_SINCE):
+            lines.append("# 探索回路安全网（v2.7.5+：可配置限额只剩 max_rounds，0 = 不限；")
+            lines.append("# max_context_tokens 由内核按大脑窗口自动派生，max_seconds 已移除；")
+            lines.append("# 热重载即时生效）")
+            lines.append("[limits]")
+            for k in ("max_rounds",):
+                if k in b:
+                    lines.append(f"{k} = {int(b[k])}")
+            dropped = [k for k in ("max_seconds", "max_context_tokens") if k in b]
+            if dropped:
+                lines.append(f"# 这些键已由内核接管/移除，渲染时忽略：{', '.join(dropped)}")
+        else:
+            lines.append("# 探索回路安全网（旧内核 [agent] 段：显式键优先，0 = 不限；热重载即时生效）")
+            lines.append("[agent]")
+            for k in ("max_rounds", "max_seconds", "max_context_tokens"):
+                if k in b:
+                    lines.append(f"{k} = {int(b[k])}")
         lines.append("")
     return "\n".join(lines)
 
 
 def write_agent_config(home: Path, mission: str, brains: list[str],
-                       budgets: dict | None = None) -> Path:
+                       budgets: dict | None = None,
+                       source_version: str = "") -> Path:
     """渲染并写入 <home>/config.toml（chmod 600，含 api_key）。
 
-    只在创建/恢复时调用——出生配置，首写即终写；此后该文件归 agent 自治，
-    xusi 不再读回、不再重渲染。
+    只在创建时调用——出生配置，首写即终写；此后该文件归 agent 自治，
+    xusi 不再读回、不再重渲染。source_version = 内核版本（预算段格式
+    随它走，见 render_agent_config）。
     """
-    text = render_agent_config(mission, brains, budgets)
+    text = render_agent_config(mission, brains, budgets,
+                               source_version=source_version)
     p = home / "config.toml"
     p.write_text(text, encoding="utf-8")
     p.chmod(0o600)

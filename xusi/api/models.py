@@ -11,7 +11,8 @@ class CreateAgentReq(BaseModel):
     brains: list[str] = Field(min_length=1, description="大脑列表（首个为默认，顺序=故障转移序）")
     expose: bool = Field(False, description="true=监听 0.0.0.0 直接对外；默认 127.0.0.1 仅本机")
     port: int | None = Field(None, description="指定端口（缺省自动分配，自 8602 起）")
-    budgets: dict | None = Field(None, description="预算 {max_rounds, max_seconds, max_context_tokens}")
+    budgets: dict | None = Field(None, description="预算 {max_rounds}（v2.7.5+ 内核只认 [limits] max_rounds；"
+                                                "更早内核另认 max_seconds/max_context_tokens，随 source_version 渲染）")
     note: str = Field("", description="备注")
     source_version: str = Field("", description="xuseek-v2 版本号（GET /api/versions）。缺省 = 仓库最新版"
                                                 "（每 agent 自带私有副本，可单独迁移）。私有副本创建后不可改")

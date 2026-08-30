@@ -47,6 +47,27 @@ def _sort_key(v: str):
                  for p in re.split(r"[._-]", v))
 
 
+_NUMCORE_RE = re.compile(r"(\d+(?:\.\d+)*)")
+
+
+def numeric_core(v: str) -> tuple[int, ...] | None:
+    """版本号的数值核心（取首个数字段逐段转 int）：'v2.5.5'→(2,5,5)，
+    '2.7.5'→(2,7,5)。无数字段（如 'dev'）返回 None。
+
+    跨版本语义阈值比较用——版本仓库的命名历史有 v 前缀混用（v2.5.5 与
+    2.7.5 并存），直接拿字符串/`_sort_key` 比会得出 v2.5.5 > 2.7.5。"""
+    m = _NUMCORE_RE.search(v or "")
+    return tuple(int(p) for p in m.group(1).split(".")) if m else None
+
+
+def at_least(v: str, floor: str) -> bool:
+    """v >= floor 的数值核心比较。v 解析不出数字段按 True——自打包/开发版
+    多为近期源码，按新版语义处理（宁可走新格式被旧核忽略，也不按旧格式
+    让新核静默丢限额）。"""
+    a, b = numeric_core(v), numeric_core(floor)
+    return True if a is None or b is None else a >= b
+
+
 def list_versions() -> list[dict]:
     """仓库清单（版本号新→旧）：[{version, file, size_bytes, mtime}]。"""
     d = repo_dir()

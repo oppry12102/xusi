@@ -193,7 +193,8 @@ def _init_workspace(rec: dict, src_ver: str) -> None:
     home = _home(rec)
     home.mkdir(parents=True, exist_ok=True)
     versions.extract(src_ver, home / versions.SRC_DIR_NAME)
-    brains.write_agent_config(home, rec["mission"], rec["brains"], rec["budgets"])
+    brains.write_agent_config(home, rec["mission"], rec["brains"], rec["budgets"],
+                              source_version=src_ver)
 
 
 def spawn_and_verify(rec: dict) -> None:
@@ -354,7 +355,7 @@ _PATCHABLE = {"name", "note", "port", "expose"}
 _AGENT_OWNED = {
     "mission": "使命已由 agent 自治：请投信让它自己修改 config.toml（内核每轮热重载）",
     "brains": "大脑已由 agent 自治：请投信让它自己修改 config.toml 的 [brains.*]（新 api_key 可向管理员索取）",
-    "budgets": "预算已由 agent 自治：请投信让它自己修改 config.toml 的 [agent] 段",
+    "budgets": "预算已由 agent 自治：请投信让它自己修改 config.toml 的 [limits] 段（v2.7.5+；旧内核为 [agent] 段）",
 }
 
 

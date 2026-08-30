@@ -5,8 +5,10 @@
 > API 层「source_version 创建后不可改」约束的是**创建流程**；存量升级是目录级
 > 操作，本文是标准做法。前置：管理面代码 ≥ `ca56645`（分档语义与内核 v2.5.5
 > 对齐：未标注 tier 视同 power）。
-> **当前目标版本：v2.7.4（2026-08-29 投放）**。v2.5.x → v2.7.4 是同一套目录级
+> **当前目标版本：v2.7.5（2026-08-30 投放）**。v2.5.x → v2.7.5 是同一套目录级
 > 流程；运行时依赖零变化（pyproject 只差版本号行），坑④的 .venv 平移结论不变。
+> v2.7.5 清理了 `[agent]` 预算段（见 §5）——升级后存量 config.toml 里的该段是
+> 死配置，投信让 agent 清掉即可。
 
 ## 0. 前置条件（顺序重要）
 
@@ -65,7 +67,9 @@ EOF
 ```python
 from xusi import agentops
 agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier = \"power\"、"
-                   "context_window = 131072；[agent] 段加 max_context_tokens = 123072。"
+                   "context_window = 131072。另外 v2.7.5 起 [agent] 预算段已废除："
+                   "max_context_tokens 由内核按大脑窗口自动派生、max_seconds 已删除，"
+                   "请删掉 [agent] 段里的这两个键；如需轮数限额改用 [limits] max_rounds。"
                    "改前先自行备份 config.toml。")
 ```
 
@@ -83,7 +87,8 @@ agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier =
 
 - [ ] journal 启动横幅：`大脑：X（故障转移兜底: …）`——兜底名单应是**同档**脑，不是全池
 - [ ] `config.toml`：`[brains.X]` 带 `tier` / `context_window`；
-      `[agent] max_context_tokens` = default 同档已声明窗口最小值 − 8192
+      旧 `[agent]` 预算段已清掉（v2.7.5 不再认——max_context_tokens 改自动派生、
+      max_seconds 删除；轮数限额只剩 `[limits] max_rounds`）
 - [ ] 事件流 `llm_response.brain` 正常粘滞、无 `llm_error` / `llm_retry` 风暴（观察 1~2 个会话）
 
 ## 5. 语义变化提醒（内核 v2.5.5）
@@ -111,6 +116,17 @@ agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier =
   已开 extras）不一致才重装。
 - 升级后顺带投信告知：`./xuseek.sh capabilities list` 看本版本能力包；种子已在
   workspace 播好，用不用归大脑。
+
+### 内核 v2.7.5（2026-08-30）：清理 [agent] 预算段
+
+- **max_seconds 删除**；**max_context_tokens 改为自动派生**（default 同档**可用**脑
+  已声明窗口的最小值 − 8192，内核现场活算、不可配置——管理面/管理员都不再手算）。
+- **可配置限额只剩 `[limits] max_rounds`**（0 = 不限；到顶优雅结束）。
+- 升级后存量 config.toml 的 `[agent]` 段是死配置（内核不认、静默忽略），
+  投信让 agent 清掉（见 §2 模板）；不清也不报错，只是留着误导人。
+- 管理面已同步（xusi ≥ 本提交）：创建渲染按所选内核版本分叉——≥2.7.5 写
+  `[limits] max_rounds`（budgets 里的 max_seconds/max_context_tokens 渲染时
+  忽略并在配置里留注释），更早版本仍写 `[agent]` 三段。
 
 ## 6. 回滚
 
