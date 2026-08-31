@@ -109,6 +109,7 @@ curl 'http://SERVER:8601/api/agents/{id}/mailbox?box=outbox&limit=50' \
 | `GET /api/agents/{id}/status` | admin | 只读转发内核 `/v1/status`（原样透传：daemon 状态 / 下次呼吸 / 工具统计） |
 | `GET /api/agents/{id}/sessions?limit=30` | admin | 会话索引：读磁盘 `data/sessions.jsonl` 尾部（最新在前）：`{"id","sessions":[...]}`。limit 钳 1..200 |
 | `GET /api/agents/{id}/boot` | admin | Boot 自述：读磁盘 `workspace/BOOT.md` 全文（超 64000 字符截断打 `truncated`；缺失 → `exists:false`）。agent 停机也能看 |
+| `GET /api/agents/{id}/ui-url` | admin | 观测台直连入口 `{port, token, expose, active}`——浏览器直连 agent 端口 `/ui/?token=`（不走管理面反代）；token 缺失自动签发进 `data/webui_tokens.json` |
 
 - 观察台 token：`data/webui_tokens.json` 缺失/为空时，xusi **自动签发一枚**写进
   该文件（`secrets.token_urlsafe(32)`、label=`xusi-observe`、merge 不覆盖）；

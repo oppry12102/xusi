@@ -695,6 +695,24 @@ def _observe_token(agent: dict, *, force_new: bool = False) -> str:
         return raw
 
 
+def ui_url(agent_id: str) -> dict:
+    """观测台直连入口：<host>:<port>/ui/?token=<观察 token>。
+
+    不再走管理面反代（/px 已删）——浏览器直连 agent 端口；token 复用
+    observe 的自动签发（缺失写 data/webui_tokens.json，内核每请求重读）。
+    host 由前端按浏览器视角拼（location.hostname）——管理面可能被远程
+    浏览器访问；agent 未运行 → active=false（前端置灰）。"""
+    agent = get_agent_or_404(agent_id)
+    tok = _observe_token(agent)
+    return {
+        "id": agent_id,
+        "port": agent["port"],
+        "token": tok,
+        "expose": bool(agent.get("expose")),
+        "active": systemdctl.unit_state(_unit(agent)) == "active",
+    }
+
+
 def _get(agent: dict, path: str, token: str) -> "httpx.Response":
     """观察 GET。httpx 在函数内惰性 import：它是观察通道独有的第三方依赖，
     模块级 import 会让「venv 缺 httpx」炸掉整个 agentops（api 与 CLI 全量

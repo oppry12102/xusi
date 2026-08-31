@@ -300,6 +300,7 @@
   <div class="dh"><span class="nm" id="d-nm"></span><span class="aid mono" id="d-id" style="color:var(--sub);font-size:12px"></span>
     <button id="d-refresh" onclick="loadDetail()" style="margin-left:auto" title="手动刷新">⟳</button>
     <button id="d-edit" onclick="openEdit(cur)" hidden>✎ 改参</button>
+    <a id="d-ui" href="#" target="_blank" style="font-size:12.5px;text-decoration:none;color:var(--acc)">观测台 ↗</a>
     <button onclick="closeDetail()" title="关闭并恢复看板 15s 自动刷新">✕</button></div>
   <div id="tabs"></div>
   <div id="pane"></div>
@@ -878,6 +879,24 @@ async function openDetail(id) {
   editBtn.hidden = me?.role !== "admin";
   editBtn.title = "改参（admin）";
   $("#tabs").innerHTML = TABS.map(t => `<button data-t="${t}" onclick="switchTab('${t}')">${t}</button>`).join("");
+  // 观测台直连链接（浏览器直连 agent 端口，不走管理面反代；token 缺失自动签发）
+  const ui = $("#d-ui");
+  ui.style.display = "";
+  ui.style.pointerEvents = "";
+  ui.style.opacity = "";
+  try {
+    const u = await api(`/api/agents/${id}/ui-url`);
+    if (id !== cur) return;
+    const host = location.hostname || "127.0.0.1";
+    ui.href = `http://${host}:${u.port}/ui/?token=${encodeURIComponent(u.token)}`;
+    ui.title = u.active
+      ? (u.expose ? "打开 agent 观测台（直连 agent 端口）"
+                  : "打开 agent 观测台（直连；agent 仅监听本机——远程浏览器需 SSH 隧道）")
+      : "agent 未运行——启动后可打开观测台";
+    if (!u.active) { ui.style.pointerEvents = "none"; ui.style.opacity = ".45"; }
+  } catch (e) {
+    ui.style.display = "none";   // 取不到入口就不露链接
+  }
   clearInterval(pollTimer); pollTimer = null;
   loadDetail();
 }

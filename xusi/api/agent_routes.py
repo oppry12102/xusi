@@ -6,7 +6,7 @@
 - 邮箱（唯一的写通道）：POST mail 投信 / GET mailbox 收信
 - 日志：GET logs（journalctl，进程宿主职责）
 - 观察（只读）：GET events / status（窄通道，详情页用）；会话：GET sessions（磁盘）；
-  Boot 自述：GET boot（workspace/BOOT.md，磁盘）
+  Boot 自述：GET boot（workspace/BOOT.md，磁盘）；观测台直连：GET ui-url
 
 单 xusi：所有 agent 都在本机 registry。写端点（PATCH / DELETE / 5 lifecycle /
 mail）走 `require_agent`（admin + 本地存在性）。
@@ -159,3 +159,12 @@ async def api_agent_boot(pair: tuple = Depends(require_agent)) -> JSONResponse:
     → exists=false；超 64k 截断打 truncated。"""
     agent, _rec = pair
     return JSONResponse(await asyncio.to_thread(agentops.boot, agent["id"]))
+
+
+@router.get("/api/agents/{agent_id}/ui-url")
+async def api_agent_ui_url(pair: tuple = Depends(require_agent)) -> JSONResponse:
+    """观测台直连入口（浏览器直连 agent 端口，不走管理面反代）：
+    返回 {port, token, expose, active}——token 缺失自动签发进
+    data/webui_tokens.json；host 由前端按浏览器视角拼。"""
+    agent, _rec = pair
+    return JSONResponse(await asyncio.to_thread(agentops.ui_url, agent["id"]))
