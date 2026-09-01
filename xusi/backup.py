@@ -301,6 +301,16 @@ def _read_meta_from_tar(path: Path) -> dict:
     raise BackupError("备份包里没有 meta.json")
 
 
+def _rewrite_instance_id(config_path: Path, new_id: str) -> None:
+    """手术式改写 config.toml 的 instance_id 单行（键不存在则不动——旧备份
+    没有该键，内核会退回目录名，正好就是新 id）。"""
+    text = config_path.read_text(encoding="utf-8")
+    new_text, n = re.subn(r'(?m)^instance_id\s*=.*$',
+                          f'instance_id = "{new_id}"', text, count=1)
+    if n:
+        config_path.write_text(new_text, encoding="utf-8")
+
+
 def restore(backup_path: Path, *, new_id: str | None = None,
             port: int | None = None,
             overwrite: bool = False,
@@ -364,6 +374,10 @@ def restore(backup_path: Path, *, new_id: str | None = None,
         ct = home / "config.toml"
         if ct.is_file():
             ct.chmod(0o600)
+            # 克隆（--new-id）= 新的人：包里交割的终身 id 一并换成新 id——
+            # 不换则两个实例同号，在目录里撞名。
+            if new_id:
+                _rewrite_instance_id(ct, agent_id)
     except Exception:
         # 失败清理
         import shutil

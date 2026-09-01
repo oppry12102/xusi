@@ -66,15 +66,18 @@ def _iso() -> str:
 
 # ── 基础工具 ─────────────────────────────────────────────────────────
 
-def slugify(name: str) -> str:
-    s = re.sub(r"[^a-z0-9-]+", "-", name.strip().lower()).strip("-")[:24]
-    # 残根守卫：中文名常只剩零星字母（如「A股…」→ "a"），短于 2 位不成词，
-    # 一律走 agent 兜底，保证 id 前缀风格统一（agent-xxxx）。
-    return s if len(s) >= 2 else "agent"
+def gen_id(_name: str = "") -> str:
+    """终身 id：xu-<12位hex>（48 bit 熵，世界唯一；与所在节点无关，迁移随行）。
 
-
-def gen_id(name: str) -> str:
-    return f"{slugify(name)}-{uuid.uuid4().hex[:4]}"
+    纯随机、无词义、形制绝对统一——带词义的前缀会被 LLM 当模式补全
+    （「10-5034」被重建成「agent-10-5034」的教训）；辨识度靠别名
+    （注册表 name 字段，管理员随时改、可重复，纯显示）。
+    本机注册表重号重摇；跨机不查（48 bit：一万个实例撞号约两亿分之一）。
+    """
+    while True:
+        aid = f"xu-{uuid.uuid4().hex[:12]}"
+        if registry.get_agent(aid) is None:
+            return aid
 
 
 def _home(agent: dict) -> Path:
@@ -245,7 +248,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     _validate_brains(brain_list)
     src_ver = _resolve_source_choice((source_version or "").strip())
 
-    agent_id = gen_id(name)
+    agent_id = gen_id()
     # 端口分配 → 注册表落盘必须整体持锁（见 ports.ALLOC_LOCK）：窗口内含解压与
     # 渲染（分钟级）。锁内串行——create 本就是低频 admin 操作。
     with ports.ALLOC_LOCK:
@@ -315,7 +318,7 @@ def _init_workspace(rec: dict, src_ver: str) -> None:
     home.mkdir(parents=True, exist_ok=True)
     versions.extract(src_ver, home / versions.SRC_DIR_NAME)
     brains.write_agent_config(home, rec["mission"], rec["brains"], rec["budgets"],
-                              source_version=src_ver)
+                              source_version=src_ver, instance_id=rec["id"])
 
 
 def spawn_and_verify(rec: dict) -> None:

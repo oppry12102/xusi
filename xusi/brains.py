@@ -156,7 +156,8 @@ def render_brain_section(chosen: list[str]) -> list[str]:
 
 def render_agent_config(mission: str, brains: list[str], budgets: dict | None = None,
                         display_timezone: str | None = None,
-                        source_version: str = "") -> str:
+                        source_version: str = "",
+                        instance_id: str = "") -> str:
     """渲染 agent 的 config.toml 全文（注册表数据 → 配置文件，单向渲染）。
 
     ⚠ brains 列表顺序即语义：chosen[0] 渲染为 [brain] default——主回路
@@ -194,6 +195,14 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
         f'display_timezone = {_q(tz)}',
         "",
     ]
+    if instance_id:
+        lines[-1:] = [
+            "# 你的终身 id（世界唯一、迁移随行、永不改变——本文件归你自治，",
+            "# 但这一行请勿修改：它是迁移/克隆时认亲的唯一凭据。",
+            "# 跨实例场合（登记目录/署名/提及身份）照抄全串，不缩写不补全）",
+            f'instance_id = {_q(instance_id)}',
+            "",
+        ]
     lines.extend(render_brain_section(chosen))
     # 预算段：格式随内核版本（schema 不匹配 = 限额静默失效，见模块头常量）。
     # 两个分支都只写管理员显式给的键（0 = 不限），不做推导；缺省不写段，
@@ -222,15 +231,18 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
 
 def write_agent_config(home: Path, mission: str, brains: list[str],
                        budgets: dict | None = None,
-                       source_version: str = "") -> Path:
+                       source_version: str = "",
+                       instance_id: str = "") -> Path:
     """渲染并写入 <home>/config.toml（chmod 600，含 api_key）。
 
     只在创建时调用——出生配置，首写即终写；此后该文件归 agent 自治，
     xusi 不再读回、不再重渲染。source_version = 内核版本（预算段格式
-    随它走，见 render_agent_config）。
+    随它走，见 render_agent_config）；instance_id = 终身 id（出生时
+    交割给实例，此后它自带身份迁移，注册表只是缓存）。
     """
     text = render_agent_config(mission, brains, budgets,
-                               source_version=source_version)
+                               source_version=source_version,
+                               instance_id=instance_id)
     p = home / "config.toml"
     p.write_text(text, encoding="utf-8")
     p.chmod(0o600)
