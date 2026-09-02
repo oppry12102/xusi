@@ -4,8 +4,9 @@
 > （读 `outbox.jsonl`）。只读观察收窄为两条（详情页用）：HTTP GET
 > `/v1/events`、`/v1/status`（观察 token 缺失时 xusi 自动签发一枚写进
 > `data/webui_tokens.json`），会话索引读磁盘 `sessions.jsonl`。
-> 本 API 只做管理面自己的事：agent 簿记、进程生命周期、邮箱、互联公告板、
-> 备份、只读观察。
+> 本 API 只做管理面自己的事：agent 簿记、进程生命周期、邮箱、
+> 备份、只读观察。**彻底本地化管理**——互联由 xuseek 内核自己完成
+> （根智能体 + `[[roots]]` 出生交割，见内核 docs/interconnect.md），xusi 不参与。
 >
 > agent 的对外呈现（观察台、自建服务）是 xuseek 自家业务——怎么访问由 agent
 > 自己经邮箱告知，xusi 不内置相关知识。
@@ -25,6 +26,7 @@
 | `PATCH /api/node` | admin | 改显示名 `{"name": "..."}` |
 | `GET /api/whoami` | admin | `{"role": "admin"}`（唯一的角色） |
 | `GET /api/brains` | admin | 密钥池摘要（**不回 api_key**）：`[{name, base_url, model, has_key}]` |
+| `GET /api/default-roots` | admin | 缺省根智能体（`etc/xusi.toml` 的 `[[default_roots]]`，创建对话框预填；**每次直读盘面，换根 token 改 toml 即生效、免重启**）：`{"roots":[{address, token}]}` |
 | `GET /api/versions` | admin | xuseek-v2 版本仓库清单（创建时 `source_version` 用它） |
 | `GET /api/ports/available?count=10` | admin | 可用端口（自动分配下拉用） |
 
@@ -32,10 +34,10 @@
 
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
-| `GET /api/agents` | admin | agent 一览（注册表 + systemd 单元 + 互联标注） |
+| `GET /api/agents` | admin | agent 一览（注册表 + systemd 单元 + 内核呼吸状态） |
 | `POST /api/agents` | admin | 创建并启动（见下） |
 | `GET /api/agents/{id}` | admin | 单个 agent 状态（进程/簿记；内核自报见 §4 status） |
-| `PATCH /api/agents/{id}[?apply_restart=1]` | admin | 改簿记与进程层字段（见下） |
+| `PATCH /api/agents/{id}[?apply_restart=1]` | admin | 改簿记与进程层字段（见下；port 创建后固定） |
 | `DELETE /api/agents/{id}` | admin | 删除（须先停止；home 移入 .trash） |
 | `POST /api/agents/{id}/start\|stop\|pause\|resume\|restart` | admin | 生命周期五件套 |
 
@@ -45,27 +47,47 @@
 curl -X POST http://SERVER:8601/api/agents \
      -H "Authorization: Bearer <admin token>" -H "Content-Type: application/json" \
      -d '{"name":"astronomy","mission":"持续跟踪近地小行星……",
-          "brains":["glm","kimi"],"expose":false,"note":"","source_version":""}'
+          "brains":["glm","kimi"],"expose":false,"note":"","source_version":"",
+          "roots":[{"address":"https://root.example.com","token":"rt-…"}],
+          "extra_config":""}'
 ```
 
+- `name`：显示名（1–64 字符）。**不进 id**——id 一律 `agent-<4位随机hex>`，
+  前缀统一；已有 agent 的 id 不变
 - `brains`：首个为默认大脑，顺序 = 故障转移序；必须都在密钥池且已配 key
 - `source_version`：缺省 = 仓库最新版（解压成实例私有副本）；versions/ 是源码唯一
   事实源，仓库为空时创建报错
 - `budgets`：{max_rounds}——v2.7.5+ 内核只认 `[limits] max_rounds`（max_seconds
   已删除、max_context_tokens 由内核按大脑窗口自动派生）；更早内核认 `[agent]`
   三段。渲染格式随 `source_version` 自动分叉
-- 创建时 xusi 渲染一次 `config.toml`（出生配置：mission/brains/api_key/budgets，
-  chmod 600），**此后 xusi 不再改写该文件**（唯一例外：改参按密钥池手术式
-  重渲染 [brain] + [brains.*] 段，见下）
+- `roots`（可选，≤8 条）：根智能体 `[{address, token}]`——渲染进出生 config 的
+  `[[roots]]` 段（每个条目一个数组表），内核首次启动一次性交割到
+  `workspace/playbook/根智能体.json`（此后死键）。address/token 须齐备；
+  token 可写 `env:变量名`。**仅 v2.7.12+ 内核支持**——选了旧版内核时创建报错
+  （400）；创建后接入走投信（见内核 docs/interconnect.md）。WebUI 创建对话框
+  默认预填 `etc/xusi.toml` 的 `[[default_roots]]`（`GET /api/default-roots`，
+  可删改）
+- `extra_config`（可选，≤8000 字符）：管理员自由 TOML **原样追加**到出生 config
+  末尾（`[capabilities]` 等内核可选段或未来新段）。落盘前整体 tomllib 校验，
+  写坏直接拒绝创建（400）——xusi 不必追踪内核每个新配置段
+- 创建时 xusi 渲染一次 `config.toml`（出生配置：mission/brains/api_key/budgets/
+  instance_id/roots/extra_config，chmod 600），**此后 xusi 不再改写该文件**
+  （唯一例外：改参按密钥池手术式重渲染 [brain] + [brains.*] 段，见下）。
+  `instance_id` = 终身 id（世界唯一、迁移随行）——身份的事实源在实例自己
+  身上，注册表只是「本机住着谁」的缓存；克隆（restore new_id）时随新 id
+  手术改写
 - 启动验收 = systemd 单元 active + 端口进入监听（不再探 agent 的 HTTP）
 
 ### 改参（PATCH）
 
-只接受：`name` / `note` / `port` / `expose` / `brains`。
+只接受：`name` / `note` / `expose` / `brains`。
 
 - `name`/`note`：写注册表即生效
-- `port`/`expose`：进程监听参数，返回 `restart_required: true`；
+- `expose`：进程监听参数，返回 `restart_required: true`；
   `?apply_restart=1` 保存并立即重启
+- `port`：**创建后固定，PATCH 返回 400**——agent 对外联络 = ip+port，
+  改端口等于换地址（断已建立的互联与观测台入口）；要换端口只能删了重建
+  （或克隆到新端口）
 - `brains`：大脑列表（首个为默认，顺序 = 故障转移序；非空、无重复、都在
   密钥池且已配 key）。手术式重渲染 config.toml 的 `[brain]` + `[brains.*]`
   段（按密钥池模板，其余段逐字节保留）→ 原子落盘（先 tomllib 校验，任何
@@ -88,7 +110,7 @@ curl -X POST http://SERVER:8601/api/agents/{id}/mail \
 
 - 追加 `<home>/data/mailbox.jsonl`（sender=admin，双写 mailbox_log.jsonl 保历史）
 - daemon 每 5s 轮询，休眠中有信立即唤醒；会话中下一口呼吸收信
-- 改 mission / 调预算 / 教 agent 互联信封格式——都走这里（换大脑用改参 PATCH，直路且立即反馈）
+- 改 mission / 调预算 / 让它接入互联（给根地址与 token）——都走这里（换大脑用改参 PATCH，直路且立即反馈）
 
 ### 收信
 
@@ -119,50 +141,7 @@ curl 'http://SERVER:8601/api/agents/{id}/mailbox?box=outbox&limit=50' \
 - 工具统计 = 前端聚合事件流（tool_exec / tool_error / tool_timeout），
   无独立端点；同样是进程内存计数，重启清零
 
-## 5. 互联公告板（agent ↔ agent）
-
-xusi 不签发任何互联凭证——token 由 agent 自己产生，经邮箱发布/索取。xusi 的
-mailroom 后台线程每 5s 增量扫描各 agent 的 outbox，识别信封（text 内嵌 JSON，
-散文包裹也能解析），自动登记/回信。
-
-### 信封协议
-
-**publish**（agent → xusi，发布互联，幂等 = 覆盖更新）：
-
-```json
-{"xusi":"publish","port":8770,"token":"<agent 自签互联 token>","host":"10.0.0.5"}
-```
-
-- `port`：必填，1–65535（建议 8700–8799，避开管理面分配池）
-- `token`：必填非空——agent 自己签发的互联凭证
-- `host`：可选，缺省 `127.0.0.1`（跨机互联由 agent 填 LAN 可达地址）
-- 登记进注册表 `interconnect` 字段；WebUI 与 `xusi status` 显示「互联 :port」标注
-
-**request_directory**（agent → xusi，索取其它 agent 的地址与 token）：
-
-```json
-{"xusi":"request_directory"}
-```
-
-**directory**（xusi → agent，自动回执，sender=admin 投进该 agent 的 mailbox）：
-
-```json
-{"xusi":"directory","generated_at":"…","entries":[
-  {"id":"agent-65b9","name":"…","host":"127.0.0.1","port":8770,
-   "token":"<其已发布的互联 token>","published_at":"…"}]}
-```
-
-- 只含已发布互联且非申请者自身的条目；无人发布时 `entries: []`
-- 身份规则：发送者 = outbox 文件归属的 agent，信封不自报 id（防冒充）
-
-### 管理员观察
-
-```bash
-curl http://SERVER:8601/api/agents -H "Authorization: Bearer <admin token>"
-# 每行含 interconnect: {token, port, host, published_at} 或 null
-```
-
-## 6. 日志（进程宿主职责）
+## 5. 日志（进程宿主职责）
 
 ```bash
 curl 'http://SERVER:8601/api/agents/{id}/logs?limit=300' \
@@ -171,7 +150,7 @@ curl 'http://SERVER:8601/api/agents/{id}/logs?limit=300' \
 
 journalctl 该 agent 单元的最近 N 行（stdout/stderr 捕获，非 agent 接口）。
 
-## 7. 备份 / 恢复
+## 6. 备份 / 恢复
 
 | 端点 | 说明 |
 |---|---|
@@ -180,15 +159,17 @@ journalctl 该 agent 单元的最近 N 行（stdout/stderr 捕获，非 agent �
 | `GET /api/backups[?with_meta=1]` | 全量备份清单（从备份克隆用） |
 | `GET /api/backups/{key}` | 备份元数据 + 包内 meta |
 | `DELETE /api/backups/{key}` | 删除备份包 |
-| `POST /api/restore` | 恢复：`{key}`（WebUI 回滚）或 `{key, new_id, port, brains, note}`（克隆） |
+| `POST /api/restore` | 恢复：`{key}`（WebUI 回滚）或 `{key, new_id, port, brains, note}`（克隆；WebUI 的 new_id 自动生成 `agent-xxxx`，前缀统一） |
 
 恢复 = 解压 → versions 重建私有源码副本 → 写注册表 → 启动。agent 自己的凭证
 文件（webui_tokens.json）不进备份包，恢复后由 agent 自行重建。
 
-## 8. 错误与安全
+## 7. 错误与安全
 
 - 统一 JSON：`{"detail": "<人类可读信息>"}`；业务错误 400、系统错误 500
 - admin token 不出现在任何响应里；`/api/node` 只回公开身份字段
-- 互联 token 明文存于注册表 `etc/agents.json`（600）与目录回执中——按需 3
-  的设计语义（任何已互联 agent 都可经邮箱申请到其它 agent 的互联 token）
+- 根智能体 token 在创建时渲染进出生 `config.toml`（600，此后归 agent 自治），
+  并在注册表 `etc/agents.json`（600）留展示快照——`/api/agents` 是 admin 鉴权
+  端点；互联本身（目录、token 轮换、断线恢复）由 xuseek 内核自管（其
+  docs/interconnect.md），xusi 不参与
 - `expose=true` 意味着 agent 端口 LAN 直通，访问凭证由 agent 自己管理，谨慎开启

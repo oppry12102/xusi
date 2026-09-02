@@ -11,14 +11,16 @@ etc/node.json
 etc/brains.toml
 # 历史残留：v2 已删反代（/px /svc）与反代 token，旧文件防入库
 etc/tokens.json
+# 历史残留：v2.2 已删 mailroom，其 outbox 扫描偏移旧状态文件防入库
+etc/outbox_state.json
+# 独立工作区（amem 共享锁实验等，与本仓无关、体积大，永不入库）
+shared/
 # 历史残留：v2 已删互联 token 签发（互联改由 agent 自签、经管理邮箱发布）
 etc/inter_agent_tokens.json
 # 注册表（agent 簿记 + 期望态 + 互联标注，含 agent 发布的互联 token 明文）
 etc/agents.json
 # 管理操作审计
 etc/audit.jsonl
-# mailroom 的 outbox 扫描偏移（运行时簿记，与注册表同源不同档）
-etc/outbox_state.json
 # agent 实例目录（config.toml 含 key、data/ 含 token 与会话）
 instances/
 # xuseek-v2 源码（自管副本：部署时从 GitHub 拉取，见 etc/xusi.toml source_repo）

@@ -4,8 +4,9 @@
 > **xusi 与 agent 之间只有一条写通道：管理邮箱**——投信/收信；只读观察收窄为
 > 两条（详情页事件流/会话 banner：GET /v1/events·status，token 缺失自动签发；
 > 会话索引读磁盘 sessions.jsonl）。
-> agent 间的互联 token 由 agent 自己发行，经邮箱发布登记，xusi 只做公告板；
-> agent 的对外呈现（观察台、自建服务）是 agent 自家业务，xusi 不参与。
+> **彻底本地化管理**：互联由 xuseek 内核自己完成（根智能体 + `[[roots]]` 出生
+> 交割，见内核 `docs/interconnect.md`）——xusi 不参与、不设公告板。
+> agent 的对外呈现（观察台、自建服务）也是 agent 自家业务，xusi 不参与。
 
 ## 三分钟上手
 
@@ -14,7 +15,7 @@
 ```bash
 python3 -m xusi install      # 建 venv → 写 etc/xusi.toml → 启 systemd 服务 → 打印 admin token
 systemctl --user status xusi # 管理面状态
-python3 -m xusi status       # agent 一览（含互联标注）
+python3 -m xusi status       # agent 一览
 python3 -m xusi doctor       # 环境自检
 ```
 
@@ -30,35 +31,24 @@ python3 -m xusi doctor       # 环境自检
 只有一档凭证：**admin token** = `etc/xusi.toml` 的 `[admin].secret`，
 由 `xusi install` / `xusi init` 生成。它通吃所有 `/api/*` 端点。
 
-agent 侧的凭证（观察台、自建服务等）全部由 agent 自己管理，xusi 不签不发不撤不碰——
-那是 xuseek 自家业务。例外之一：**详情页只读观察**（/v1/events、/v1/status）在
-`data/webui_tokens.json` 缺失时，xusi 自动签发一枚 `xusi-observe` token 写进该文件
-（merge 不覆盖，内核免重启生效）；例外之二：**互联 token**（agent ↔ agent 直连用）：
-agent 自己发行，经管理邮箱发布/索取，xusi 作为公告板存储与转述（见下）。
+agent 侧的凭证（观察台、自建服务、根智能体等）全部由 agent 自己管理，xusi 不签
+不发不撤不碰——那是 xuseek 自家业务。例外之一：**详情页只读观察**（/v1/events、
+/v1/status）在 `data/webui_tokens.json` 缺失时，xusi 自动签发一枚 `xusi-observe`
+token 写进该文件（merge 不覆盖，内核免重启生效）；例外之二：**根智能体 token**
+（创建时按管理员输入经 `[[roots]]` 渲染进出生 config，内核首次启动一次性交割到
+`workspace/playbook/根智能体.json`，此后死键）——xusi 只是把它抄进出生配置的信使。
 
 **xusi 不再签发、不再撤销任何其它 agent 侧的 token。**
 
-## 互联（agent ↔ agent）
+## 互联（xuseek 自家业务）
 
-xusi 只当**公告板**，不替 agent 做任何决定：
-
-1. 想互联的 agent 自生成 token + 互联端口，经管理邮箱发 **publish 信封**：
-
-   ```json
-   {"xusi":"publish","port":8770,"token":"<自签互联 token>","host":"10.0.0.5"}
-   ```
-
-   （`host` 可省略 = 127.0.0.1，跨机互联自己填 LAN 可达地址。）xusi 自动登记，
-   WebUI 的 agent 卡片出现「互联 :8770」标注；重复发布 = 覆盖更新。
-
-2. 想找别人联：经管理邮箱发 **request_directory 信封**，xusi 自动回执当前所有
-   已互联 agent 的 `{id, name, host, port, token}`：
-
-   ```json
-   {"xusi":"request_directory"}
-   ```
-
-信封解析宽容（JSON 可以包在散文里）；普通来信照常展示给管理员，不参与处理。
+互联由 xuseek 内核自己完成（v2.7.12+）：根智能体提供目录服务，实例间两两直连，
+协议见内核 `docs/interconnect.md`。xusi 只做一件与互联有关的事——**创建时把管理员
+给的根地址与 token 抄进出生 config 的 `[[roots]]` 段**（WebUI「新建 agent」对话框
+可选；仅 v2.7.12+ 内核）。缺省根写在 `etc/xusi.toml` 的 `[[default_roots]]`
+（模板见 `etc/xusi.toml.example`）——创建对话框自动预填、可删改。此后互联的
+一切（目录、登记、token 轮换、断线恢复）都与 xusi 无关；存量 agent 要接入互联，
+投信把根地址与 token 发给它让它自己加段。
 
 ## 架构
 
@@ -72,7 +62,6 @@ xusi 只当**公告板**，不替 agent 做任何决定：
                     │  /api/* 管理 · 注册表 etc/agents.json                 │
                     │  密钥池 etc/brains.toml（仅创建时渲染一次）              │
                     │  admin token etc/xusi.toml [admin].secret             │
-                    │  mailroom 线程：5s 扫各 agent outbox（互联信封）        │
                     └──────┬─────────────┬────────┬──────────────────────────┘
                      systemd-run 单元  管理邮箱  只读观察（详情页）
                      Restart=always  mailbox ⇄  GET /v1/events·status
@@ -94,7 +83,7 @@ token 缺失自动签发），会话索引与 Boot 自述读磁盘：
 - **投信**：追加 `<home>/data/mailbox.jsonl`（sender=admin，与内核 post() 同语义，
   双写 mailbox_log.jsonl 保历史；daemon 5s 轮询唤醒）；
 - **收信**：读 `<home>/data/outbox.jsonl`（内核 send_mail 工具写，sender=brain；
-  mailroom 后台线程 5s 增量扫描，识别互联信封 → 登记/自动回信）。
+  只读展示，无后台处理）。
 
 systemd 进程与信号（spawn/stop/SIGSTOP/SIGCONT/journalctl）是宿主职责，不算通信。
 
@@ -105,9 +94,8 @@ xusi/
 ├── xusi/                管理面源码（Python 3.12，stdlib + fastapi/uvicorn）
 │   ├── api/             路由（agent_routes / backup_routes / meta_routes / auth / models）
 │   ├── agentops.py      agent 全生命周期 + 投信/收信（邮箱写通道）+ 只读观察与会话
-│   ├── mailroom.py      互联信箱：outbox 增量扫描 + 信封解析/登记/回执
 │   ├── systemdctl.py    systemd 用户单元封装（spawn 注入 PyPI 镜像 env）
-│   ├── registry.py      注册表（簿记 + 互联标注）etc/agents.json（600）
+│   ├── registry.py      注册表（agent 簿记 + 期望态）etc/agents.json（600）
 │   ├── brains.py        密钥池 → 创建时渲染一次 agent config.toml
 │   ├── ports.py         端口三重检验（注册表∪内核监听∪bind试探）
 │   ├── authtok.py       管理面凭证（verify(admin token) → rec）
@@ -116,8 +104,7 @@ xusi/
 ├── etc/
 │   ├── xusi.toml        监听/端口段/版本仓库路径 + [admin].secret（admin token）
 │   ├── brains.toml      主密钥池（管理员维护；600，模板见 brains.toml.example）
-│   ├── agents.json      注册表（agent 簿记 + 期望态 + 互联标注）
-│   ├── outbox_state.json  mailroom 扫描偏移（600，纯簿记）
+│   ├── agents.json      注册表（agent 簿记 + 期望态 + 创建快照）
 │   └── audit.jsonl      管理操作审计
 ├── instances/<id>/      每个 agent 一个 home（config.toml, data/, workspace/；
 │                        选了版本的 agent 还有私有源码副本 xuseek-v2/）
@@ -132,11 +119,12 @@ xusi/
   ② 管理面启动时 reconcile——机器重启后按注册表期望态（running/stopped/paused）拉齐。
 - **暂停** = SIGSTOP 冻结大脑（它自起的后台服务继续跑）；停止/重启一律优雅停，
   轮边界把会话落盘后再退。
-- **改参边界**：管理面可改簿记（name/note）、进程监听（port/expose，需重启）与
+- **改参边界**：管理面可改簿记（name/note）、暴露开关（expose，需重启）与
   大脑成员/默认（brains——手术式重渲染 config.toml 的 [brain]+[brains.*] 段，
-  **下次呼吸生效、不重启**；其余段逐字节保留）。mission / 预算在创建后归
-  **agent 自治**——投信让它自己改 config.toml（内核每口呼吸热重载；改前建议
-  让 agent 自行备份）。
+  **下次呼吸生效、不重启**；其余段逐字节保留）。**端口创建后固定**——agent
+  对外联络 = ip+port，改端口等于换地址，要换只能删了重建（或克隆）。mission /
+  预算在创建后归 **agent 自治**——投信让它自己改 config.toml（内核每口呼吸
+  热重载；改前建议让 agent 自行备份）。
 - **密钥轮换**：改 `etc/brains.toml` → 对 agent 做一次 PATCH（改 brains 或任意
   字段触发重渲染）→ 下次呼吸生效。卡片上点大脑 chip 可直接切换默认。
 - **备份**：停止态可用；运行中为 SIGSTOP 冻结窗快照（jsonl 均为追加型文件，一致性
@@ -163,8 +151,9 @@ xusi/
 ## 与 xuseek-v2 的关系
 
 - **xuseek-v2**：agent 的源码与运行时（`--home` 挂接 `instances/<id>`，目录即自主体）。
-  xusi 只在创建时渲染一次 `config.toml`（出生配置：mission/brains/api_key/budgets），
-  此后该文件、该目录里的任何东西都归 agent 自己。三个例外：① 改参按密钥池
+  xusi 只在创建时渲染一次 `config.toml`（出生配置：mission/brains/api_key/budgets +
+  可选 [[roots]] 根智能体段 + 可选的附加配置自由 TOML），此后该文件、该目录里的
+  任何东西都归 agent 自己。三个例外：① 改参按密钥池
   手术式重渲染 `[brain]`+`[brains.*]` 段（下次呼吸生效，agent 在这两段的手改
   会被覆盖）；② 详情页只读观察在 `data/webui_tokens.json` 缺失时自动补签一枚
   `xusi-observe` token（merge 不覆盖）；③ 投信追加 `data/mailbox*.jsonl`。

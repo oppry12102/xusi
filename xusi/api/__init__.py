@@ -4,10 +4,12 @@
   /api/*        管理 API（管理面 token：Bearer 或 ?mtoken=）
   /             WebUI；/docs Swagger；/api/docs.md 中文文档
 
-与 agent 的唯一写接口是管理邮箱（投信 mailbox.jsonl / 读 outbox.jsonl，
-收信处理由 mailroom 后台线程完成）；观察收窄为只读两条 HTTP GET
+与 agent 的唯一写接口是管理邮箱（投信 mailbox.jsonl / 读 outbox.jsonl）；
+观察收窄为只读两条 HTTP GET
 （/v1/events、/v1/status，详情页事件流/工具统计/会话 banner；观察 token
 缺失时自动签发一枚写 data/webui_tokens.json）。本应用不反代、不调 xuseek CLI。
+互联是 xuseek 内核自家业务（根智能体 + [[roots]] 出生交割，
+见内核 docs/interconnect.md）——xusi 彻底本地化，不参与。
 
 子模块：
 - auth.py        鉴权依赖（require_auth / require_admin / require_agent）
@@ -25,13 +27,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 
-from .. import __version__, agentops, backup, mailroom, versions
+from .. import __version__, agentops, backup, versions
 from ..systemdctl import SystemdError
 from .meta_routes import router as meta_router
 from .agent_routes import router as agent_router
 from .backup_routes import router as backup_router
-
-_mailroom_stop: threading.Event | None = None
 
 
 def _json_str(s: str) -> str:
@@ -42,8 +42,6 @@ def _json_str(s: str) -> str:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    global _mailroom_stop
-
     def _reconcile() -> None:
         time.sleep(1.0)   # 等自身监听就绪后再拉齐
         try:
@@ -54,14 +52,7 @@ async def _lifespan(_app: FastAPI):
             print(f"[xusi] reconcile 失败：{e}")
 
     threading.Thread(target=_reconcile, daemon=True, name="xusi-reconcile").start()
-
-    # 互联信箱扫描线程：收 agent 经管理邮箱发来的信封（发布/目录申请）
-    _mailroom_stop = threading.Event()
-    threading.Thread(target=mailroom.run_forever, args=(_mailroom_stop,),
-                     daemon=True, name="xusi-mailroom").start()
     yield
-    _mailroom_stop.set()
-    _mailroom_stop = None
 
 
 app = FastAPI(

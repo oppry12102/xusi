@@ -12,11 +12,15 @@
 api_key = ""
 base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
+tier = "power"
+context_window = 1048576
 
 [brains.glm]
 api_key = ""
 base_url = "https://api.z.ai/api/coding/paas/v4"
 model = "glm-5.3"
+tier = "power"
+context_window = 1048576
 
 # Kimi：仅允许服务端默认 temperature → temperature = "default"（请求不带该参数）
 [brains.kimi]
@@ -24,11 +28,15 @@ api_key = ""
 base_url = "https://api.kimi.com/coding/v1"
 model = "kimi-k3"
 temperature = "default"
+tier = "power"
+context_window = 1048576
 
 [brains.minimax]
 api_key = ""
 base_url = "https://api.minimaxi.com/v1"
 model = "MiniMax-M3"
+tier = "power"
+context_window = 1048576
 
 # 新增一家：再写一个 [brains.<名字>] 表（OpenAI 兼容 /chat/completions 即可）。
 # 可选字段：timeout（秒，默认 180）、tier、price_prompt / price_completion（CNY/1K tokens，观测用）、

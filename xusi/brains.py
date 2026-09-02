@@ -157,7 +157,9 @@ def render_brain_section(chosen: list[str]) -> list[str]:
 def render_agent_config(mission: str, brains: list[str], budgets: dict | None = None,
                         display_timezone: str | None = None,
                         source_version: str = "",
-                        instance_id: str = "") -> str:
+                        instance_id: str = "",
+                        roots: list | None = None,
+                        extra_config: str = "") -> str:
     """渲染 agent 的 config.toml 全文（注册表数据 → 配置文件，单向渲染）。
 
     ⚠ brains 列表顺序即语义：chosen[0] 渲染为 [brain] default——主回路
@@ -171,7 +173,15 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     - ≥2.7.5：[limits] 段只写 max_rounds——内核已删 max_seconds、
       max_context_tokens 改自动派生，这两个键收到也渲染不进配置；
     - 更早版本：[agent] 段写 max_rounds / max_seconds / max_context_tokens。
-    出生配置必须匹配内核认识的 schema（写错段 = 限额静默失效）。"""
+    出生配置必须匹配内核认识的 schema（写错段 = 限额静默失效）。
+
+    roots（可选，v2.7.12+ 内核）：渲染 [[roots]] 数组表——根智能体出生
+    交割键，首次启动预检时一次性交割到 workspace/playbook/根智能体.json，
+    交割后即死键（版本门槛校验在 agentops._validate_roots）。
+
+    extra_config（可选）：管理员手写的自由 TOML（[capabilities] 等内核可选段
+    或未来新段）原样追加到文件末尾——xusi 不必追踪内核每个新配置段。
+    落盘前整体 tomllib 校验：渲染产物必须是合法 TOML（坏段直接拒绝创建）。"""
     pool = _load_pool()
     # 去重保序：重复名会渲染出两个同名段 → 坏 TOML（validate_selection 已
     # 拦常规路径，这里防直调绕过）
@@ -226,13 +236,48 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
                 if k in b:
                     lines.append(f"{k} = {int(b[k])}")
         lines.append("")
-    return "\n".join(lines)
+    # [[roots]]（可选）：根智能体出生交割段（v2.7.12+ 内核认识；版本门槛
+    # 由 agentops._validate_roots 把关，此处只负责渲染）
+    lines.extend(_render_roots(roots))
+    # 附加配置（可选）：管理员自由 TOML 原样追加（逃生舱，见模块 docstring）
+    extra = (extra_config or "").strip()
+    if extra:
+        lines.extend(["", extra])
+    text = "\n".join(lines)
+    # 落盘前整体校验：出生配置必须是合法 TOML（内核 preflight 对坏 TOML 静默
+    # 保持旧值——渲染侧必须挡住，否则坏附加配置会静默生效为零配置）
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"渲染出的 config.toml 无法解析（附加配置写坏？）：{e}") from None
+    return text
+
+
+def _render_roots(roots: list | None) -> list[str]:
+    """[[roots]] 段：每个根智能体一个数组表（address/token 已由
+    _validate_roots 校验齐备、去重保序）。"""
+    if not roots:
+        return []
+    lines = [
+        "# ── 根智能体（目录服务）——互联发现的唯一方案（内核 docs/interconnect.md）──",
+        "# 首次启动一次性交割到 workspace/playbook/根智能体.json；交割后此段即失效（死键）。",
+        "# 重交割 = 删该文件 + 改此段 + 重启。token 可写 \"env:变量名\"。",
+        "",
+    ]
+    for r in roots:
+        lines.append("[[roots]]")
+        lines.append(f"address = {_q(r['address'])}")
+        lines.append(f"token = {_q(r['token'])}")
+        lines.append("")
+    return lines
 
 
 def write_agent_config(home: Path, mission: str, brains: list[str],
                        budgets: dict | None = None,
                        source_version: str = "",
-                       instance_id: str = "") -> Path:
+                       instance_id: str = "",
+                       roots: list | None = None,
+                       extra_config: str = "") -> Path:
     """渲染并写入 <home>/config.toml（chmod 600，含 api_key）。
 
     只在创建时调用——出生配置，首写即终写；此后该文件归 agent 自治，
@@ -242,7 +287,8 @@ def write_agent_config(home: Path, mission: str, brains: list[str],
     """
     text = render_agent_config(mission, brains, budgets,
                                source_version=source_version,
-                               instance_id=instance_id)
+                               instance_id=instance_id,
+                               roots=roots, extra_config=extra_config)
     p = home / "config.toml"
     p.write_text(text, encoding="utf-8")
     p.chmod(0o600)

@@ -1,11 +1,10 @@
-"""注册表：etc/agents.json —— 管理面自己的簿记（agent 档案 + 期望态 + 互联标注）。
+"""注册表：etc/agents.json —— 管理面自己的簿记（agent 档案 + 期望态）。
 
 注册表记的是管理面侧的事实：id/name/端口/暴露开关/期望态/创建时的
-mission·brains·budgets 快照（出生配置已渲染进 config.toml，此后归 agent 自治，
-快照仅供展示），以及互联标注 interconnect（agent 经管理邮箱发布的互联
-token/端口，见 mailroom.py）。
+mission·brains·budgets·roots 快照（出生配置已渲染进 config.toml，
+此后归 agent 自治，快照仅供展示）。
 
-写入原子（tmp + os.replace，600——含互联 token 明文），进程内加锁。
+写入原子（tmp + os.replace，600——roots 快照含根 token 明文），进程内加锁。
 """
 from __future__ import annotations
 
@@ -49,7 +48,7 @@ def _save(data: dict) -> None:
     tmp = f.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
-        tmp.chmod(0o600)   # 含互联 token 明文，比 644 更稳
+        tmp.chmod(0o600)   # roots 快照含根 token 明文，比 644 更稳
     except OSError:
         pass
     tmp.replace(f)

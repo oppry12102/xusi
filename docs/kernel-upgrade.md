@@ -5,10 +5,12 @@
 > API 层「source_version 创建后不可改」约束的是**创建流程**；存量升级是目录级
 > 操作，本文是标准做法。前置：管理面代码 ≥ `ca56645`（分档语义与内核 v2.5.5
 > 对齐：未标注 tier 视同 power）。
-> **当前目标版本：v2.7.5（2026-08-30 投放）**。v2.5.x → v2.7.5 是同一套目录级
+> **当前目标版本：v2.7.12（2026-09-02 投放）**。v2.5.x → v2.7.x 是同一套目录级
 > 流程；运行时依赖零变化（pyproject 只差版本号行），坑④的 .venv 平移结论不变。
 > v2.7.5 清理了 `[agent]` 预算段（见 §5）——升级后存量 config.toml 里的该段是
-> 死配置，投信让 agent 清掉即可。
+> 死配置，投信让 agent 清掉即可。v2.7.12 起**互联由内核自己完成**（根智能体 +
+> `[[roots]]` 出生交割，见 §5）；存量 agent 升级后 config 里没有 `[[roots]]`
+> 也照常启动，只是暂不接入互联。
 
 ## 0. 前置条件（顺序重要）
 
@@ -128,6 +130,24 @@ agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier =
   `[limits] max_rounds`（budgets 里的 max_seconds/max_context_tokens 渲染时
   忽略并在配置里留注释），更早版本仍写 `[agent]` 三段。
 
+### 内核 v2.7.12（2026-09-02）：互联由内核自完成 + [[roots]] 出生交割
+
+- **xusi 的互联公告板已删除**（管理面 v2.2.0）：publish/request_directory 信封、
+  注册表 interconnect 字段、WebUI 互联标注全部移除——互联不再经过 xusi，
+  xusi 彻底本地化管理。
+- **根智能体（目录服务）**是互联发现的唯一方案（内核 docs/interconnect.md）：
+  实例间两两直连，根只解决「互相知道」这一件事。token 由根签发，管理员只是
+  把它抄进出生 config 的信使。
+- **`[[roots]]` 出生交割键**：address + token 齐备的条目在启动预检时一次性
+  交割到 `workspace/playbook/根智能体.json`（与 mission → 初心.md 同构），
+  交割后 config 里的该段即死键；重交割 = 删该文件 + 改该段 + 重启。
+- **存量 agent 接入互联**：升级后 config 无 `[[roots]]` → 照常启动、暂不接入。
+  要接入时**投信**把根地址与 token 发给 agent，让它自己加 `[[roots]]` 段
+  （v2.7.12 内核认识；config 每口呼吸热重载，但交割发生在启动预检——加段后
+  需一次重启生效，用卡片上的「⟳ 重启」即可）。
+- **新建 agent**：xusi ≥ v2.2.0 的创建对话框 / `POST /api/agents` 有 `roots`
+  字段（仅 v2.7.12+ 内核有效，选了旧版内核时创建报错 400）。
+
 ## 6. 回滚
 
 ```bash
@@ -142,6 +162,6 @@ mv instances/<id>/xuseek-v2.old-<旧版> instances/<id>/xuseek-v2
 ## 7. 批量升级建议
 
 - 先升 1 个 agent 观察半天，再批量（§1 脚本循环 AID 列表，各自停机 ~1 分钟）。
-- 一次性 / 实验 agent 直接**删除重建**更省事：新建缺省即取 versions/ 最新版，
+- 一次性 / 实验 agent 直接**删除重建**更省事：新建缺省即取 versions/ 最新版。
 - 稳定后删掉 `xuseek-v2.old-*` 备份树省磁盘（实例目录可单独迁移，别把 GB 级
   备份带着走）。

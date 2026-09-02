@@ -27,6 +27,12 @@ port_range = [8602, 8699]
 # 给用户展示用的时区
 display_timezone = "Asia/Shanghai"
 
+# ── 缺省根智能体（可选，v2.7.12+ 内核互联）──
+# 新建 agent 时创建对话框预填这些根（可删改）；address/token 齐备才生效。
+# [[default_roots]]
+# address = "https://root.example.com:8400"
+# token = "rt-…"
+
 # ── admin token ──
 # 管理面唯一的凭证：所有 /api/* 的鉴权。留空 = 未初始化（xusi init 生成）。
 [admin]

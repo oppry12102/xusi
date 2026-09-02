@@ -55,6 +55,10 @@ class XusiConfig:
                                  # 与历史备份的关联性）。
                                  # 临时覆盖：环境变量 XUSI_NODE_ID。
 
+    default_roots: list = field(default_factory=list)  # [[default_roots]] 缺省根智能体
+                                 # [{address, token}]：创建对话框预填（可删改），
+                                 # address/token 齐备才生效（与内核 [[roots]] 交割同规则）。
+
     # —— 派生路径 ——
     @property
     def etc_dir(self) -> Path: return self.root / "etc"
@@ -68,8 +72,6 @@ class XusiConfig:
     def agents_file(self) -> Path: return self.etc_dir / "agents.json"
     @property
     def audit_file(self) -> Path: return self.etc_dir / "audit.jsonl"
-    @property
-    def outbox_state_file(self) -> Path: return self.etc_dir / "outbox_state.json"
     @property
     def backup_dir(self) -> Path: return self.root / "etc" / "backups"
     @property
@@ -110,6 +112,15 @@ def load_config() -> XusiConfig:
     admin = raw.get("admin", {})
     if "secret" in admin:
         cfg.admin_secret = str(admin["secret"])
+    # 缺省根智能体：[[default_roots]] 数组表（创建对话框预填）。齐备才生效——
+    # 与内核 [[roots]] 交割同规则（address/token 缺一的条目跳过，不生效）
+    cfg.default_roots = [
+        {"address": str(r.get("address", "")).strip(),
+         "token": str(r.get("token", "")).strip()}
+        for r in (raw.get("default_roots") or [])
+        if isinstance(r, dict)
+    ]
+    cfg.default_roots = [r for r in cfg.default_roots if r["address"] and r["token"]]
     cfg.ensure_dirs()
     # 节点身份：etc/node.id 本地单行文件（gitignored、600）。
     # 优先 XUSI_NODE_ID 环境变量（测试 / CI / 临时改名），否则读文件，
@@ -158,3 +169,20 @@ def get_config() -> XusiConfig:
     if _CONFIG is None:
         _CONFIG = load_config()
     return _CONFIG
+
+
+def live_default_roots() -> list:
+    """每次直读 etc/xusi.toml 的 [[default_roots]]——预填数据要跟盘面走：
+    换根 token 只改 toml 即生效，不必重启管理面（get_config 的进程级缓存
+    会把旧 token 焐在内存里，新 agent 出生就带旧根）。"""
+    try:
+        raw = _load_toml(ROOT / "etc" / "xusi.toml")
+    except Exception:
+        return []
+    roots = [
+        {"address": str(r.get("address", "")).strip(),
+         "token": str(r.get("token", "")).strip()}
+        for r in (raw.get("default_roots") or [])
+        if isinstance(r, dict)
+    ]
+    return [r for r in roots if r["address"] and r["token"]]

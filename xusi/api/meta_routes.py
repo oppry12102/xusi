@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from .. import __version__, brains, node, ports, registry, versions
-from ..config import get_config
+from ..config import get_config, live_default_roots
 from .auth import require_admin, require_auth
 from .models import PatchNodeReq
 
@@ -53,6 +53,14 @@ def api_node_patch(req: PatchNodeReq, _rec: dict = Depends(require_admin)) -> di
 @router.get("/api/brains")
 def api_brains(_rec: dict = Depends(require_auth)) -> list[dict]:
     return brains.pool_summary()
+
+
+@router.get("/api/default-roots")
+def api_default_roots(_rec: dict = Depends(require_auth)) -> dict:
+    """缺省根智能体（etc/xusi.toml 的 [[default_roots]]）——创建对话框预填用。
+    每次直读盘面（live_default_roots，不吃进程缓存）：换根 token 改 toml
+    即生效，不用重启管理面。只回齐备条目（address/token 缺一的剔除）。"""
+    return {"roots": live_default_roots()}
 
 
 @router.get("/api/versions")

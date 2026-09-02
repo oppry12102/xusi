@@ -35,7 +35,9 @@ async def api_agents_list(_rec: dict = Depends(require_auth)) -> list[dict]:
 def api_agents_create(req: CreateAgentReq, _rec: dict = Depends(require_admin)) -> dict:
     return agentops.create_agent(
         req.name, req.mission, req.brains, expose=req.expose, port=req.port,
-        budgets=req.budgets, note=req.note, source_version=req.source_version)
+        budgets=req.budgets, note=req.note, source_version=req.source_version,
+        roots=[r.model_dump() for r in req.roots] if req.roots else None,
+        extra_config=req.extra_config)
 
 
 @router.get("/api/agents/{agent_id}")
@@ -47,7 +49,8 @@ async def api_agent_get(pair: tuple = Depends(require_agent)) -> JSONResponse:
 @router.patch("/api/agents/{agent_id}")
 async def api_agent_patch(req: PatchAgentReq, apply_restart: bool = False,
                           pair: tuple = Depends(require_agent)) -> JSONResponse:
-    """改 agent 字段（簿记 + 进程层）。apply_restart=1 对 port/expose 立即重启生效。"""
+    """改 agent 字段（簿记 + 进程层）。apply_restart=1 对 expose 立即重启生效
+    （port 创建后固定，PATCH 它返回 400）。"""
     changes = {k: v for k, v in req.model_dump().items() if v is not None}
     if not changes:
         raise HTTPException(400, "请求体里没有任何要修改的字段")
@@ -106,9 +109,7 @@ async def api_agent_mail(req: MailReq, pair: tuple = Depends(require_agent)) -> 
 async def api_agent_mailbox(limit: int = 50, box: str = "outbox",
                             pair: tuple = Depends(require_agent)) -> JSONResponse:
     """读邮箱文件尾部：box=outbox 来信（agent→admin，send_mail）；box=inbox
-    投信历史（admin→agent，mailbox_log）。
-
-    只读展示；信封（互联发布/目录申请）的自动处理由 mailroom 后台线程完成。"""
+    投信历史（admin→agent，mailbox_log）。只读展示。"""
     agent, _rec = pair
     # 邮箱文件只增不删、取尾部要先整读——走线程池，别冻事件循环
     return JSONResponse(await asyncio.to_thread(

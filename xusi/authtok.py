@@ -2,7 +2,8 @@
 
 单 xusi 单档凭证：admin token 通吃所有 `/api/*`。其它档凭证已全部删除：
 - 反代入口 api token（/px /svc 已取消，etc/tokens.json 作废）；
-- 互联 token（由 agent 自己发行，经管理邮箱发布，见 mailroom.py）；
+- 根智能体 token（创建时经 [[roots]] 渲染进出生 config，内核交割后即死键——
+  那是 xuseek 互联自家的事）；
 - agent 自己的各类凭证（webui_tokens.json 等）由 agent 自己管理，xusi 不碰——
   那是 agent 自家的事。
 

@@ -19,11 +19,13 @@ manager 与 agent 之间只有**一条写**通道——管理邮箱：
 进程与信号（systemd）不是"通信"——它是管理面不可削减的宿主职责：
 spawn `xuseek.sh serve` / stop / SIGSTOP / SIGCONT / journalctl 日志。
 
-参数事实源：注册表（etc/agents.json）只记簿记（name/note/port/expose 等）与
-互联标注；mission/budgets 在创建时渲染进 config.toml 后不再管理，
+参数事实源：注册表（etc/agents.json）只记簿记（name/note/port/expose/roots 快照等）；
+mission/budgets 在创建时渲染进 config.toml 后不再管理，
 改它们走投信让 agent 自己改（内核每轮热重载）。**brains 例外**——
 patch_agent 按密钥池手术式重渲染 [brain] + [brains.*] 段，其余段逐字节
 保留（下次呼吸生效，不重启，见 _rewrite_brain_sections）。
+
+互联是 xuseek 内核自家业务（根智能体 + [[roots]] 出生交割）——xusi 不参与。
 """
 from __future__ import annotations
 
@@ -67,15 +69,13 @@ def _iso() -> str:
 # ── 基础工具 ─────────────────────────────────────────────────────────
 
 def gen_id(_name: str = "") -> str:
-    """终身 id：xu-<12位hex>（48 bit 熵，世界唯一；与所在节点无关，迁移随行）。
-
-    纯随机、无词义、形制绝对统一——带词义的前缀会被 LLM 当模式补全
-    （「10-5034」被重建成「agent-10-5034」的教训）；辨识度靠别名
-    （注册表 name 字段，管理员随时改、可重复，纯显示）。
-    本机注册表重号重摇；跨机不查（48 bit：一万个实例撞号约两亿分之一）。
-    """
+    """新 agent 的 id：前缀统一 agent-<4 位随机 hex>，与显示名彻底解耦——
+    名字不进 id（拼音残根/英文词不再产生奇形前缀）；辨识度归别名
+    （注册表 name 字段，管理员随时改、可重复，纯显示）。已有 agent 的 id 不动。
+    撞号重摇：本机注册表查重兜底（终身唯一性另由出生 config 的 instance_id
+    交割保证——那是实例自己的身份事实源，注册表只是「本机住着谁」的缓存）。"""
     while True:
-        aid = f"xu-{uuid.uuid4().hex[:12]}"
+        aid = f"agent-{uuid.uuid4().hex[:4]}"
         if registry.get_agent(aid) is None:
             return aid
 
@@ -137,6 +137,45 @@ def _validate_brains(bl: list[str]) -> None:
         brains.validate_selection(bl)
     except ValueError as e:
         raise AgentError(str(e)) from None
+
+
+_ROOTS_CAP = 8            # [[roots]] 条目封顶（互为备份，8 个足够）
+_ROOTS_FIELD_MAX = 512    # address / token 单字段长度上限
+
+
+def _validate_roots(roots: list | None, src_ver: str) -> list[dict]:
+    """校验创建时的根智能体列表，返回规范化条目（非空 address/token、去重保序）。
+
+    非空时要求内核 ≥ 2.7.12——[[roots]] 出生交割自该版起；旧核不识此段，
+    渲染了也不会交割（静默失效），直接拒绝。创建后接入的路径是投信
+    （内核 docs/interconnect.md：大脑 send_mail 向管理员索取地址与 token）。"""
+    if not roots:
+        return []
+    if not versions.at_least(src_ver, "2.7.12"):
+        raise AgentError(
+            f"所选内核版本 {src_ver} 不支持 [[roots]]（v2.7.12 起才有根智能体出生交割）。"
+            f"换新版本，或去掉根智能体——创建后接入走投信，见内核 docs/interconnect.md")
+    if len(roots) > _ROOTS_CAP:
+        raise AgentError(f"根智能体最多 {_ROOTS_CAP} 个（当前 {len(roots)}）")
+    out: list[dict] = []
+    for r in roots:
+        if not isinstance(r, dict):
+            raise AgentError("根智能体条目须为 {address, token}")
+        addr = str(r.get("address") or "").strip()
+        tok = str(r.get("token") or "").strip()
+        if not addr or not tok:
+            raise AgentError("根智能体条目须同时填 address 与 token（缺一不会交割）")
+        if len(addr) > _ROOTS_FIELD_MAX or len(tok) > _ROOTS_FIELD_MAX:
+            raise AgentError(f"根智能体 address/token 超长（各 ≤{_ROOTS_FIELD_MAX}）")
+        out.append({"address": addr, "token": tok})
+    # 同地址去重保序（同 brains 渲染的 dict.fromkeys 手法）
+    seen: set[str] = set()
+    uniq: list[dict] = []
+    for r in out:
+        if r["address"] not in seen:
+            seen.add(r["address"])
+            uniq.append(r)
+    return uniq
 
 
 _HEADER_RE = re.compile(r"^\s*\[([A-Za-z0-9_.\-]+)\]\s*(?:#.*)?(?:\r?\n)?$")
@@ -231,12 +270,19 @@ def _rewrite_brain_sections(agent: dict, chosen: list[str]) -> None:
 def create_agent(name: str, mission: str, brain_list: list[str], *,
                  expose: bool = False, port: int | None = None,
                  budgets: dict | None = None, note: str = "",
-                 source_version: str = "") -> dict:
+                 source_version: str = "",
+                 roots: list | None = None,
+                 extra_config: str = "") -> dict:
     """创建并启动一个 agent：渲染出生 config.toml → 注册 → systemd 拉起 → 端口验收。
 
     source_version：版本号 → 该版本源码解压成实例私有副本（instances/<id>/xuseek-v2/，
     删除时随 home 进 .trash）；缺省 → 版本仓库最新包（每 agent 自带私有副本，
     实例自洽可单独迁移；仓库为空报错，见 _resolve_source_choice）。
+
+    roots（可选）：根智能体列表 [{address, token}]——渲染进出生 config 的
+    [[roots]] 段，内核首次启动交割到 workspace/playbook/根智能体.json
+    （v2.7.12+，见 _validate_roots）。extra_config（可选）：管理员自由 TOML
+    原样追加（落盘前整体校验，见 brains.render_agent_config）。
 
     创建后 xusi 与该 agent 只剩邮箱通道：不再签发任何 agent 侧凭证
     （agent 自签自报）、不再改写 config.toml（mission/brains/budgets 归 agent 自治）。
@@ -247,6 +293,8 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
         raise AgentError("mission 不能为空")
     _validate_brains(brain_list)
     src_ver = _resolve_source_choice((source_version or "").strip())
+    # roots 校验在持端口锁之前——失败零副作用（版本门槛/条目形状，见 _validate_roots）
+    roots_norm = _validate_roots(roots, src_ver)
 
     agent_id = gen_id()
     # 端口分配 → 注册表落盘必须整体持锁（见 ports.ALLOC_LOCK）：窗口内含解压与
@@ -267,6 +315,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
             "desired_state": "running",
             "note": note,
             "source_version": src_ver,
+            "roots": roots_norm,
             "created_at": registry.now_iso(),
             "updated_at": registry.now_iso(),
         }
@@ -277,7 +326,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
             raise AgentError(f"创建失败已回滚：{e}") from e
 
         try:
-            _init_workspace(rec, src_ver)
+            _init_workspace(rec, src_ver, roots_norm, extra_config)
             # 注册（期望态 running）
             registry.add_agent(rec)
         except Exception as e:
@@ -301,11 +350,13 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
 
     audit("agent.create", agent=agent_id, name=rec["name"], port=port,
           expose=expose, brains=brain_list, source=src_ver,
-          source_defaulted=not (source_version or "").strip())
+          source_defaulted=not (source_version or "").strip(),
+          roots=len(roots_norm))
     return get_agent_or_404(agent_id)
 
 
-def _init_workspace(rec: dict, src_ver: str) -> None:
+def _init_workspace(rec: dict, src_ver: str, roots: list | None = None,
+                    extra_config: str = "") -> None:
     """在 agent 被注册/拉起之前，把它的 home 准备到位：
 
     - 从版本仓库解压源码到实例私有副本（instances/<id>/xuseek-v2/）
@@ -318,7 +369,8 @@ def _init_workspace(rec: dict, src_ver: str) -> None:
     home.mkdir(parents=True, exist_ok=True)
     versions.extract(src_ver, home / versions.SRC_DIR_NAME)
     brains.write_agent_config(home, rec["mission"], rec["brains"], rec["budgets"],
-                              source_version=src_ver, instance_id=rec["id"])
+                              source_version=src_ver, instance_id=rec["id"],
+                              roots=roots, extra_config=extra_config)
 
 
 def spawn_and_verify(rec: dict) -> None:
@@ -487,28 +539,32 @@ def delete(agent_id: str) -> dict:
         dest = get_config().trash_dir / f"{agent_id}-{uuid.uuid4().hex[:6]}"
         shutil.move(str(home), str(dest))
     registry.remove_agent(agent_id)
-    from . import mailroom
-    mailroom.forget(agent_id)
     audit("agent.delete", agent=agent_id, port=agent["port"], trash=str(dest))
     return {"id": agent_id, "deleted": True, "moved_to": str(dest)}
 
 
 # ── 改参 ─────────────────────────────────────────────────────────────
 
-# 可改字段 = 簿记层（name/note）+ 进程层（port/expose）+ 大脑（brains，
+# 可改字段 = 簿记层（name/note）+ 进程层（expose）+ 大脑（brains，
 # 手术式重渲染 config.toml 的 [brain] + [brains.*] 段，下次呼吸生效）。
+# port 创建后固定——agent 对外联络 = ip+port，改端口等于换地址，断的是
+# 已建立的互联与观测台入口；要换端口只能删了重建（或克隆到新端口）。
 # mission/budgets 在创建后归 agent 自治——改它们请投信让 agent 自己
 # 修改自己的 config.toml（内核每轮热重载）。
-_PATCHABLE = {"name", "note", "port", "expose", "brains"}
+_PATCHABLE = {"name", "note", "expose", "brains"}
 
 _AGENT_OWNED = {
     "mission": "使命已由 agent 自治：请投信让它自己修改 config.toml（内核每轮热重载）",
     "budgets": "预算已由 agent 自治：请投信让它自己修改 config.toml 的 [limits] 段（v2.7.5+；旧内核为 [agent] 段）",
 }
 
+_IMMUTABLE = {
+    "port": "端口创建后固定（agent 对外联络 = ip+port，改端口等于换地址）",
+}
+
 
 def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) -> dict:
-    """改参。name/note 写注册表即生效；port/expose 改的是进程监听参数，
+    """改参。name/note 写注册表即生效；expose 改的是进程监听参数，
     返回 restart_required，?apply=restart 立即执行；brains 手术式重渲染
     config.toml 大脑段（下次呼吸生效，不重启），返回 brains_effective。"""
     agent = get_agent_or_404(agent_id)
@@ -518,6 +574,10 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
         raise AgentError(
             f"这些字段已由 agent 自治：{', '.join(owned)}。"
             f"{_AGENT_OWNED[owned[0]]}")
+    fixed = sorted(b for b in bad if b in _IMMUTABLE)
+    if fixed:
+        raise AgentError(
+            f"这些字段创建后不可改：{', '.join(fixed)}。{_IMMUTABLE[fixed[0]]}")
     if bad:
         raise AgentError(f"不可修改的字段：{', '.join(sorted(bad))}（可改：{', '.join(sorted(_PATCHABLE))}）")
 
@@ -539,25 +599,14 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
         hot["name"] = str(changes["name"]).strip() or agent["name"]
     if "note" in changes:
         hot["note"] = str(changes["note"])
+    # expose 是唯一剩下的进程层可改参数（port 已固定，见 _IMMUTABLE）
+    if "expose" in changes and bool(changes["expose"]) != bool(agent.get("expose")):
+        hot["expose"] = bool(changes["expose"])
+        need_restart = True
 
     next_rec = {**agent, **hot}
-    # 换端口时「检验可用 → 注册表落盘」与 create 的分配窗口互斥（ports.ALLOC_LOCK）
-    with ports.ALLOC_LOCK:
-        if "port" in changes and int(changes["port"]) != int(agent["port"]):
-            ports.allocate(int(changes["port"]))   # 检验可用（含 not-in-use）
-            next_rec["port"] = int(changes["port"])
-            need_restart = True
-        if "expose" in changes and bool(changes["expose"]) != bool(agent.get("expose")):
-            next_rec["expose"] = bool(changes["expose"])
-            need_restart = True
-
-        updates = dict(hot)
-        if next_rec.get("port") != agent.get("port"):
-            updates["port"] = next_rec["port"]
-        if next_rec.get("expose") != agent.get("expose"):
-            updates["expose"] = next_rec["expose"]
-        if updates:
-            registry.update_agent(agent_id, updates)
+    if hot:
+        registry.update_agent(agent_id, hot)
 
     restarted = False
     if need_restart and apply_restart:
@@ -575,8 +624,8 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
 
 
 def _respawn(agent: dict) -> None:
-    """换监听参数的重启：stop 旧瞬态单元 → 以新 host/port 重新拉起。
-    冻结态先解冻（同 stop——冻结进程收不到 SIGTERM）。"""
+    """换监听 host 的重启（expose 开关；port 创建后固定）：stop 旧瞬态单元 →
+    重新拉起。冻结态先解冻（同 stop——冻结进程收不到 SIGTERM）。"""
     unit = _unit(agent)
     if systemdctl.unit_state(unit) == "active":
         if systemdctl.main_stopped(unit):
@@ -592,7 +641,7 @@ def _respawn(agent: dict) -> None:
 # ── 状态（systemd + 注册表；只读观察另见 observe）────────────────────
 
 def status(agent_id: str) -> dict:
-    """状态聚合：注册表 + systemd 单元 + 互联标注 + 内核呼吸状态（只读观察）。"""
+    """状态聚合：注册表 + systemd 单元 + 内核呼吸状态（只读观察）。"""
     agent = get_agent_or_404(agent_id)
     out: dict[str, Any] = {
         "id": agent["id"],
@@ -604,9 +653,9 @@ def status(agent_id: str) -> dict:
         "expose": agent.get("expose", False),
         "note": agent.get("note", ""),
         "source_version": agent.get("source_version", ""),
+        "roots": agent.get("roots", []),
         "desired_state": agent.get("desired_state", "running"),
         "listen_host": _listen_host(agent),
-        "interconnect": agent.get("interconnect"),
         "created_at": agent.get("created_at"),
         "updated_at": agent.get("updated_at"),
         "fetched_at": _iso(),
@@ -868,7 +917,7 @@ def mail(agent_id: str, text: str) -> dict:
 
 
 def mailbox(agent_id: str, limit: int = 50, *, box: str = "outbox") -> dict:
-    """读邮箱文件尾部 N 行（只读展示，不推进 mailroom 的扫描偏移）。
+    """读邮箱文件尾部 N 行（只读展示，无后台处理）。
 
     box="outbox"：来信（内核 send_mail 写，sender=brain）；
     box="inbox"： 投信历史（mailbox_log.jsonl，sender=admin 为主——管理邮箱

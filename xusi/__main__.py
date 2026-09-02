@@ -4,7 +4,7 @@
     python -m xusi install               # 建 venv → 装 systemd 用户服务 → 启动
     python -m xusi init                  # 首次安装 / 轮换 admin token（写 [admin].secret）
     python -m xusi uninstall             # 停止并移除管理面服务（不动 agent 数据）
-    python -m xusi status                # 全部 agent 一览（含互联标注）
+    python -m xusi status                # 全部 agent 一览
     python -m xusi doctor                # 环境自检
 """
 from __future__ import annotations
@@ -177,15 +177,13 @@ def cmd_status(_args) -> int:
         return 0
     for r in rows:
         proc = r.get("process", {})
-        ic = r.get("interconnect") or {}
-        conn = f"互联:{ic.get('port', '-')}" if ic.get("token") else "互联:未发布"
         print(f"{r['id']:28} 端口{r['port']:5} 单元:{proc.get('active', '?'):9} "
-              f"期望:{r['desired_state']:8} {conn:14} {r['name']}")
+              f"期望:{r['desired_state']:8} {r['name']}")
     return 0
 
 
 def cmd_doctor(_args) -> int:
-    from . import brains, mailroom, ports, systemdctl, versions
+    from . import brains, ports, systemdctl, versions
     cfg = get_config()
     ok = True
 
@@ -232,13 +230,10 @@ def cmd_doctor(_args) -> int:
     check("管理面 token 已初始化", bool(get_config().admin_secret),
           "" if get_config().admin_secret else
           "[admin].secret 缺失——`xusi init` 生成，或在 etc/xusi.toml 手填")
-    # 互联信箱（mailroom）：outbox 扫描状态 + 互联标注统计
-    from . import registry
-    snap = mailroom.state_snapshot()
-    n_pub = sum(1 for a in registry.list_agents()
-                if isinstance(a.get("interconnect"), dict) and a.get("interconnect", {}).get("token"))
-    print(f"  [INFO] 互联信箱：{n_pub}/{len(registry.list_agents())} 个 agent 已发布互联；"
-          f"outbox 扫描偏移 {len(snap)} 份")
+    droots = get_config().default_roots
+    if droots:
+        print(f"  [INFO] 缺省根智能体：{len(droots)} 个（创建对话框预填："
+              + "、".join(r["address"] for r in droots) + "）")
     units = subprocess.run(["systemctl", "--user", "list-units", "xusi-a-*",
                             "--no-legend", "--plain"], capture_output=True, text=True)
     n_units = len([l for l in units.stdout.splitlines() if l.strip()])
