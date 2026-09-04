@@ -53,6 +53,12 @@ src.rename(bak); tmp.rename(src)            #   旧树留作回滚
 registry.update_agent(AID, {"source_version": NEW})   # 3) 坑③：API 改不了这字段
 agentops.audit("upgrade_kernel", agent=AID, **{"from": OLD, "to": NEW})
 agentops.spawn_and_verify(registry.get_agent(AID))    # 4) 拉起 + 健康验收
+agentops.start(AID)                       # 5) 坑⑥：agentops.stop 把 desired_state 落
+                                          #    成了 stopped，spawn_and_verify 不回写——
+                                          #    active 时 start() 只做 finalize（不重拉），
+                                          #    恢复期望态 running；漏掉这步，下次
+                                          #    manager 重启时 reconcile 会把已升级的
+                                          #    agent 停掉
 print("完成，旧树备份:", bak.name)
 EOF
 ```
@@ -84,6 +90,7 @@ agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier =
 | ③ | PATCH 改 `source_version` 被拒（`_PATCHABLE` 白名单不含它） | `registry.update_agent()` 直改；不改则 webui/备份恢复显示错版本 |
 | ④ | 担心 `.venv` 要重建 | 平移即可（`mv` 进新树，路径不变）；v2.7.4 依赖与 v2.5.x 完全一致（pyproject 只差版本号行），指纹不漂移不重装；今后依赖变了 xuseek.sh 也会按指纹自愈补装（有 uv 用 uv，失败回落 pip） |
 | ⑤ | 担心停单元时 manager 抢拉 | 不会——reconcile 只在 manager 重启时跑，手动操作窗口安全 |
+| ⑥ | 升级收尾后 desired_state 停在 stopped（agentops.stop 落盘、spawn_and_verify 不回写）→ 下次 manager 重启 reconcile 按期望态把已升级的 agent 停掉 | §1 脚本收尾补 `agentops.start(AID)`（active 时只 finalize、不重拉） |
 
 ## 4. 验证清单（升级后 5 分钟）
 
