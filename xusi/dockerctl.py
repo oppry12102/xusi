@@ -211,8 +211,18 @@ def spawn_agent(unit: str, source_dir: str, home: str, host: str, port: int, *,
         raise DockerError(
             f"该内核版本不含 Dockerfile（{src}）：容器运行时需 xuseek-v2 ≥ v2.7.19，"
             f"升级内核走 docs/kernel-upgrade.md")
-    if unit_state(unit) == "active":
-        raise DockerError(f"容器 {unit} 已在运行")
+    state = unit_state(unit)
+    if state in ("active", "activating"):
+        raise DockerError(f"容器 {unit} 已在运行（{state}）")
+    # exited / failed / created 等残留：up 前先 rm 一次（compose rm -f 幂等）——
+    # 否则 container_name 撞名报 Conflict（down 没回收干净的旧容器、
+    # daemon 挂掉后手动启的遗留）。rm 失败不阻塞：up 仍会给出真实报错
+    if state != "not-found":
+        try:
+            subprocess.run(_compose_args(unit) + ["rm", "-f"],
+                           capture_output=True, text=True, timeout=30, check=False)
+        except subprocess.TimeoutExpired:
+            pass
 
     # 每次重渲染（原子：tmp + os.replace + 600，与 registry._save 同手法）——
     # expose 切换后 --host 变化、端口/镜像 tag 恒与注册表一致
@@ -390,5 +400,15 @@ def journal_tail(unit: str, n: int = 200) -> str:
 
 def cleanup(unit: str) -> None:
     """删 compose 渲染目录（delete/回滚/runtime 切换用）。镜像保留——
-    `docker image prune` 交给管理员（docs/container-runtime.md）。"""
-    shutil.rmtree(compose_file_for(unit).parent, ignore_errors=True)
+    `docker image prune` 交给管理员（docs/container-runtime.md）。
+
+    与同 unit 的 spawn 存在理论竞争窗口（rmtree vs mkdir）；spawn 端每次
+    mkdir 都带 exist_ok=True，自愈。cleanup 是清理动作，不抛错——抛错会让
+    上层 patch_agent 把「改参切运行时」回退到旧载体，体验上「改了等于没改」。"""
+    d = compose_file_for(unit).parent
+    try:
+        shutil.rmtree(d)
+    except FileNotFoundError:
+        pass  # 并发已被另一侧 rmtree 先一步，OK
+    except OSError as e:
+        print(f"[xusi] cleanup({unit}) 失败：{e}")

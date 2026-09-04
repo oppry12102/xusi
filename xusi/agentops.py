@@ -374,7 +374,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     except Exception as e:
         if _rt(rec).unit_state(unit) == "active":
             try:
-                wait_health(rec["port"], rec["id"])
+                wait_health(rec["port"], rec["id"], rt=_rt(rec))
             except Exception:
                 _fail(e)
         else:
@@ -411,10 +411,10 @@ def spawn_and_verify(rec: dict) -> None:
     公开给 backup.restore 复用（create 的私有实现提级——恢复与创建走同一条
     拉起路径，别再各自 systemdctl.spawn_agent）。"""
     _spawn_unit(rec)
-    wait_health(rec["port"], rec["id"])
+    wait_health(rec["port"], rec["id"], rt=_rt(rec))
 
 
-def wait_health(port: int, agent_id: str, timeout: float = 90.0) -> None:
+def wait_health(port: int, agent_id: str, timeout: float = 90.0, *, rt=None) -> None:
     """启动验收：进程载体 active（systemd 单元 / docker 容器，按 runtime 分派）
     且端口已进入监听（ss；host 网络下容器监听同样出现在宿主 ss 表）。失败抛
     AgentError（附日志尾部）。
@@ -425,8 +425,12 @@ def wait_health(port: int, agent_id: str, timeout: float = 90.0) -> None:
     日志尾部暴露。绑端口之后的崩溃由 Restart=always / unless-stopped 兜底。
 
     主机缺 ss 时降级为 loopback connect 试探——ss 缺失会让
-    _kernel_listening_ports 恒空集，健康 agent 也会验收超时（被误销毁）。"""
-    rt = _rt(registry.get_agent(agent_id) or {})   # 文件极小，一次额外读取可接受
+    _kernel_listening_ports 恒空集，健康 agent 也会验收超时（被误销毁）。
+
+    rt：Runtime 模块；调用方几乎都已有 agent dict（_rt(agent) 即得），传入
+    免多读一次注册表。None 时回退注册表查询（兼容旧调用）。"""
+    if rt is None:
+        rt = _rt(registry.get_agent(agent_id) or {})
     unit = get_config().unit_name(agent_id)
     have_ss = shutil.which("ss") is not None
     deadline = time.monotonic() + timeout
@@ -495,7 +499,7 @@ def start(agent_id: str) -> dict:
     agent = get_agent_or_404(agent_id)
     if _rt(agent).unit_state(_unit(agent)) != "active":
         _spawn_unit(agent)
-        wait_health(agent["port"], agent_id)
+        wait_health(agent["port"], agent_id, rt=_rt(agent))
     return _finalize(agent_id, "running", "start")
 
 
@@ -557,7 +561,7 @@ def restart(agent_id: str) -> dict:
         rt.restart(unit)
     else:
         _spawn_unit(agent)
-    wait_health(agent["port"], agent_id)
+    wait_health(agent["port"], agent_id, rt=_rt(agent))
     return _finalize(agent_id, "running", "restart")
 
 
@@ -735,7 +739,7 @@ def _respawn(agent: dict) -> None:
                 pass
         rt.stop(unit)
     _spawn_unit(agent)
-    wait_health(agent["port"], agent["id"])
+    wait_health(agent["port"], agent["id"], rt=_rt(agent))
 
 
 # ── 状态（systemd + 注册表；只读观察另见 observe）────────────────────
@@ -1050,7 +1054,7 @@ def reconcile() -> list[dict]:
                 if state != "active":
                     if state == "not-found" or state == "inactive" or state == "failed":
                         _spawn_unit(agent)
-                        wait_health(agent["port"], agent["id"], timeout=60)
+                        wait_health(agent["port"], agent["id"], timeout=60, rt=rt)
                         action = "respawned"
                     # state == "unknown"（docker daemon 挂掉等）：spawn 会抛
                     # DockerError → 记入 report.error，不动注册表，等 daemon
@@ -1064,7 +1068,7 @@ def reconcile() -> list[dict]:
             elif desired == "paused":
                 if state != "active":
                     _spawn_unit(agent)
-                    wait_health(agent["port"], agent["id"], timeout=60)
+                    wait_health(agent["port"], agent["id"], timeout=60, rt=rt)
                     action = "respawned"
                 rt.kill_signal(unit, "SIGSTOP")
                 action = (action + "+sigstop") if action != "none" else "sigstop"
