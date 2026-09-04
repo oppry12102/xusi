@@ -139,8 +139,15 @@ def load_config() -> XusiConfig:
             print(f"警告：default_runtime 非法值 {rt!r}（只能是 systemd/docker），回退 systemd")
     if "docker_pip_index" in mgr:
         # 三态：键缺失 → None（dockerctl 用内置清华默认）；空串 → ""（显式关闭
-        # 镜像走 pypi.org）；非空 → 指定镜像
-        cfg.docker_pip_index = str(mgr["docker_pip_index"]).strip()
+        # 镜像走 pypi.org）；非空 → 指定镜像。TOML 裸写 None/null 是解析错误
+        # （tomllib 拒绝，整文件回退默认并打警告），到不了这里；但引号串
+        # "None"/"none"/"null"（YAML 习惯平移）会原样拼进 UV_INDEX_URL 打坏
+        # 镜像构建——归一为显式关闭（与空串同义）
+        val = mgr["docker_pip_index"]
+        if val is None or str(val).strip().lower() in ("none", "null"):
+            cfg.docker_pip_index = ""
+        else:
+            cfg.docker_pip_index = str(val).strip()
     if "docker_apt_mirror" in mgr:
         cfg.docker_apt_mirror = str(mgr["docker_apt_mirror"]).strip()
     if "docker_extras" in mgr:
