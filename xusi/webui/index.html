@@ -50,6 +50,7 @@
   .b-stop{background:#f0f1f4;color:var(--sub)} .b-err{background:#fae5e5;color:var(--err)}
   .b-sleep{background:#e8eefb;color:#3f66c2} .b-park{background:#f6f7fa;color:#8a93a8}
   .b-init{background:#fdf3e3;color:var(--warn)}
+  .b-sys{background:#f0f1f4;color:var(--sub)} .b-doc{background:#e3f2ef;color:#1d7a6e}
   .row{display:flex;gap:8px;flex-wrap:wrap;color:var(--sub);font-size:12.5px;align-items:center}
   .chip{background:#f0f2f7;border-radius:6px;padding:0 7px;font-size:12px;color:var(--ink)}
   .chip.bcur{background:#eaf0fb;color:var(--acc);font-weight:700}
@@ -255,6 +256,14 @@
           <input id="f-expose" type="checkbox"><label for="f-expose" style="margin:0">暴露外网（监听 0.0.0.0）</label>
         </div></div>
       </div>
+      <div style="display:flex;gap:12px">
+        <div style="flex:1"><label>运行时（创建后可切换：停止 → 改参 → 启动）</label>
+          <select id="f-runtime">
+            <option value="systemd">系统进程（systemd）</option>
+            <option value="docker">Docker 容器（host 网络；需内核 ≥ v2.7.19 与 docker 环境）</option>
+          </select></div>
+        <div style="flex:1"></div>
+      </div>
       <div><label>备注（可选）</label><input id="f-note" type="text"></div>
       <div id="f-err" class="err"></div>
     </div>
@@ -339,6 +348,11 @@
         <input id="e-expose" type="checkbox"><label for="e-expose" style="margin:0">暴露外网（改后需重启）</label>
       </div></div>
     </div>
+    <div><label>运行时<span class="hint" style="font-weight:400">——切换须先「停止」：停止 → 改参 → 启动（切换后不自动启动）</span></label>
+      <select id="e-runtime">
+        <option value="systemd">系统进程（systemd）</option>
+        <option value="docker">Docker 容器（host 网络）</option>
+      </select></div>
     <div><label>备注（可选）</label><input id="e-note" type="text"></div>
     <div><label>大脑（首个勾选为默认；顺序 = 故障转移序）<span class="hint" style="font-weight:400">——下次呼吸生效，不重启</span></label>
       <div id="e-brains" class="check"></div></div>
@@ -523,10 +537,17 @@ function stateBadge(a) {
   return `<span class="badge b-run">运行中</span>`;   // 观察不可达 → 回退进程存活语义
 }
 
+function rtBadge(a) {
+  return (a.runtime || "systemd") === "docker"
+    ? `<span class="badge b-doc" title="Docker 容器运行时（host 网络）">容器</span>`
+    : `<span class="badge b-sys" title="systemd 单元运行时">系统</span>`;
+}
+
 function renderCards(list) {
   const el = $("#cards");
   const nRun = list.filter(a => (a.process || {}).active === "active").length;
-  $("#summary").textContent = `共 ${list.length} 个 · 运行 ${nRun} · 暴露外网 ${list.filter(a => a.expose).length}`;
+  const nDoc = list.filter(a => (a.runtime || "systemd") === "docker").length;
+  $("#summary").textContent = `共 ${list.length} 个 · 运行 ${nRun} · 容器 ${nDoc} · 暴露外网 ${list.filter(a => a.expose).length}`;
   if (!list.length) { el.innerHTML = `<div class="hint" style="grid-column:1/-1">还没有 agent —— 点右上角「新建 agent」创建第一个。</div>`; return; }
   el.innerHTML = list.map(a => {
     const ds = a.desired_state, run = (a.process || {}).active === "active";
@@ -555,7 +576,7 @@ function renderCards(list) {
         </div></span>`);
     }
     return `<div class="card">
-      <div class="top"><span class="nm">${esc(a.name)}</span>${stateBadge(a)}
+      <div class="top"><span class="nm">${esc(a.name)}</span>${stateBadge(a)}${rtBadge(a)}
         <span class="aid" style="margin-left:auto">${a.id}</span></div>
       ${a.expose ? `<div class="src"><span class="src-exp" title="监听 0.0.0.0 直接对外">外网直连</span></div>` : ""}
       <div class="mission">${esc(a.mission)}</div>
@@ -708,6 +729,7 @@ async function openNew() {
   if (me?.role !== "admin") { alert("创建 agent 需要 admin token"); return; }
   $("#f-err").textContent = ""; $("#f-mission").value = ""; $("#f-name").value = "";
   $("#f-note").value = ""; $("#f-expose").checked = false; $("#f-extra").value = "";
+  $("#f-runtime").value = "systemd";
   $("#f-roots").innerHTML = "";
   $("#f-cerr").textContent = "";
   $("#f-cbkey").innerHTML = `<option value="">（加载中…）</option>`;
@@ -730,6 +752,9 @@ async function openNew() {
       ps.ports.map(p => `<option value="${p}">${p}</option>`).join("");
     $("#f-cport").innerHTML = `<option value="">自动分配</option>` +
       ps.ports.map(p => `<option value="${p}">${p}</option>`).join("");
+    // 缺省运行时预选（[manager].default_runtime；非法值由后端同样兜底 systemd）
+    const drt = (vs.default_runtime || "").trim();
+    $("#f-runtime").value = drt === "docker" ? "docker" : "systemd";
   } catch (e) { $("#f-err").textContent = e.message; }
   dlgNew.showModal();
   loadCloneBackups();
@@ -802,6 +827,7 @@ async function createBlank() {
   if (extra.trim()) body.extra_config = extra;
   const p = $("#f-port").value; if (p) body.port = parseInt(p, 10);
   const sv = $("#f-version").value; if (sv) body.source_version = sv;
+  const rt = $("#f-runtime").value; if (rt && rt !== "systemd") body.runtime = rt;
   $("#btn-create").disabled = true; $("#f-err").textContent = "";
   try {
     const a = await api("/api/agents", {method: "POST", body: JSON.stringify(body)});
@@ -982,7 +1008,8 @@ async function loadDetail() {
         <div class="kv">
           <b>id</b><span class="mono">${esc(id)}</span>
           <b>期望态</b><span>${esc(s.desired_state)}</span>
-          <b>进程单元</b><span>${s.process?.active}/${esc(s.process?.sub || "")} · 自动重启 ${s.process?.auto_restarts ?? 0} · 在线 ${fmtDur(s.process?.active_since)}</span>
+          <b>运行时</b><span>${(s.runtime || "systemd") === "docker" ? "Docker 容器（host 网络）" : "systemd 单元（系统进程）"}</span>
+          <b>${(s.runtime || "systemd") === "docker" ? "容器" : "进程单元"}</b><span>${s.process?.active}/${esc(s.process?.sub || "")} · 自动重启 ${s.process?.auto_restarts ?? 0} · 在线 ${fmtDur(s.process?.active_since)}</span>
           <b>呼吸</b><span>${daemonRowHtml(s)}</span>
           <b>监听</b><span class="mono">${esc(s.listen_host)}:${s.port}${s.expose ? "（外网直连）" : "（仅本机）"}</span>
           <b>大脑</b><span>${(s.brains || []).map(esc).join(" → ")}</span>
@@ -1217,6 +1244,7 @@ async function openEdit(id) {
     $("#e-name").value = s.name || "";
     $("#e-note").value = s.note || "";
     $("#e-expose").checked = !!s.expose;
+    $("#e-runtime").value = s.runtime || "systemd";
     $("#e-port").value = s.port;   // 创建后固定，只读展示（对外联络 = ip+port）
     try {
       _brainsPool = await api("/api/brains");   // 每次重取，别用新建对话框的旧池
@@ -1246,6 +1274,10 @@ async function saveEdit() {
     if (!brains.length) { $("#e-err").textContent = "至少勾选一家大脑"; return; }
     if (JSON.stringify(brains) !== JSON.stringify(editCur.brains || [])) body.brains = brains;
   }
+  const rt = $("#e-runtime").value;
+  if (rt !== (editCur.runtime || "systemd")) body.runtime = rt;
+  // runtime 切换不参与 needRestart 逻辑：后端要求停止态（运行中给 400 提示），
+  // 切换成功后用户手动「▶ 启动」
   const needRestart = body.expose !== !!editCur.expose;
   let applyRestart = false;
   if (needRestart) {

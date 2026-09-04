@@ -177,7 +177,8 @@ def cmd_status(_args) -> int:
         return 0
     for r in rows:
         proc = r.get("process", {})
-        print(f"{r['id']:28} 端口{r['port']:5} 单元:{proc.get('active', '?'):9} "
+        rt = "容器" if r.get("runtime") == "docker" else "系统"
+        print(f"{r['id']:28} 端口{r['port']:5} {rt}:{proc.get('active', '?'):9} "
               f"期望:{r['desired_state']:8} {r['name']}")
     return 0
 
@@ -238,6 +239,20 @@ def cmd_doctor(_args) -> int:
                             "--no-legend", "--plain"], capture_output=True, text=True)
     n_units = len([l for l in units.stdout.splitlines() if l.strip()])
     print(f"  [INFO] 运行中的 agent 单元：{n_units} 个")
+    # 双运行时：docker 是可选路径——缺省运行时是 docker 时才算 FAIL；
+    # 否则只报 INFO（含 docker agent 计数与可行动提示），systemd agent 不受影响
+    from . import dockerctl, registry
+    d_ok, d_hint = dockerctl.docker_available()
+    n_doc = len([a for a in registry.list_agents() if a.get("runtime") == "docker"])
+    if cfg.default_runtime == "docker":
+        check("Docker 运行时可用（daemon + compose 插件）", d_ok,
+              "" if d_ok else d_hint or "docker 不可用")
+    elif d_ok:
+        print(f"  [INFO] Docker 运行时可用" + (f"（容器 agent {n_doc} 个）" if n_doc else ""))
+    else:
+        print(f"  [INFO] Docker 运行时不可用：{d_hint or '未知原因'}"
+              + (f"（已有容器 agent {n_doc} 个——修复后它们才能拉起）" if n_doc else
+                 "（不影响 systemd 运行时；要建容器 agent 先修复）"))
     print("结论：" + ("全部通过 ✓" if ok else "存在未通过项 ✗"))
     return 0 if ok else 1
 
