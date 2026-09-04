@@ -31,6 +31,13 @@ instances/
 - **compose.yaml 由管理面渲染在实例目录之外**（`instances/.compose/<unit>/`，
   600 权限）——容器只挂载了实例根 `/data` 与内核代码 `/app/xuseek`，
   渲染文件不在任何挂载里，容器内大脑看不到也改不到。
+- **容器运行用户 = 管理面用户**（compose 的 `user:` 行，缺省取管理面进程的
+  uid + 主组 gid；`[manager].docker_user` 可改）。内核模板默认 root，但 root
+  写进 `/data` 的文件宿主属主是 root——管理面（普通用户）就写不了
+  mailbox.jsonl / webui_tokens.json（投信与观察台 token 签发直接断）。
+  钉成管理面用户后：容器内大脑的能力与 systemd 模式**完全对齐**（同 uid，
+  含可改自己那份内核代码），落盘文件属主一致。显式设 `"0:0"` 即恢复
+  容器内 root（大脑近似宿主 root——对应隔离讨论的 root 档，谨慎使用）。
 - **spawn 每次重渲染**：路径/端口/镜像 tag 恒与注册表一致（expose 切换后
   `--host` 变化自然生效）；不要手改——手改的内容下次 spawn 就被覆盖。
 - **镜像 tag 含内核版本**：`xuseek-agent-<id>:<source_version>`。容器是

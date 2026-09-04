@@ -41,6 +41,10 @@ default_runtime = "systemd"
 # docker_apt_mirror = ""
 # 可选：能力包名（如 amem），构建期烘培其重依赖进镜像（体积大，按需开）
 # docker_extras = ""
+# 容器运行用户 "<uid>:<gid>"：缺省 = 管理面进程的 uid:gid（容器内大脑与管理面
+# 同用户，/data 落盘属主一致——投信/观察台 token 签发依赖这一点）。显式 "0:0"
+# = 容器内 root（大脑近似宿主 root，对应隔离讨论的 root 档，谨慎使用）。
+# docker_user = ""
 
 # ── 缺省根智能体（可选，v2.7.12+ 内核互联）──
 # 新建 agent 时创建对话框预填这些根（可删改）；address/token 齐备才生效。

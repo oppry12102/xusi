@@ -17,6 +17,7 @@ Phase 1.2 时两台克隆 xusi 共享 fd410411419d 就是这个原因。/etc/mac
 from __future__ import annotations
 
 import os
+import pwd
 import secrets
 import tomllib
 from dataclasses import dataclass, field
@@ -68,6 +69,11 @@ class XusiConfig:
     docker_apt_mirror: str = ""    # 可选：debian 源镜像（如 mirrors.tencentyun.com），
                                  # 仅构建期生效，不影响镜像可移植。
     docker_extras: str = ""        # 可选：能力包名（如 amem），构建期烘培其重依赖进镜像。
+    docker_user: str = ""          # 容器运行用户 "<uid>:<gid>"。缺省 = 管理面进程的
+                                 # uid:gid（容器内大脑与管理面同用户，能力与 systemd
+                                 # 模式对齐，/data 落盘属主一致）。显式设 "0:0" =
+                                 # 容器内 root（大脑近似宿主 root——对应隔离讨论的
+                                 # root 档，谨慎使用）。
 
     # —— 派生路径 ——
     @property
@@ -139,6 +145,18 @@ def load_config() -> XusiConfig:
         cfg.docker_apt_mirror = str(mgr["docker_apt_mirror"]).strip()
     if "docker_extras" in mgr:
         cfg.docker_extras = str(mgr["docker_extras"]).strip()
+    if "docker_user" in mgr:
+        cfg.docker_user = str(mgr["docker_user"]).strip()
+    if not cfg.docker_user:
+        # 缺省 = 管理面用户的 uid + 主组 gid（容器内大脑与管理面同用户——
+        # /data 落盘属主一致，投信/观察台 token 签发等管理面写入不受 root
+        # 属主阻塞）。主组取 passwd 而非 os.getgid()：管理面经 sg/newgrp
+        # 启动时有效组会变，落盘属主要与用户身份一致才稳定
+        try:
+            _gid = pwd.getpwuid(os.getuid()).pw_gid
+        except Exception:
+            _gid = os.getgid()
+        cfg.docker_user = f"{os.getuid()}:{_gid}"
     # admin token = [admin].secret（唯一键位）
     admin = raw.get("admin", {})
     if "secret" in admin:
