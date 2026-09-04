@@ -349,7 +349,7 @@
       </div></div>
     </div>
     <div><label>运行时<span class="hint" style="font-weight:400">——切换须先「停止」：停止 → 改参 → 启动（切换后不自动启动）</span></label>
-      <select id="e-runtime">
+      <select id="e-runtime" disabled>
         <option value="systemd">系统进程（systemd）</option>
         <option value="docker">Docker 容器（host 网络）</option>
       </select></div>
@@ -1245,6 +1245,17 @@ async function openEdit(id) {
     $("#e-note").value = s.note || "";
     $("#e-expose").checked = !!s.expose;
     $("#e-runtime").value = s.runtime || "systemd";
+    // running 时禁用 runtime 切换：后端要求停止态（运行中提交会 400）——
+    // 与其「能选不能改」，不如灰显 + hint 说明；停止后恢复可编辑
+    const $rt = $("#e-runtime");
+    const rtActive = (s.process || {}).active === "active";
+    $rt.disabled = rtActive;
+    const $rtHint = $rt.parentElement.querySelector("label .hint");
+    if ($rtHint) {
+      $rtHint.textContent = rtActive
+        ? "—— 当前正在运行：切换须先「停止」（停止 → 改参 → 启动，切换后不自动启动）"
+        : "—— 切换须先「停止」：停止 → 改参 → 启动（切换后不自动启动）";
+    }
     $("#e-port").value = s.port;   // 创建后固定，只读展示（对外联络 = ip+port）
     try {
       _brainsPool = await api("/api/brains");   // 每次重取，别用新建对话框的旧池

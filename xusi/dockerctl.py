@@ -52,16 +52,33 @@ def _run(cmd: list[str], timeout: float = 30) -> str:
 def docker_available() -> tuple[bool, str]:
     """探测 docker daemon 与 compose 插件，返回 (可用, 提示)。
 
+    三层探测：socket 可读性预判 → daemon 在线 → compose 插件可调。
     权限不足（当前用户不在 docker 组）与 daemon 挂掉都要识别为不可用——
     spawn 前置与 doctor 共用；提示必须可行动（usermod -aG docker）。
+    socket 预判先行：管理面是 systemd --user 普通用户场景，无写权限时
+    docker CLI 也会说 permission denied，先做本地检查少走一条子进程；
+    CLI 报错的字符串匹配只作兜底（i18n/新版本措辞变化不可依赖）。
     """
+    # ① socket 可读性预判
+    sock = Path("/var/run/docker.sock")
+    if sock.exists() and not os.access(sock, os.R_OK | os.W_OK):
+        return False, (
+            f"当前用户无 docker.sock 访问权限（{sock} 不可读写）——"
+            f"sudo usermod -aG docker $USER 后重新登录"
+        )
+    # ② daemon 在线
     try:
         _run(["docker", "version", "--format", "{{.Server.Version}}"], timeout=15)
     except DockerError as e:
         msg = str(e)
-        if "permission denied" in msg.lower():
-            return False, "当前用户无 docker.sock 访问权限（sudo usermod -aG docker $USER 后重新登录）"
+        low = msg.lower()
+        if "permission denied" in low or ("dial unix" in low and "permission" in low):
+            return False, (
+                f"当前用户无 docker.sock 访问权限——sudo usermod -aG docker $USER 后重新登录"
+                f"（原始：{msg}）"
+            )
         return False, f"docker daemon 不可用：{msg}"
+    # ③ compose 插件
     try:
         _run(["docker", "compose", "version"], timeout=15)
     except DockerError as e:
