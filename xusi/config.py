@@ -59,6 +59,16 @@ class XusiConfig:
                                  # [{address, token}]：创建对话框预填（可删改），
                                  # address/token 齐备才生效（与内核 [[roots]] 交割同规则）。
 
+    # —— 双运行时 ——
+    default_runtime: str = "systemd"  # 新建 agent 的缺省运行时：systemd（系统进程）
+                                 # 或 docker（容器，host 网络；需内核 ≥ v2.7.19 与
+                                 # docker 环境）。创建对话框预选此值，可逐次覆盖。
+    docker_pip_index: str | None = None  # docker 镜像构建/运行时的 PyPI 镜像：
+                                 # None = 内置默认（清华）；"" = 关闭镜像走 pypi.org。
+    docker_apt_mirror: str = ""    # 可选：debian 源镜像（如 mirrors.tencentyun.com），
+                                 # 仅构建期生效，不影响镜像可移植。
+    docker_extras: str = ""        # 可选：能力包名（如 amem），构建期烘培其重依赖进镜像。
+
     # —— 派生路径 ——
     @property
     def etc_dir(self) -> Path: return self.root / "etc"
@@ -89,6 +99,12 @@ class XusiConfig:
     def unit_name(self, agent_id: str) -> str:
         return f"xusi-a-{agent_id}"
 
+    @property
+    def compose_dir(self) -> Path:
+        """docker agent 的 compose 渲染目录：instances/.compose/<unit>/。
+        在实例根（/data 挂载）之外——容器内大脑看不到改不到（dockerctl 按需 mkdir）。"""
+        return self.instances_dir / ".compose"
+
     def ensure_dirs(self) -> None:
         for d in (self.etc_dir, self.instances_dir, self.trash_dir,
                   self.versions_dir, self.backup_dir, self.webui_dir):
@@ -108,6 +124,21 @@ def load_config() -> XusiConfig:
         cfg.versions_dir = Path(os.path.expanduser(str(mgr["versions_dir"]))).resolve()
     if "display_timezone" in mgr:
         cfg.display_timezone = str(mgr["display_timezone"])
+    # 双运行时：缺省运行时 + docker 镜像构建参数（详见 dockerctl.py）
+    if "default_runtime" in mgr:
+        rt = str(mgr["default_runtime"]).strip()
+        if rt in ("systemd", "docker"):
+            cfg.default_runtime = rt
+        else:
+            print(f"警告：default_runtime 非法值 {rt!r}（只能是 systemd/docker），回退 systemd")
+    if "docker_pip_index" in mgr:
+        # 三态：键缺失 → None（dockerctl 用内置清华默认）；空串 → ""（显式关闭
+        # 镜像走 pypi.org）；非空 → 指定镜像
+        cfg.docker_pip_index = str(mgr["docker_pip_index"]).strip()
+    if "docker_apt_mirror" in mgr:
+        cfg.docker_apt_mirror = str(mgr["docker_apt_mirror"]).strip()
+    if "docker_extras" in mgr:
+        cfg.docker_extras = str(mgr["docker_extras"]).strip()
     # admin token = [admin].secret（唯一键位）
     admin = raw.get("admin", {})
     if "secret" in admin:
