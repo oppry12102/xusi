@@ -115,12 +115,19 @@ xusi/
 
 ## 运维要点
 
-- **掉线保护（两层）**：① agent 单元 `Restart=always`——崩溃/误杀 5s 内自动拉起；
-  ② 管理面启动时 reconcile——机器重启后按注册表期望态（running/stopped/paused）拉齐。
-- **暂停** = SIGSTOP 冻结大脑（它自起的后台服务继续跑）；停止/重启一律优雅停，
-  轮边界把会话落盘后再退。
-- **改参边界**：管理面可改簿记（name/note）、暴露开关（expose，需重启）与
-  大脑成员/默认（brains——手术式重渲染 config.toml 的 [brain]+[brains.*] 段，
+- **掉线保护（两层）**：① 进程载体 `Restart=always` / 容器 `unless-stopped`——
+  崩溃/误杀 5s 内自动拉起；② 管理面启动时 reconcile——机器重启后按注册表
+  期望态（running/stopped/paused）拉齐。
+- **双运行时**：每个 agent 可跑 systemd 直跑（默认）或 docker 容器（host 网络，
+  需内核 ≥ v2.7.19 + docker 环境），界面一致、仅多「容器/系统」徽章。
+  **切换 = 停止 → 改参 → 启动**（状态全在实例目录，只换进程载体）；容器模式的
+  镜像 tag 含内核版本，升级内核自动重建（构建含内核 selftest 门禁）。前置、
+  目录布局与排障见 `docs/container-runtime.md`。
+- **暂停** = SIGSTOP 冻结大脑（它自起的后台服务继续跑；容器模式同语义——
+  exec 进容器只冻 daemon 主进程）；停止/重启一律优雅停，轮边界把会话落盘后再退。
+- **改参边界**：管理面可改簿记（name/note）、暴露开关（expose，需重启）、
+  运行时（runtime——须停止态，切换后不自动启动）与大脑成员/默认
+  （brains——手术式重渲染 config.toml 的 [brain]+[brains.*] 段，
   **下次呼吸生效、不重启**；其余段逐字节保留）。**端口创建后固定**——agent
   对外联络 = ip+port，改端口等于换地址，要换只能删了重建（或克隆）。mission /
   预算在创建后归 **agent 自治**——投信让它自己改 config.toml（内核每口呼吸
@@ -128,8 +135,9 @@ xusi/
 - **密钥轮换**：改 `etc/brains.toml` → 对 agent 做一次 PATCH（改 brains 或任意
   字段触发重渲染）→ 下次呼吸生效。卡片上点大脑 chip 可直接切换默认。
 - **备份**：停止态可用；运行中为 SIGSTOP 冻结窗快照（jsonl 均为追加型文件，一致性
-  风险低）。agent 自己的凭证文件（webui_tokens.json）不进备份包，恢复后由 agent
-  自行重建。
+  风险低；容器模式同走冻结窗）。备份 meta 记 runtime 随包走（旧包默认 systemd；
+  docker 备份恢复到无 docker 机器会早失败）。agent 自己的凭证文件
+  （webui_tokens.json）不进备份包，恢复后由 agent 自行重建。
 - **xuseek-v2 版本仓库**：管理员把版本源码打包投放 `versions/xuseek-v2-<版本号>.zip`
   （打包方法见 `docs/versions.md`；**整个 versions/ 目录不入 git**——zip 含私有源码）。
   versions/ 是源码**唯一事实源**：新建 agent **一律**从版本仓库解压成实例私有副本

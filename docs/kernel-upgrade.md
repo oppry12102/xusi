@@ -165,3 +165,13 @@ mv instances/<id>/xuseek-v2.old-<旧版> instances/<id>/xuseek-v2
 - 一次性 / 实验 agent 直接**删除重建**更省事：新建缺省即取 versions/ 最新版。
 - 稳定后删掉 `xuseek-v2.old-*` 备份树省磁盘（实例目录可单独迁移，别把 GB 级
   备份带着走）。
+
+## 8. 容器运行时（docker）的 agent
+
+**本 playbook 对 docker agent 原样可用**：停机 → 换目录 → 改注册表
+`source_version` → spawn_and_verify。区别只在最后一步——镜像 tag 含
+source_version（`xuseek-agent-<id>:<version>`），tag 变化自动触发镜像重建
+（含内核 selftest 门禁，比裸机多几分钟构建）。docker agent 跳过 §1 的
+`.venv 平移`步骤也安全（venv 烘培在镜像里，实例目录没有 .venv）；
+回滚同样只是改回旧版本号 + spawn（旧镜像还在，秒级起）。旧镜像清理交
+`docker image prune`。详见 `docs/container-runtime.md`。

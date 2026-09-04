@@ -27,6 +27,21 @@ port_range = [8602, 8699]
 # 给用户展示用的时区
 display_timezone = "Asia/Shanghai"
 
+# ── 双运行时（agent 两种跑法：systemd 直跑 / docker 容器，见
+#    docs/container-runtime.md）──
+# 新建 agent 的缺省运行时（创建对话框预选此值，可逐次覆盖）：
+#   systemd = 系统进程（默认，systemd --user 瞬态单元）
+#   docker  = 容器（host 网络；需内核 ≥ v2.7.19 + docker 环境）
+default_runtime = "systemd"
+
+# docker 镜像构建/运行时的 PyPI 镜像（仅 docker 运行时生效）：
+#   不写此行 = 内置默认（清华镜像）；空串 "" = 关闭镜像走 pypi.org
+# docker_pip_index = "https://pypi.tuna.tsinghua.edu.cn/simple"
+# 可选：debian 源镜像（大陆网络构建慢时，如 mirrors.tencentyun.com；仅构建期生效）
+# docker_apt_mirror = ""
+# 可选：能力包名（如 amem），构建期烘培其重依赖进镜像（体积大，按需开）
+# docker_extras = ""
+
 # ── 缺省根智能体（可选，v2.7.12+ 内核互联）──
 # 新建 agent 时创建对话框预填这些根（可删改）；address/token 齐备才生效。
 # [[default_roots]]

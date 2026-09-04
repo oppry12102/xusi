@@ -48,6 +48,7 @@ curl -X POST http://SERVER:8601/api/agents \
      -H "Authorization: Bearer <admin token>" -H "Content-Type: application/json" \
      -d '{"name":"astronomy","mission":"持续跟踪近地小行星……",
           "brains":["glm","kimi"],"expose":false,"note":"","source_version":"",
+          "runtime":"systemd",
           "roots":[{"address":"https://root.example.com","token":"rt-…"}],
           "extra_config":""}'
 ```
@@ -70,21 +71,31 @@ curl -X POST http://SERVER:8601/api/agents \
 - `extra_config`（可选，≤8000 字符）：管理员自由 TOML **原样追加**到出生 config
   末尾（`[capabilities]` 等内核可选段或未来新段）。落盘前整体 tomllib 校验，
   写坏直接拒绝创建（400）——xusi 不必追踪内核每个新配置段
+- `runtime`（可选）：`systemd`（默认，系统进程）或 `docker`（容器，host 网络）。
+  缺省取 `[manager].default_runtime`。docker 要求内核 ≥ v2.7.19 与本机 docker
+  环境（daemon + compose 插件、管理面用户入 docker 组），不满足创建即 400。
+  创建后可切换（见改参）
 - 创建时 xusi 渲染一次 `config.toml`（出生配置：mission/brains/api_key/budgets/
   instance_id/roots/extra_config，chmod 600），**此后 xusi 不再改写该文件**
   （唯一例外：改参按密钥池手术式重渲染 [brain] + [brains.*] 段，见下）。
   `instance_id` = 终身 id（世界唯一、迁移随行）——身份的事实源在实例自己
   身上，注册表只是「本机住着谁」的缓存；克隆（restore new_id）时随新 id
   手术改写
-- 启动验收 = systemd 单元 active + 端口进入监听（不再探 agent 的 HTTP）
+- 启动验收 = 进程载体 active（systemd 单元 / docker 容器，按 runtime 分派）
+  + 端口进入监听（不再探 agent 的 HTTP；host 网络下容器监听同样出现在宿主
+  端口表，验收路径与 systemd 完全一致）
 
 ### 改参（PATCH）
 
-只接受：`name` / `note` / `expose` / `brains`。
+只接受：`name` / `note` / `expose` / `brains` / `runtime`。
 
 - `name`/`note`：写注册表即生效
 - `expose`：进程监听参数，返回 `restart_required: true`；
   `?apply_restart=1` 保存并立即重启
+- `runtime`：切换进程载体（`systemd`/`docker`）。**须停止态**——运行中
+  PATCH 返回 400（提示：停止 → 改参 → 启动）；切换时旧载体防御性清理
+  （docker → compose down + 清渲染目录），**切换后不自动启动**。状态全在
+  实例目录，切换只换进程载体（迁移场景见 docs/container-runtime.md）
 - `port`：**创建后固定，PATCH 返回 400**——agent 对外联络 = ip+port，
   改端口等于换地址（断已建立的互联与观测台入口）；要换端口只能删了重建
   （或克隆到新端口）
@@ -136,8 +147,9 @@ curl 'http://SERVER:8601/api/agents/{id}/mailbox?box=outbox&limit=50' \
 - 观察台 token：`data/webui_tokens.json` 缺失/为空时，xusi **自动签发一枚**写进
   该文件（`secrets.token_urlsafe(32)`、label=`xusi-observe`、merge 不覆盖）；
   内核每请求重读该文件，免重启生效。401 时补签一枚重试一次
-- events / status 要求 agent 正在运行（systemd 单元 active），否则
-  400「agent 未在运行」；sessions 走磁盘，agent 停机也能看历史呼吸
+- events / status 要求 agent 正在运行（按 runtime 分派：systemd 单元 /
+  docker 容器 active），否则 400「agent 未在运行」；sessions 走磁盘，
+  agent 停机也能看历史呼吸
 - 工具统计 = 前端聚合事件流（tool_exec / tool_error / tool_timeout），
   无独立端点；同样是进程内存计数，重启清零
 
@@ -148,13 +160,15 @@ curl 'http://SERVER:8601/api/agents/{id}/logs?limit=300' \
      -H "Authorization: Bearer <admin token>"
 ```
 
-journalctl 该 agent 单元的最近 N 行（stdout/stderr 捕获，非 agent 接口）。
+按 runtime 取最近 N 行（stdout/stderr 捕获，非 agent 接口）：systemd =
+`journalctl --user -u <unit>`；docker = `docker logs --tail N <容器>`
+（compose 渲染时配了 json-file 10m×3 轮转）。
 
 ## 6. 备份 / 恢复
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/agents/{id}/backup` | 备份 data/ + workspace/ + config.toml 到 etc/backups/（运行中 = SIGSTOP 冻结窗快照） |
+| `POST /api/agents/{id}/backup` | 备份 data/ + workspace/ + config.toml 到 etc/backups/（运行中 = SIGSTOP 冻结窗快照，按 runtime 分派） |
 | `GET /api/agents/{id}/backups[?with_meta=1]` | 该 agent 的备份清单 |
 | `GET /api/backups[?with_meta=1]` | 全量备份清单（从备份克隆用） |
 | `GET /api/backups/{key}` | 备份元数据 + 包内 meta |
@@ -162,7 +176,9 @@ journalctl 该 agent 单元的最近 N 行（stdout/stderr 捕获，非 agent �
 | `POST /api/restore` | 恢复：`{key}`（WebUI 回滚）或 `{key, new_id, port, brains, note}`（克隆；WebUI 的 new_id 自动生成 `agent-xxxx`，前缀统一） |
 
 恢复 = 解压 → versions 重建私有源码副本 → 写注册表 → 启动。agent 自己的凭证
-文件（webui_tokens.json）不进备份包，恢复后由 agent 自行重建。
+文件（webui_tokens.json）不进备份包，恢复后由 agent 自行重建。备份 meta 记
+`runtime` 随包走：docker 备份恢复到无 docker 机器时**早失败**（BackupError，
+先修环境再恢复）；旧备份无该字段 → systemd。
 
 ## 7. 错误与安全
 
