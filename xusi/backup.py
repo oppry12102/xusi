@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from . import __version__, agentops, brains, ports, registry, systemdctl, versions
+from . import __version__, agentops, brains, dockerctl, ports, registry, versions
 from .config import get_config
 
 # tar 内排除的路径/后缀（运行时产物或凭证）
@@ -188,6 +188,7 @@ def _build_meta(agent_id: str, agent: dict, reason: str,
         "roots": list(agent.get("roots") or []),
         "source_version": agent.get("source_version", ""),
         "expose": bool(agent.get("expose", False)),
+        "runtime": agent.get("runtime") or "systemd",
         "note": agent.get("note", ""),
         "created_at": agent.get("created_at", ""),
         "snapshot_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -231,10 +232,11 @@ def snapshot(agent_id: str, *, reason: str = "manual",
         + sum(p.stat().st_size for p in (home / "workspace").rglob("*") if p.is_file()) \
         + (cfg_toml.stat().st_size if cfg_toml.is_file() else 0)
 
-    # SIGSTOP 冻结 → tar → SIGCONT（即使 tar 抛错也解冻）
-    # 进程已停止时跳过 SIGSTOP/SIGCONT（无进程可冻结，且 kill 会失败）
+    # SIGSTOP 冻结 → tar → SIGCONT（即使 tar 抛错也解冻）——按 runtime 分派
+    # （docker 走容器内 exec 发信号，只冻 daemon 主进程）。进程已停止时跳过
+    # SIGSTOP/SIGCONT（无进程可冻结，且 kill 会失败）
     if proc_active:
-        systemdctl.kill_signal(unit, "SIGSTOP")
+        agentops._rt(agent).kill_signal(unit, "SIGSTOP")
     cfg = home / "config.toml"
     try:
         with tempfile.NamedTemporaryFile(
@@ -276,9 +278,9 @@ def snapshot(agent_id: str, *, reason: str = "manual",
     finally:
         if proc_active:
             try:
-                systemdctl.kill_signal(unit, "SIGCONT")
+                agentops._rt(agent).kill_signal(unit, "SIGCONT")
             except Exception:
-                pass  # manager 自己也可能崩，但单元独立；下轮 reconcile 救
+                pass  # manager 自己也可能崩，但载体独立；下轮 reconcile 救
 
     agentops.audit("backup.snapshot", agent=agent_id, key=key,
                    size=put_info["size_bytes"], reason=reason)
@@ -333,6 +335,18 @@ def restore(backup_path: Path, *, new_id: str | None = None,
     agent_id = new_id or meta["agent_id"]
     if not _KEY_OK_RE.match(agent_id):
         raise BackupError(f"非法 agent_id {agent_id!r}")
+
+    # 0. runtime 早校验（在动任何磁盘之前失败——旧备份无 runtime 键 → systemd，
+    # 与 _rewrite_instance_id 的「旧备份缺新字段」兼容先例同构）
+    rt = str(meta.get("runtime") or "systemd").strip()
+    if rt not in ("systemd", "docker"):
+        raise BackupError(f"备份包 runtime 非法：{rt!r}（只能是 systemd/docker）")
+    if rt == "docker":
+        ok, hint = dockerctl.docker_available()
+        if not ok:
+            raise BackupError(
+                f"备份的运行时是 docker，但本机 docker 不可用：{hint}——"
+                f"恢复到有 docker 环境的机器，或先装好 docker")
 
     # 1. 冲突检查
     existing = registry.get_agent(agent_id)
@@ -431,6 +445,7 @@ def restore(backup_path: Path, *, new_id: str | None = None,
             "desired_state": "running",
             "note": note if isinstance(note, str) else meta.get("note", ""),
             "source_version": meta.get("source_version", ""),
+            "runtime": rt,
             "created_at": meta.get("created_at", now),
             "updated_at": now,
         }
@@ -447,17 +462,23 @@ def restore(backup_path: Path, *, new_id: str | None = None,
     try:
         agentops.spawn_and_verify(rec)
     except Exception as e:
-        # 启动失败回滚
+        # 启动失败回滚（按 runtime 分派；docker 追加 compose 渲染目录清理）
+        unit = cfg.unit_name(agent_id)
         try:
-            systemdctl.stop(cfg.unit_name(agent_id))
+            agentops._rt(rec).stop(unit)
         except Exception:
             pass
+        if rt == "docker":
+            try:
+                dockerctl.cleanup(unit)
+            except Exception:
+                pass
         registry.remove_agent(agent_id)
         shutil.rmtree(home, ignore_errors=True)
         raise BackupError(f"spawn 失败：{e}") from e
 
     agentops.audit("backup.restore", agent=agent_id, port=port,
-                   source=meta.get("agent_id"), overwrite=overwrite)
+                   source=meta.get("agent_id"), overwrite=overwrite, runtime=rt)
     return {"id": agent_id, "port": port, "home": str(home),
             "restored_from": meta.get("snapshot_at")}
 

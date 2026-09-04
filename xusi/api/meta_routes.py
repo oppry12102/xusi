@@ -66,9 +66,11 @@ def api_default_roots(_rec: dict = Depends(require_auth)) -> dict:
 @router.get("/api/versions")
 def api_versions(_rec: dict = Depends(require_auth)) -> dict:
     """xuseek-v2 版本仓库清单（zip 由管理员投放于 versions/，约定见 docs/versions.md）。
-    创建 agent 的 source_version 缺省 = 清单最新版（每 agent 私有副本）。"""
+    创建 agent 的 source_version 缺省 = 清单最新版（每 agent 私有副本）。
+    default_runtime 供创建对话框预选（[manager].default_runtime）。"""
     return {"repo_dir": str(get_config().versions_dir),
             "default_ready": bool(versions.list_versions()),
+            "default_runtime": get_config().default_runtime,
             "versions": versions.list_versions()}
 
 

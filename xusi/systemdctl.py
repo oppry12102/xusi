@@ -33,9 +33,12 @@ def _run(cmd: list[str], timeout: float = 30) -> str:
     return r.stdout
 
 
-def spawn_agent(unit: str, source_dir: str, home: str, host: str, port: int) -> None:
+def spawn_agent(unit: str, source_dir: str, home: str, host: str, port: int, *,
+                version: str = "") -> None:
     """以瞬态单元拉起一个 agent（Restart=always → 崩溃自动重启）。
 
+    version：Runtime 协议对称占位（dockerctl 用它拼镜像 tag）——systemd 不用
+    镜像，忽略之。
     TimeoutStopSec=20 > xuseek daemon 的 10s 优雅停窗，保证轮边界落盘后再退。
     PyPI 镜像经 --setenv 注入（xuseek.sh 首启自愈装依赖走它，见 DEFAULT_UV_INDEX_URL）。
     """
