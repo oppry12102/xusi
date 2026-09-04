@@ -213,20 +213,6 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
             f'instance_id = {_q(instance_id)}',
             "",
         ]
-    # 对外入口：管理面注入的机器公网地址（内核不消费——agent 互联登记时用
-    # 「它 + 自己的端口」拼入口，见内核 playbook「对等协作」）。探测不到/未配
-    # 则整段不渲染，agent 配方回退问根回显/管理员。
-    adv = (cfg.advertise_host or "").strip()
-    if adv:
-        lines.extend([
-            "# ── 对外入口（管理面注入的机器公网地址）──",
-            "# 互联登记时用它拼你的入口（adv:port）；本机不可达或想换地址时",
-            "# send_mail 问管理员。内核不消费此键：管理面注入、你的配方读取。",
-            "",
-            "[server]",
-            f"advertise_host = {_q(adv)}",
-            "",
-        ])
     lines.extend(render_brain_section(chosen))
     # 预算段：格式随内核版本（schema 不匹配 = 限额静默失效，见模块头常量）。
     # 两个分支都只写管理员显式给的键（0 = 不限），不做推导；缺省不写段，
