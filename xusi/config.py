@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import pwd
+import re
 import secrets
 import tomllib
 from dataclasses import dataclass, field
@@ -64,6 +65,12 @@ class XusiConfig:
     default_runtime: str = "systemd"  # 新建 agent 的缺省运行时：systemd（系统进程）
                                  # 或 docker（容器，host 网络；需内核 ≥ v2.7.19 与
                                  # docker 环境）。创建对话框预选此值，可逐次覆盖。
+    advertise_host: str = ""     # 本机对外入口（IP 或域名）——管理面注入出生 config
+                                 # 的 [server] advertise_host（内核不消费，agent 互联
+                                 # 登记时用「它 + 自己的端口」拼入口）。缺省 = 启动时
+                                 # 自动探测云 metadata（腾讯/阿里/AWS 依次试）；
+                                 # 非空 = 手动钉死；探测不到 = ""（agent 配方回退
+                                 # 问根回显/管理员）。
     docker_pip_index: str | None = None  # docker 镜像构建/运行时的 PyPI 镜像：
                                  # None = 内置默认（清华）；"" = 关闭镜像走 pypi.org。
     docker_apt_mirror: str = "mirrors.tencentyun.com"  # debian 源镜像（仅构建期生效，
@@ -119,6 +126,34 @@ class XusiConfig:
             d.mkdir(parents=True, exist_ok=True)
 
 
+# 云 metadata 端点：返回本机公网 IP（裸文本）。顺序 = 常见度（腾讯 → 阿里 →
+# AWS）；非对应云上访问会快速失败（连接拒绝/路由不可达），单次 ≤ _METADATA_TIMEOUT。
+_METADATA_ENDPOINTS = (
+    ("腾讯云", "http://metadata.tencentyun.com/latest/meta-data/public-ipv4"),
+    ("阿里云", "http://100.100.100.200/latest/meta-data/eipv4"),
+    ("AWS", "http://169.254.169.254/latest/meta-data/public-ipv4"),
+)
+_METADATA_TIMEOUT = 2.0
+
+
+def _detect_public_ip() -> str:
+    """自动探测本机公网 IP：依次打各云 metadata 端点，返回第一个合法 IPv4。
+
+    全部失败 → ""（调用方回退：agent 互联登记时问根回显/管理员）。
+    metadata 是云内网地址，探测无外网依赖、不泄露身份。"""
+    import urllib.request
+    for _name, url in _METADATA_ENDPOINTS:
+        try:
+            with urllib.request.urlopen(url, timeout=_METADATA_TIMEOUT) as r:
+                ip = r.read(128).decode().strip()
+            if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) and all(
+                    0 <= int(x) <= 255 for x in ip.split(".")):
+                return ip
+        except Exception:
+            continue
+    return ""
+
+
 def load_config() -> XusiConfig:
     raw = _load_toml(ROOT / "etc" / "xusi.toml")
     cfg = XusiConfig(root=ROOT)
@@ -156,6 +191,14 @@ def load_config() -> XusiConfig:
         cfg.docker_extras = str(mgr["docker_extras"]).strip()
     if "docker_user" in mgr:
         cfg.docker_user = str(mgr["docker_user"]).strip()
+    # 对外入口（互联登记用）：非空 = 手动钉死；缺省/空串 = 云 metadata 自动探测
+    adv = str(mgr["advertise_host"]).strip() if "advertise_host" in mgr else ""
+    if adv:
+        cfg.advertise_host = adv
+    else:
+        cfg.advertise_host = _detect_public_ip()
+        if cfg.advertise_host:
+            print(f"[config] advertise_host 自动探测：{cfg.advertise_host}")
     if not cfg.docker_user:
         # 缺省 = 管理面用户的 uid + 主组 gid（容器内大脑与管理面同用户——
         # /data 落盘属主一致，投信/观察台 token 签发等管理面写入不受 root
