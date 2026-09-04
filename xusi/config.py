@@ -66,8 +66,10 @@ class XusiConfig:
                                  # docker 环境）。创建对话框预选此值，可逐次覆盖。
     docker_pip_index: str | None = None  # docker 镜像构建/运行时的 PyPI 镜像：
                                  # None = 内置默认（清华）；"" = 关闭镜像走 pypi.org。
-    docker_apt_mirror: str = ""    # 可选：debian 源镜像（如 mirrors.tencentyun.com），
-                                 # 仅构建期生效，不影响镜像可移植。
+    docker_apt_mirror: str = "mirrors.tencentyun.com"  # debian 源镜像（仅构建期生效，
+                                 # 不影响镜像可移植）。三态：键缺失 = 国内腾讯默认
+                                 # （大陆机器开箱即用）；"" = 显式关闭走
+                                 # deb.debian.org（海外机器）；非空 = 指定镜像主机。
     docker_extras: str = ""        # 可选：能力包名（如 amem），构建期烘培其重依赖进镜像。
     docker_user: str = ""          # 容器运行用户 "<uid>:<gid>"。缺省 = 管理面进程的
                                  # uid:gid（容器内大脑与管理面同用户，能力与 systemd

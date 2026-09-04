@@ -85,6 +85,11 @@ rename → 改注册表 `source_version` → spawn。区别只在拉起那一步
 - **构建失败**：输出尾部在错误信息里（含 selftest 失败点）；create 会全量
   回滚，start/reconcile 可重试。构建参数镜像源在 `etc/xusi.toml` 的
   `[manager]` 段（`docker_pip_index` / `docker_apt_mirror` / `docker_extras`）。
+- **大陆机器新装 docker 的两个源坑**：① `docker pull` 基础镜像走 Docker Hub
+  慢/不通——这是 daemon 级配置，xusi 代码管不到：`/etc/docker/daemon.json`
+  配 `registry-mirrors` 后 `sudo systemctl restart docker`；② apt/pip 源由
+  xusi 渲染进构建，缺省即国内镜像（apt 腾讯 / pip 清华），无需任何配置——
+  海外机器显式设空串 `docker_apt_mirror = ""`、`docker_pip_index = ""` 关闭。
 - **healthcheck unhealthy ≠ 停止**：host 网络下 healthcheck 打的是宿主机
   回环 `/v1/health`；暂停（SIGSTOP）期间它会失败但只标记 unhealthy，
   不会触发重启。
