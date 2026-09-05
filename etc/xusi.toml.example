@@ -32,7 +32,7 @@ display_timezone = "Asia/Shanghai"
 # 新建 agent 的缺省运行时（创建对话框预选此值，可逐次覆盖）：
 #   systemd = 系统进程（默认，systemd --user 瞬态单元）
 #   docker  = 容器（host 网络；需内核 ≥ v2.7.19 + docker 环境）
-default_runtime = "systemd"
+default_runtime = "docker"
 
 # docker 镜像构建/运行时的 PyPI 镜像（仅 docker 运行时生效）：
 #   不写此行 = 内置默认（清华镜像）；空串 "" = 关闭镜像走 pypi.org

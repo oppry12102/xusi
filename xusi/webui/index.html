@@ -160,10 +160,9 @@
   </div>
   <div id="hstate" class="hint" style="color:var(--sub);font-size:12.5px"></div>
   <button id="btn-logout" hidden>退出</button>
-  <select id="sel-scope" title="看板范围：本机 / 远端机器（切换后卡片与操作都作用于所选范围）">
+  <select id="sel-scope" title="看板范围：本机 / 远端机器（切换后卡片与操作都作用于所选范围；配置在节点界面里）">
     <option value="local">本机</option>
   </select>
-  <button id="btn-hosts">⛭ 远端机器</button>
   <button id="btn-new" class="pri">＋ 新建 agent</button>
 </header>
 
@@ -186,6 +185,19 @@
       会话索引读磁盘，agent 停机也能看）。
       互联是 xuseek 内核<b>自家业务</b>（根智能体 + [[roots]] 出生交割，见内核 docs/interconnect.md）——xusi 不参与。
     </div>
+    <div style="border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin-top:12px">
+      <div style="font-weight:650;margin-bottom:8px">远端机器 <span style="font-weight:400;color:var(--sub);font-size:12.5px">多副本零管理的机器簿（etc/hosts.toml，与 CLI 同源）</span></div>
+      <table class="jt" style="width:100%">
+        <thead><tr><th>名字</th><th>IP / 域名</th><th>SSH 端口</th><th>用户</th><th>密码</th><th>代理（可选）</th><th></th></tr></thead>
+        <tbody id="hosts-body"></tbody>
+      </table>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <button onclick="addHostRow()">＋ 添加</button>
+        <button class="pri" id="hosts-save">保存机器清单</button>
+        <span class="hint" style="color:var(--sub);font-size:12px">密码先明文（600）；代理 socks5h://…/http://… 与直连自动竞速；保存后看板下拉框即刻生效</span>
+      </div>
+      <div class="err" id="hosts-err" hidden></div>
+    </div>
   </div>
   <div class="dlg-f"><button onclick="document.getElementById('dlg-node').close()">关闭</button></div>
 </dialog>
@@ -199,26 +211,6 @@
     <div class="err" id="rename-err" hidden></div>
   </div>
   <div class="dlg-f"><button onclick="document.getElementById('dlg-rename').close()">取消</button><button class="pri" id="rename-go">保存</button></div>
-</dialog>
-
-<!-- 远端机器（多副本零管理的机器簿） -->
-<dialog id="dlg-hosts">
-  <div class="dlg-h">远端机器 <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">多副本零管理的机器簿（etc/hosts.toml，与 CLI 同源）</span>
-    <button onclick="document.getElementById('dlg-hosts').close()" style="margin-left:auto">✕</button></div>
-  <div class="dlg-b">
-    <table class="jt" style="width:100%">
-      <thead><tr><th>名字</th><th>IP / 域名</th><th>SSH 端口</th><th>用户</th><th>密码</th><th>代理（可选）</th><th></th></tr></thead>
-      <tbody id="hosts-body"></tbody>
-    </table>
-    <div style="margin-top:8px"><button onclick="addHostRow()">＋ 添加</button></div>
-    <div class="hint" style="color:var(--sub);font-size:12px;margin-top:8px">
-      密码先明文（文件 600 权限）；也可用 SSH key。代理（可选）填 <span class="mono">socks5h://host:port</span>
-      或 <span class="mono">http://host:port</span>——与直连自动竞速选快（跳板 via 暂只在 toml 里配）。
-      保存后 CLI 的 <span class="mono">xusi remote …</span> 与远程接入（install / create / status）即按此清单工作。
-    </div>
-    <div class="err" id="hosts-err" hidden></div>
-  </div>
-  <div class="dlg-f"><button onclick="document.getElementById('dlg-hosts').close()">取消</button><button class="pri" id="hosts-save">保存</button></div>
 </dialog>
 
 <main>
@@ -426,7 +418,6 @@ loadNode();
 document.getElementById("btn-node").onclick = openNodeDialog;
 document.getElementById("btn-new").onclick = openNew;
 document.getElementById("btn-logout").onclick = logout;
-document.getElementById("btn-hosts").onclick = openHosts;
 document.getElementById("hosts-save").onclick = saveHosts;
 document.getElementById("tip-login").onclick = login;
 document.getElementById("tip-tok").addEventListener("keydown",
@@ -494,6 +485,7 @@ function openNodeDialog() {
     b.onclick = () => { document.getElementById("dlg-node").close(); openRenameDialog(); };
     acts.appendChild(b);
   }
+  if (meAdmin && tok) loadHostsTable();   // 远端机器簿（节点界面内的配置段）
   document.getElementById("dlg-node").showModal();
 }
 
@@ -514,8 +506,8 @@ async function doRename() {
   } catch (e) { $("#rename-err").textContent = String(e.message || e); $("#rename-err").hidden = false; }
 }
 
-/* ── 远端机器（多副本零管理的机器簿）────────────────────── */
-async function openHosts() {
+/* ── 远端机器（多副本零管理的机器簿，嵌在节点界面里）────── */
+async function loadHostsTable() {
   $("#hosts-err").hidden = true;
   $("#hosts-body").innerHTML = "";
   try {
@@ -525,7 +517,6 @@ async function openHosts() {
     $("#hosts-err").textContent = String(e.message || e);
     $("#hosts-err").hidden = false;
   }
-  document.getElementById("dlg-hosts").showModal();
 }
 
 function addHostRow(h = {}) {
@@ -556,7 +547,8 @@ async function saveHosts() {
   });
   try {
     await api("/api/hosts", {method: "PUT", body: JSON.stringify({hosts})});
-    document.getElementById("dlg-hosts").close();
+    await loadScopes();            // 看板范围下拉框立即反映新清单
+    $("#hosts-err").hidden = true;
   } catch (e) {
     $("#hosts-err").textContent = String(e.message || e);
     $("#hosts-err").hidden = false;
