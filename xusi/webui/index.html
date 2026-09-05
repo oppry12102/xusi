@@ -106,6 +106,8 @@
   #tabs{display:flex;gap:2px;padding:0 12px;border-bottom:1px solid var(--line);overflow-x:auto}
   #tabs button{border:none;border-radius:8px 8px 0 0;padding:8px 13px;color:var(--sub)}
   #tabs button.on{color:var(--acc);box-shadow:inset 0 -2px var(--acc)}
+  #sel-scope{border:1px solid var(--line);border-radius:8px;padding:5px 8px;background:#fff;
+    color:var(--ink);font-size:12.5px;max-width:190px}
   #pane{flex:1;overflow:auto;padding:14px 18px;font-size:13px}
   #pane pre{background:#f6f7fa;border-radius:8px;padding:10px;font-size:12px;overflow:auto;
             font-family:var(--mono);white-space:pre-wrap;word-break:break-all}
@@ -158,6 +160,9 @@
   </div>
   <div id="hstate" class="hint" style="color:var(--sub);font-size:12.5px"></div>
   <button id="btn-logout" hidden>退出</button>
+  <select id="sel-scope" title="看板范围：本机 / 远端机器（切换后卡片与操作都作用于所选范围）">
+    <option value="local">本机</option>
+  </select>
   <button id="btn-hosts">⛭ 远端机器</button>
   <button id="btn-new" class="pri">＋ 新建 agent</button>
 </header>
@@ -202,13 +207,14 @@
     <button onclick="document.getElementById('dlg-hosts').close()" style="margin-left:auto">✕</button></div>
   <div class="dlg-b">
     <table class="jt" style="width:100%">
-      <thead><tr><th>名字</th><th>IP / 域名</th><th>SSH 端口</th><th>用户</th><th>密码</th><th></th></tr></thead>
+      <thead><tr><th>名字</th><th>IP / 域名</th><th>SSH 端口</th><th>用户</th><th>密码</th><th>代理（可选）</th><th></th></tr></thead>
       <tbody id="hosts-body"></tbody>
     </table>
     <div style="margin-top:8px"><button onclick="addHostRow()">＋ 添加</button></div>
     <div class="hint" style="color:var(--sub);font-size:12px;margin-top:8px">
-      密码先明文（文件 600 权限）；也可用 SSH key。保存后 CLI 的 <span class="mono">xusi remote …</span>
-      与远程接入（install / create / status）即按此清单工作。
+      密码先明文（文件 600 权限）；也可用 SSH key。代理（可选）填 <span class="mono">socks5h://host:port</span>
+      或 <span class="mono">http://host:port</span>——与直连自动竞速选快（跳板 via 暂只在 toml 里配）。
+      保存后 CLI 的 <span class="mono">xusi remote …</span> 与远程接入（install / create / status）即按此清单工作。
     </div>
     <div class="err" id="hosts-err" hidden></div>
   </div>
@@ -242,6 +248,9 @@
       <button id="f-tab-blank-btn" class="on" data-tab="blank">空白新建</button>
       <button id="f-tab-clone-btn" data-tab="clone">从备份克隆</button>
     </div>
+
+    <div><label>目标机器（本机 = 这台管理面；远端 = 经 ssh 在目标机创建，同步等待 1-3 分钟）</label>
+      <select id="f-target"><option value="local">本机</option></select></div>
 
     <div id="f-tab-blank">
       <div><label>名称</label><input id="f-name" type="text" placeholder="如：astronomy（仅显示用；id 一律 agent-xxxx）"></div>
@@ -528,6 +537,8 @@ function addHostRow(h = {}) {
     const td = document.createElement("td"); td.appendChild(inp); tr.appendChild(td); });
   const pw = mk(h.password ?? "", "先明文（600）"); pw.type = "password";
   const td1 = document.createElement("td"); td1.appendChild(pw); tr.appendChild(td1);
+  const px = mk(h.proxy ?? "", "如 socks5h://127.0.0.1:1080");
+  const td1b = document.createElement("td"); td1b.appendChild(px); tr.appendChild(td1b);
   const rm = document.createElement("button"); rm.textContent = "✕"; rm.title = "删除此行";
   rm.onclick = () => tr.remove();
   const td2 = document.createElement("td"); td2.appendChild(rm); tr.appendChild(td2);
@@ -536,10 +547,12 @@ function addHostRow(h = {}) {
 
 async function saveHosts() {
   const hosts = [...document.querySelectorAll("#hosts-body tr")].map(tr => {
-    const [name, host, port, user, pw] = tr.querySelectorAll("input");
-    return {name: name.value.trim(), host: host.value.trim(),
-            port: parseInt(port.value, 10) || 22,
-            user: user.value.trim(), password: pw.value};
+    const [name, host, port, user, pw, px] = tr.querySelectorAll("input");
+    const rec = {name: name.value.trim(), host: host.value.trim(),
+                 port: parseInt(port.value, 10) || 22,
+                 user: user.value.trim(), password: pw.value};
+    if (px.value.trim()) rec.proxy = px.value.trim();
+    return rec;
   });
   try {
     await api("/api/hosts", {method: "PUT", body: JSON.stringify({hosts})});
@@ -550,6 +563,33 @@ async function saveHosts() {
   }
 }
 
+/* ── 看板范围：本机 / 远端机器 ───────────────────────── */
+let scope = "local";
+let hostsCache = [];
+
+async function loadScopes() {
+  if (me?.role !== "admin") return;
+  try { hostsCache = (await api("/api/hosts")).hosts || []; }
+  catch (e) { hostsCache = []; }
+  const sel = $("#sel-scope");
+  sel.innerHTML = `<option value="local">本机</option>` +
+    hostsCache.map(h => `<option value="${esc(h.name)}">${esc(h.name)}</option>`).join("");
+  if (![...sel.options].some(o => o.value === scope)) scope = "local";
+  sel.value = scope;
+  sel.hidden = !hostsCache.length;
+}
+
+function setPoll() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (tok) pollTimer = setInterval(refresh, scope === "local" ? 15000 : 30000);
+}
+$("#sel-scope").addEventListener("change", e => {
+  scope = e.target.value;
+  closeDetail();
+  setPoll();
+  refresh();
+});
+
 const fmtT = s => s ? new Date(s.replace("Z", "") + "Z").toLocaleString("zh-CN", {hour12: false}) : "-";
 const fmtDur = s => { if (!s) return "-"; const d = new Date(s); const ms = Date.now() - d.getTime();
   if (ms < 0 || isNaN(ms)) return "-"; const m = Math.floor(ms / 60000);
@@ -558,20 +598,88 @@ const fmtDur = s => { if (!s) return "-"; const d = new Date(s); const ms = Date
 /* ── 看板 ─────────────────────────────────────────── */
 async function refresh(first = false) {
   if (!tok) { setLogin(); return; }
-  if (first && !pollTimer) pollTimer = setInterval(refresh, 15000);
+  if (first && !pollTimer) setPoll();
   try {
-    const [h, who, list] = await Promise.all([
+    const [h, who] = await Promise.all([
       fetch("/api/health").then(r => r.json()),
-      api("/api/whoami"), api("/api/agents")]);
+      api("/api/whoami")]);
     me = who;
     meAdmin = (who.role === "admin");
     $("#ver").textContent = "v" + h.version;
-    $("#hstate").textContent = `管理员 · ${list.length} 个 agent`;
     $("#btn-logout").hidden = false;
     $("#login-tip").hidden = true;
-    agentsCache = list;
-    renderCards(list);
+    await loadScopes();
+    if (scope === "local") {
+      const list = await api("/api/agents");
+      agentsCache = list;
+      $("#hstate").textContent = `管理员 · ${list.length} 个 agent`;
+      renderCards(list);
+    } else {
+      await refreshRemote();
+    }
   } catch (e) { if (String(e.message) !== "401") $("#summary").textContent = "⚠ " + e.message; }
+}
+
+async function refreshRemote() {
+  const r = await api(`/api/remote/status?host=${encodeURIComponent(scope)}`);
+  const res = (r.results || [])[0] || {};
+  agentsCache = res.rows || [];
+  $("#hstate").textContent = `远端 ${scope} · ${agentsCache.length} 个 agent`;
+  if (res.error) {
+    $("#summary").textContent = "⚠ " + res.error;
+    if (!res.installed) { renderInstallEmpty(res.adoptable_root); return; }
+    $("#cards").innerHTML =
+      `<div class="hint" style="grid-column:1/-1">无法取得远端状态：${esc(res.error)}</div>`;
+    return;
+  }
+  renderCards(agentsCache);
+}
+
+function renderInstallEmpty(adoptableRoot) {
+  $("#summary").textContent = adoptableRoot
+    ? `${scope} 检测到既有 xusi 部署（${esc(adoptableRoot)}）——可一键收编接管`
+    : `${scope} 尚未接入（远端没有 ~/work/xusi 自洽目录）`;
+  const desc = adoptableRoot
+    ? "收编会：升级其代码到与控制端一致 → 停掉它的 serve（单头原则）→ 既有 agent 原样接管，零迁移。"
+    : "接入会：装 python3.12（deadsnakes PPA）→ 开 linger → 推送代码 → 播种密钥池 → 自检。";
+  const btn = adoptableRoot
+    ? `<button class="pri" id="btn-adopt">一键收编（约 1-2 分钟）</button>`
+    : `<button class="pri" id="btn-install">一键接入（约 2-5 分钟）</button>`;
+  $("#cards").innerHTML = `<div class="hint" style="grid-column:1/-1;display:flex;flex-direction:column;gap:10px;align-items:flex-start">
+    <div>${desc}</div>
+    ${btn}
+    <div class="err" id="install-err" hidden></div>
+  </div>`;
+  if (adoptableRoot) $("#btn-adopt").onclick = adoptRemote;
+  else $("#btn-install").onclick = installRemote;
+}
+
+async function adoptRemote() {
+  $("#btn-adopt").disabled = true; $("#install-err").hidden = true;
+  $("#summary").textContent = `收编 ${scope} 中（升级 + 停服务 + 验证，约 1-2 分钟，请勿关闭页面）…`;
+  try {
+    await api(`/api/remote/adopt?host=${encodeURIComponent(scope)}`, {method: "POST"});
+    alert("收编完成——既有 agent 已接管");
+    refresh();
+  } catch (e) {
+    $("#install-err").textContent = e.message; $("#install-err").hidden = false;
+    $("#btn-adopt").disabled = false;
+    $("#summary").textContent = `收编 ${scope} 失败`;
+  }
+}
+
+async function installRemote() {
+  $("#btn-install").disabled = true; $("#install-err").hidden = true;
+  $("#summary").textContent = `接入 ${scope} 中（apt 装 python3.12 + 推代码 + 自检，约 2-5 分钟，请勿关闭页面）…`;
+  try {
+    await api(`/api/remote/install?host=${encodeURIComponent(scope)}`, {method: "POST"});
+    alert("接入完成");
+    refresh();
+  } catch (e) {
+    $("#install-err").textContent = e.message; $("#install-err").hidden = false;
+    $("#btn-install").disabled = false;
+    $("#summary").textContent = `接入 ${scope} 失败`;
+  }
 }
 
 const DAEMON_STATE_NAMES = {init: "初始化", running_session: "呼吸中", sleeping: "休眠",
@@ -618,6 +726,7 @@ function renderCards(list) {
   if (!list.length) { el.innerHTML = `<div class="hint" style="grid-column:1/-1">还没有 agent —— 点右上角「新建 agent」创建第一个。</div>`; return; }
   el.innerHTML = list.map(a => {
     const ds = a.desired_state, run = (a.process || {}).active === "active";
+    const isR = scope !== "local";
     const acts = [];
     if (ds === "paused") {
       acts.push(`<button onclick="act('${a.id}','resume')">▶ 续跑</button>`);
@@ -634,11 +743,13 @@ function renderCards(list) {
     const stopped = !run && ds !== "paused";
     if (stopped) {
       const ovId = `ov-${a.id}`;
+      // 远端：回滚（restore 对话框）未做——备份直接执行拉回控制端
+      const restoreBtn = isR ? "" : `<button onclick="openRestore('${a.id}')">↺ 回滚</button>`;
       acts.push(`<span class="ov" style="margin-left:auto">
         <button class="ov-btn" onclick="ovToggle('${a.id}', event)" title="备份 / 回滚 / 删除">⋯</button>
         <div class="ov-menu" id="${ovId}" hidden>
           <button onclick="backupOne('${a.id}')">📦 备份</button>
-          <button onclick="openRestore('${a.id}')">↺ 回滚</button>
+          ${restoreBtn}
           <button class="ov-danger ov-del" data-id="${a.id}" data-name="${esc(a.name)}">🗑 删除</button>
         </div></span>`);
     }
@@ -648,10 +759,12 @@ function renderCards(list) {
       ${a.expose ? `<div class="src"><span class="src-exp" title="监听 0.0.0.0 直接对外">外网直连</span></div>` : ""}
       <div class="mission">${esc(a.mission)}</div>
       <div class="row">
-        <span class="chip mono">127.0.0.1:${a.port}</span>
+        <span class="chip mono">${esc(a.listen_host || "127.0.0.1")}:${a.port}</span>
         ${(a.brains || []).map((b, i) => i === 0
           ? `<b class="chip bcur" title="默认大脑">${esc(b)}</b>`
-          : `<span class="chip bclk" data-id="${a.id}" data-brain="${esc(b)}" title="点击切换为默认大脑（下次呼吸生效，不重启）">${esc(b)}</span>`).join("")}
+          : (isR
+            ? `<span class="chip">${esc(b)}</span>`
+            : `<span class="chip bclk" data-id="${a.id}" data-brain="${esc(b)}" title="点击切换为默认大脑（下次呼吸生效，不重启）">${esc(b)}</span>`)).join("")}
       </div>
       <div class="row">
         <span>自动重启 <b>${(a.process || {}).auto_restarts ?? 0}</b></span>
@@ -716,12 +829,24 @@ function setPane(html) {
 }
 
 async function act(id, action) {
-  if (!confirm(`确认对 ${id} 执行「${action}」？`)) return;
-  try { await api(`/api/agents/${id}/${action}`, {method: "POST"}); refresh(); }
+  if (!confirm(`确认对 ${scope === "local" ? id : scope + " / " + id} 执行「${action}」？`)) return;
+  const path = scope === "local"
+    ? `/api/agents/${id}/${action}`
+    : `/api/remote/agents/${id}/${action}?host=${encodeURIComponent(scope)}`;
+  try { await api(path, {method: "POST"}); refresh(); }
   catch (e) { alert(e.message); }
 }
 
 async function del(id, name) {
+  if (scope !== "local") {
+    const v = prompt(`删除远端（${scope}）agent「${name}」(${id})。\n将从远端注册表除名，实例目录移入 .trash。\n输入 yes 确认：`);
+    if (v !== "yes") return;
+    try {
+      await api(`/api/remote/agents/${id}/delete?host=${encodeURIComponent(scope)}`, {method: "POST"});
+      refresh(); if (cur === id) closeDetail();
+    } catch (e) { alert(e.message); }
+    return;
+  }
   try {
     const s = await api(`/api/agents/${id}`);
     if ((s.process || {}).active === "active") {
@@ -738,6 +863,7 @@ async function del(id, name) {
 
 async function switchDefault(id, name) {
   if (me?.role !== "admin") return;                       // 与 openEdit 同口径
+  if (scope !== "local") return;                          // 远端改参未建（大脑切换 = PATCH）
   const a = agentsCache.find(x => x.id === id);
   const rest = (a?.brains || []).filter(b => b !== name);
   if (!rest.length) return;
@@ -800,6 +926,12 @@ async function openNew() {
   $("#f-roots").innerHTML = "";
   $("#f-cerr").textContent = "";
   $("#f-cbkey").innerHTML = `<option value="">（加载中…）</option>`;
+  // 目标机器：本机 / 每台远端（缺省 = 当前看板范围）
+  const tgt = $("#f-target");
+  tgt.innerHTML = `<option value="local">本机</option>` +
+    hostsCache.map(h => `<option value="${esc(h.name)}">${esc(h.name)}</option>`).join("");
+  tgt.value = scope;
+  onTargetChange();
   switchNewTab("blank");
   try {
     const [bs, ps, vs] = await Promise.all([api("/api/brains"), api("/api/ports/available?count=12"), api("/api/versions")]);
@@ -852,11 +984,20 @@ async function loadCloneBackups() {
 }
 
 function switchNewTab(tab) {
+  if (tab === "clone" && $("#f-target").value !== "local") return;   // 克隆暂只支持本机
   $("#f-tab-blank-btn").classList.toggle("on", tab === "blank");
   $("#f-tab-clone-btn").classList.toggle("on", tab === "clone");
   $("#f-tab-blank").hidden = tab !== "blank";
   $("#f-tab-clone").hidden = tab !== "clone";
 }
+
+function onTargetChange() {
+  const remote = $("#f-target").value !== "local";
+  $("#f-tab-clone-btn").hidden = remote;      // 从备份克隆 = 本机恢复，远端未做
+  if (remote) switchNewTab("blank");
+  $("#f-tab-blank-btn").hidden = false;
+}
+$("#f-target").addEventListener("change", onTargetChange);
 $("#f-tab-blank-btn").onclick = () => switchNewTab("blank");
 $("#f-tab-clone-btn").onclick = () => switchNewTab("clone");
 // 新 agent 的 id 前缀统一 agent-<4位hex>（与后端 gen_id 同款；克隆也是新 agent）
@@ -896,9 +1037,18 @@ async function createBlank() {
   const sv = $("#f-version").value; if (sv) body.source_version = sv;
   const rt = $("#f-runtime").value; if (rt && rt !== "systemd") body.runtime = rt;
   $("#btn-create").disabled = true; $("#f-err").textContent = "";
+  const target = $("#f-target").value;
   try {
-    const a = await api("/api/agents", {method: "POST", body: JSON.stringify(body)});
-    dlgNew.close(); refresh(); openDetail(a.id);
+    if (target === "local") {
+      const a = await api("/api/agents", {method: "POST", body: JSON.stringify(body)});
+      dlgNew.close(); refresh(); openDetail(a.id);
+    } else {
+      $("#f-err").textContent = "远端创建中（首启装依赖 1-3 分钟，请勿关闭对话框）…";
+      const r = await api(`/api/remote/agents?host=${encodeURIComponent(target)}`,
+                          {method: "POST", body: JSON.stringify(body)});
+      dlgNew.close(); refresh();
+      if (r.agent?.id) openDetail(r.agent.id);
+    }
   } catch (e) { $("#f-err").textContent = e.message; }
   finally { $("#btn-create").disabled = false; }
 }
@@ -934,6 +1084,16 @@ async function backupOne(id) {
   const a = agentsCache.find(x => x.id === id);
   if (!a || (a.process || {}).active === "active" || a.desired_state === "paused") {
     alert("agent 必须在停止态才能备份");
+    return;
+  }
+  if (scope !== "local") {
+    // 远端备份直接执行：远端出包 → scp 拉回控制端 etc/remote-backups/
+    if (!confirm(`备份远端（${scope}）agent「${a.name}」并拉回控制端？`)) return;
+    try {
+      const r = await api(`/api/remote/agents/${id}/backup?host=${encodeURIComponent(scope)}`,
+                          {method: "POST"});
+      alert(`已备份并拉回控制端：${r.name}`);
+    } catch (e) { alert(e.message); }
     return;
   }
   $("#bk-id").textContent = `${a.name} (${id})`;
@@ -1022,28 +1182,46 @@ $("#btn-restore-go").onclick = async () => {
 
 /* ── 详情抽屉 ─────────────────────────────────────── */
 const TABS = ["状态", "事件", "会话", "信箱", "工具", "Boot", "日志"];
+// 远端详情：事件/工具（/v1/events 进程内存直播）、Boot、日志不反代——只留文件通道
+const REMOTE_TABS = ["状态", "信箱", "会话"];
 async function openDetail(id) {
   cur = id; curTab = "状态";
   drawer.classList.add("open");
+  const isR = scope !== "local";
   const editBtn = $("#d-edit");
-  editBtn.hidden = me?.role !== "admin";
+  editBtn.hidden = me?.role !== "admin" || isR;   // 远端改参未建
   editBtn.title = "改参（admin）";
-  $("#tabs").innerHTML = TABS.map(t => `<button data-t="${t}" onclick="switchTab('${t}')">${t}</button>`).join("");
+  $("#d-id").textContent = isR ? `${scope} / ${id}` : id;
+  $("#tabs").innerHTML = (isR ? REMOTE_TABS : TABS)
+    .map(t => `<button data-t="${t}" onclick="switchTab('${t}')">${t}</button>`).join("");
   // 观测台直连链接（浏览器直连 agent 端口，不走管理面反代；token 缺失自动签发）
   const ui = $("#d-ui");
   ui.style.display = "";
   ui.style.pointerEvents = "";
   ui.style.opacity = "";
   try {
-    const u = await api(`/api/agents/${id}/ui-url`);
-    if (id !== cur) return;
-    const host = location.hostname || "127.0.0.1";
-    ui.href = `http://${host}:${u.port}/ui/?token=${encodeURIComponent(u.token)}`;
-    ui.title = u.active
-      ? (u.expose ? "打开 agent 观测台（直连 agent 端口）"
-                  : "打开 agent 观测台（直连；agent 仅监听本机——远程浏览器需 SSH 隧道）")
-      : "agent 未运行——启动后可打开观测台";
-    if (!u.active) { ui.style.pointerEvents = "none"; ui.style.opacity = ".45"; }
+    if (isR) {
+      const r = await api(`/api/remote/agents/${id}/observe-token?host=${encodeURIComponent(scope)}`,
+                          {method: "POST"});
+      if (id !== cur) return;
+      const hrec = hostsCache.find(h => h.name === scope);
+      const a = agentsCache.find(x => x.id === id);
+      const rHost = hrec?.host || "";
+      ui.href = `http://${rHost}:${a?.port}/ui/?token=${encodeURIComponent(r.token)}`;
+      ui.title = rHost
+        ? `打开 agent 观测台（直连远端 ${rHost}:${a?.port}——浏览器需可达该机器）`
+        : "打开 agent 观测台（直连远端 agent 端口）";
+    } else {
+      const u = await api(`/api/agents/${id}/ui-url`);
+      if (id !== cur) return;
+      const host = location.hostname || "127.0.0.1";
+      ui.href = `http://${host}:${u.port}/ui/?token=${encodeURIComponent(u.token)}`;
+      ui.title = u.active
+        ? (u.expose ? "打开 agent 观测台（直连 agent 端口）"
+                    : "打开 agent 观测台（直连；agent 仅监听本机——远程浏览器需 SSH 隧道）")
+        : "agent 未运行——启动后可打开观测台";
+      if (!u.active) { ui.style.pointerEvents = "none"; ui.style.opacity = ".45"; }
+    }
   } catch (e) {
     ui.style.display = "none";   // 取不到入口就不露链接
   }
@@ -1062,6 +1240,34 @@ async function loadDetail() {
   [...$("#tabs").children].forEach(b => b.classList.toggle("on", b.dataset.t === curTab));
   try {
     if (curTab === "状态") {
+      if (scope !== "local") {
+        const s = await api(`/api/remote/agents/${id}?host=${encodeURIComponent(scope)}`);
+        if (id !== cur) return;
+        $("#d-nm").textContent = s.name; $("#d-id").textContent = `${scope} / ${id}`;
+        const roots = s.roots || [];
+        const rootsRow = roots.length
+          ? `<b>根智能体</b><span>${roots.map(r =>
+              `<span class="mono">${esc(r.address)}</span> · token ${esc(String(r.token || "").slice(0, 6))}…`).join("；")}</span>`
+          : "";
+        setPane(
+`
+        <div class="kv">
+          <b>id</b><span class="mono">${esc(id)}</span>
+          <b>期望态</b><span>${esc(s.desired_state)}</span>
+          <b>运行时</b><span>${(s.runtime || "systemd") === "docker" ? "Docker 容器（host 网络）" : "systemd 单元（系统进程）"}</span>
+          <b>进程单元</b><span>${s.process?.active}/${esc(s.process?.sub || "")} · 自动重启 ${s.process?.auto_restarts ?? 0} · 在线 ${fmtDur(s.process?.active_since)}</span>
+          <b>呼吸</b><span>${daemonRowHtml(s)}</span>
+          <b>监听</b><span class="mono">${esc(s.listen_host)}:${s.port}${s.expose ? "（外网直连）" : "（仅本机）"}</span>
+          <b>大脑</b><span>${(s.brains || []).map(esc).join(" → ")}</span>
+          <b>源码</b><span>xuseek-v2 ${esc(s.source_version)}（实例私有副本）</span>
+          <b>使命</b><span>${esc(s.mission)}</span>
+          ${s.note ? `<b>备注</b><span>${esc(s.note)}</span>` : ""}
+          ${rootsRow}
+          <b>观察</b><span style="color:var(--sub)">远端 CLI-only 观察：事件流/工具统计/Boot/日志不反代——「观测台 ↗」直连看全貌。</span>
+        </div>`
+      );
+        return;
+      }
       const s = await api(`/api/agents/${id}`);
       if (id !== cur) return;
       $("#d-nm").textContent = s.name; $("#d-id").textContent = id;
@@ -1110,6 +1316,14 @@ async function loadDetail() {
         return `<div class="ev"><span class="t">${fmtT(t)} · ${esc(k)}</span><br>${body}</div>`;
       }).join("") || "<p>（事件流为空：agent 刚启动，或进程重启过——事件仅存于内存）</p>");
     } else if (curTab === "会话") {
+      if (scope !== "local") {
+        // 远端会话 = ssh tail 读磁盘 sessions.jsonl（文件通道，不反代）
+        const r = await api(`/api/remote/agents/${id}/sessions?limit=30&host=${encodeURIComponent(scope)}`);
+        if (id !== cur) return;
+        const ss = r.sessions || [];
+        setPane(ss.map(s => sessRowHtml(s)).join("") || "<p>（还没有完成的呼吸）</p>");
+        return;
+      }
       // 每口呼吸一条：点行展开完整总结（final_summary，markdown 渲染）
       // status 观察失败（agent 停机/无 token）时静默降级：banner 不显示，磁盘会话照常
       const [r, st] = await Promise.all([
@@ -1124,6 +1338,23 @@ async function loadDetail() {
         (running ? `<div class="mailrow" style="border-color:var(--acc)"><b>呼吸进行中</b> <span class="t">${esc(curId || "")}</span>——本口呼吸结束后出现在下方列表</div>` : "") +
         ss.map(s => sessRowHtml(s)).join("") || (!running ? "<p>（还没有完成的呼吸）</p>" : ""));
     } else if (curTab === "信箱") {
+      if (scope !== "local") {
+        const [o, m] = await Promise.all([
+          api(`/api/remote/agents/${id}/mailbox?box=outbox&limit=50&host=${encodeURIComponent(scope)}`),
+          api(`/api/remote/agents/${id}/mailbox?box=inbox&limit=50&host=${encodeURIComponent(scope)}`)]);
+        if (id !== cur) return;
+        setPane(
+`
+        <h4 style="margin:4px 0 6px">投信（追加 mailbox.jsonl，休眠中 5s 内唤醒——唯一的写通道）</h4>
+        <div class="sendbox"><textarea id="m-txt" placeholder="给大脑写信…（改 mission / 换大脑 / 调预算都在这里）"></textarea>
+          <button class="pri" onclick="sendMail('${id}')">投递</button></div>
+        <h4 style="margin:12px 0 6px">来信（大脑 → 管理员）</h4>
+        ${(o.messages || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)} · ${esc(x.sender || "brain")}</div>${esc(x.text)}</div>`).join("") || "<p class='hint'>（大脑还没有来信——它有话想说时会出现在这里）</p>"}
+        <h4 style="margin:12px 0 6px">投信历史（管理员 → 大脑）</h4>
+        ${(m.messages || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)}</div>${esc(x.text)}</div>`).join("") || "<p class='hint'>（还没有投过信）</p>"}`
+      );
+        return;
+      }
       const [o, m] = await Promise.all([
         api(`/api/agents/${id}/mailbox?box=outbox&limit=50`),
         api(`/api/agents/${id}/mailbox?box=inbox&limit=50`)]);
@@ -1159,7 +1390,10 @@ async function loadDetail() {
 
 async function sendMail(id) {
   const t = $("#m-txt").value.trim(); if (!t) return;
-  try { await api(`/api/agents/${id}/mail`, {method: "POST", body: JSON.stringify({text: t})});
+  const path = scope === "local"
+    ? `/api/agents/${id}/mail`
+    : `/api/remote/agents/${id}/mail?host=${encodeURIComponent(scope)}`;
+  try { await api(path, {method: "POST", body: JSON.stringify({text: t})});
     $("#m-txt").value = ""; loadDetail(); } catch (e) { alert(e.message); }
 }
 
