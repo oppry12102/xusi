@@ -6,23 +6,57 @@
 # etc/brains.toml 已被 .gitignore 排除，密钥永不入库。
 # 创建/改参 agent 时按所选大脑把模板（含 key）直写进该 agent 的 config.toml（600）。
 # 轮换 key：改这里后在管理界面对 agent 做任意 PATCH 触发重渲染，热重载即时生效。
+#
+# 条目形状：每模型一个 [brains.<条目名>] 表，条目名 = 模型名——同厂不同模型
+# 配置可能不同（窗口/档位/价格），不合并条目，参数各自写全。
+# 注意：条目名含点的（glm-5.3）段头必须逐段引号 [brains."glm-5.3"]——
+# 裸段头里的点是分层符，会解析成嵌套表；整串引号又变成单字面键。
+# （历史遗留：厂商段 models = ["model-a", "model-b"] 平级展开仍被代码接受，新池不再使用。）
+#
+# 可选字段（按需写全）：
+#   tier              power/economy（档位是经济映射，未标注视同 power）
+#   context_window    该模型上下文窗口 tokens（护栏按同档可用脑最小窗口 − 8k 派生存量预算）
+#   temperature       数字；或 "default" = 请求不带该参数（如 kimi 只允许服务端默认）
+#   timeout           秒（默认 180）
+#   price_prompt / price_completion  CNY/1K tokens（成本观测用）
+#   note              该脑给智能体的使用提示，渲染成 config 注释（如"免费（自托管）"）
 # ═══════════════════════════════════════════════════════════════════
 
-# models 列表 = 一家 key 多个平级大脑（展开为每模型一个池条目，不分级；
-# 条目名 = 模型名，其余字段继承厂商段）
-[brains.deepseek]
+# ── DeepSeek：一个 key 两个模型，各自一条目 ──
+
+[brains.deepseek-v4-pro]
 api_key = ""
 base_url = "https://api.deepseek.com"
-models = ["deepseek-v4-pro", "deepseek-v4-flash"]
+model = "deepseek-v4-pro"
 tier = "power"
 context_window = 1048576
+note = "推理模型：reasoning 吃输出预算，max_tokens 过小会空回复"
 
-[brains.glm]
+[brains.deepseek-v4-flash]
+api_key = ""
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+tier = "power"
+context_window = 1048576
+note = "推理模型：reasoning 吃输出预算，max_tokens 过小会空回复"
+
+# ── GLM：一个 key 两个模型（段名含点，逐段引号）──
+
+[brains."glm-5.3"]
 api_key = ""
 base_url = "https://api.z.ai/api/coding/paas/v4"
-models = ["glm-5.3", "glm-5.3-flash"]
+model = "glm-5.3"
 tier = "power"
 context_window = 1048576
+note = "推理模型：reasoning 吃输出预算，max_tokens 过小会空回复"
+
+[brains."glm-5.3-flash"]
+api_key = ""
+base_url = "https://api.z.ai/api/coding/paas/v4"
+model = "glm-5.3-flash"
+tier = "power"
+context_window = 1048576
+note = "推理模型：reasoning 吃输出预算，max_tokens 过小会空回复"
 
 # Kimi：仅允许服务端默认 temperature → temperature = "default"（请求不带该参数）
 [brains.kimi]
@@ -40,12 +74,17 @@ model = "MiniMax-M3"
 tier = "power"
 context_window = 1048576
 
-# 新增一家：再写一个 [brains.<名字>] 表（OpenAI 兼容 /chat/completions 即可）。
-# 一家多个模型：models = ["model-a", "model-b"]（平级展开；单模型厂商仍用 model = "…"）。
-# 可选字段：timeout（秒，默认 180）、tier、price_prompt / price_completion（CNY/1K tokens，观测用）、
-# context_window（tokens；各脑窗口不一致。渲染取 default 同档（tier 相同，
-# 未打标签视同 power）已声明窗口的最小值，扣 8k 输出余量折进 [agent] max_context_tokens——
-# 内核缺省 1M，窗口较小的服务会晚于硬错触发护栏）、
-# note（该脑给智能体的使用提示，渲染成 config 注释；如"免费（自托管）"）
-# tier=economy 的脑自动附档位提示（上下文受限、子 agent/批量任务优先）；
-# 是否免费等特有事实写在 note 里，不焊在档位上
+# 自托管示例（economy 档：便宜档批量粗活，主回路不参与轮换）
+# 注意：base_url 不带 /chat/completions——内核会自己拼，带后缀会 404
+[brains.qwen-local]
+api_key = ""
+base_url = "http://192.168.1.10:8000/v1"
+model = "qwen3.8-27b"
+temperature = 1.0
+tier = "economy"
+context_window = 190000
+price_prompt = 0
+price_completion = 0
+note = "免费（自托管）——批量粗活首选"
+
+# 新增一家：再写一个 [brains.<模型名>] 表（OpenAI 兼容 /chat/completions 即可）。
