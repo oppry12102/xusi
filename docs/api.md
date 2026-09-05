@@ -32,6 +32,28 @@
 | `GET /api/hosts` | admin | 远端机器清单（etc/hosts.toml；WebUI「远端机器」页用；**密码先明文回显**） |
 | `PUT /api/hosts` | admin | 整表替换清单（原子写 600；条目字段白名单见 remote.HOST_FIELDS，name/host/user 缺一报 400） |
 
+### 1.1 远端总控（`/api/remote/*`，WebUI 远程总控用）
+
+> 浏览器只连控制端 :8601；所有远端操作由 serve 中转 ssh/scp（远端零管理形态：
+> 无 serve、无端口）。全部 admin 鉴权；远端操作写控制端 audit。
+
+| 端点 | 鉴权 | 说明 |
+|---|---|---|
+| `GET /api/remote/status?host=X` | admin | 单机/全队 agent 状态；每条带 `installed`（远端 ~/xusi 是否存在） |
+| `POST /api/remote/agents?host=X` | admin | 创建（body 与本地 POST /api/agents 完全同构；同步等待 1-3 分钟） |
+| `GET /api/remote/agents/{id}?host=X` | admin | 单个远端 agent 簿记 + 进程态 |
+| `POST /api/remote/agents/{id}/{start\|stop\|pause\|resume\|restart\|delete}?host=X` | admin | 生命周期六件套 |
+| `POST /api/remote/agents/{id}/mail?host=X` | admin | 投信（唯一写通道） |
+| `GET /api/remote/agents/{id}/mailbox?box=outbox\|inbox&limit=50&host=X` | admin | 收信 |
+| `GET /api/remote/agents/{id}/sessions?limit=30&host=X` | admin | 会话索引（ssh 读远端磁盘，不反代） |
+| `POST /api/remote/agents/{id}/observe-token?host=X` | admin | 观察台 token（卡片「观察台 ↗」直连用） |
+| `POST /api/remote/install?host=X` | admin | 一键接入（python3.12+linger+推代码+播种 brains+自检；2-5 分钟，幂等） |
+| `POST /api/remote/adopt?host=X` | admin | 一键收编存量部署（探测根→回写清单→升级→停 serve→验证；幂等） |
+| `POST /api/remote/upgrade?host=X` | admin | 重推代码 tar（管理面升级 / 内核版本发布） |
+| `POST /api/remote/agents/{id}/backup?host=X` | admin | 远端备份 → 拉回 etc/remote-backups/ |
+| `GET /api/remote/backups` | admin | 已拉回的远端备份清单 |
+| `POST /api/remote/restore` | admin | 备份包推上远端恢复（跨主机迁移） |
+
 ## 2. Agent CRUD 与生命周期
 
 | 端点 | 鉴权 | 说明 |
