@@ -364,6 +364,9 @@ def cmd_create(args) -> int:
     from . import agentops
     if getattr(args, "spec", None):
         body = json.loads(Path(args.spec).expanduser().read_text(encoding="utf-8"))
+        # API body 同构翻译：API 字段 brains ↔ agentops 参数 brain_list
+        if "brains" in body:
+            body["brain_list"] = body.pop("brains")
     else:
         body = {
             "name": args.name,
@@ -382,6 +385,9 @@ def cmd_create(args) -> int:
         r = agentops.create_agent(**body)
     except (agentops.AgentError, ValueError, TypeError, OSError) as e:
         return _cli_agent_error(e)
+    if getattr(args, "json", False):
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+        return 0
     print(f"  created       : {r['id']}")
     print(f"  name          : {r['name']}")
     print(f"  port          : {r['port']}")
@@ -429,6 +435,9 @@ def cmd_mailbox(args) -> int:
     except agentops.AgentError as e:
         return _cli_agent_error(e)
     msgs = r["messages"]
+    if getattr(args, "json", False):
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+        return 0
     if not msgs:
         print("(邮箱为空)")
         return 0
@@ -443,6 +452,9 @@ def cmd_observe_token(args) -> int:
         tok = agentops.observe_token(args.agent_id, force_new=bool(args.new))
     except agentops.AgentError as e:
         return _cli_agent_error(e)
+    if getattr(args, "json", False):
+        print(tok)
+        return 0
     print(f"observe token: {tok}")
     print("（观察台 URL 带 ?mtoken=<此 token> 打开即认证）")
     return 0
@@ -525,7 +537,19 @@ def _remote_install(h: dict) -> int:
     except remote.RemoteError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    print(f"  完成：{h['name']} 已接入——零服务、零端口，~/xusi 自洽目录")
+    print(f"  完成：{h['name']} 已接入——零服务、零端口，{h.get('dir', '~/work/xusi')} 自洽目录")
+    return 0
+
+
+def _remote_adopt(h: dict) -> int:
+    from . import remote
+    try:
+        for line in remote.adopt_host(h):
+            print(f"  {line}")
+    except remote.RemoteError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(f"  完成：{h['name']} 已收编——serve 已停（单头原则），既有 agent 已接管")
     return 0
 
 
@@ -536,7 +560,7 @@ def _remote_upgrade(h: dict) -> int:
     except remote.RemoteError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    print(f"  已重推代码：{h['name']}")
+    print(f"  已升级：{h['name']}（git checkout 走 pull / 零管理机走推 tar）")
     return 0
 
 
@@ -590,7 +614,8 @@ usage: xusi remote <cmd> [--on NAME] [参数...]
   mailbox   --on NAME <agent-id> [--limit N] [--box outbox|inbox]
   observe-token --on NAME <agent-id> [--new]
   install   --on NAME                   新机接入：python3.12 + linger + 推代码 + 播种 brains
-  upgrade   --on NAME                   重推代码 tar（管理面升级 / 内核版本发布）
+  adopt     --on NAME                   收编存量部署：升级 → 停 serve → 接管既有 agent
+  upgrade   --on NAME                   重推代码 tar / git pull（管理面升级 / 内核版本发布）
   backup    --on NAME <agent-id> [--out DIR]  远端备份 → 拉回控制端
   restore   --on NAME --from FILE [恢复参数]   备份包推上远端并恢复（跨主机迁移）\
 """
@@ -658,6 +683,8 @@ def cmd_remote(args) -> int:
         return _remote_doctor(hosts)
     if rfn == "install":
         return _remote_install(hosts[0])
+    if rfn == "adopt":
+        return _remote_adopt(hosts[0])
     if rfn == "upgrade":
         return _remote_upgrade(hosts[0])
     if rfn == "backup":
@@ -697,6 +724,7 @@ def main() -> int:
     d_.set_defaults(fn=cmd_doctor)
 
     c_ = sub.add_parser("create", help="创建并启动 agent（进程内直调 agentops）")
+    c_.add_argument("--json", action="store_true", help="输出注册记录 JSON（remote 解析用）")
     c_.add_argument("--spec", default=None,
                     help="整体 JSON 文件（与 POST /api/agents 的 body 同构）")
     c_.add_argument("--name", default="")
@@ -729,6 +757,7 @@ def main() -> int:
 
     mb_ = sub.add_parser("mailbox", help="读 agent 邮箱")
     mb_.add_argument("agent_id")
+    mb_.add_argument("--json", action="store_true", help="输出 messages JSON（remote 解析用）")
     mb_.add_argument("--limit", type=int, default=50)
     mb_.add_argument("--box", choices=("outbox", "inbox"), default="outbox",
                      help="outbox=来信 / inbox=投信历史")
@@ -736,6 +765,7 @@ def main() -> int:
 
     ot_ = sub.add_parser("observe-token", help="签发/轮换观察台 token（CLI-only 机器）")
     ot_.add_argument("agent_id")
+    ot_.add_argument("--json", action="store_true", help="只输出 token 本身（remote 解析用）")
     ot_.add_argument("--new", action="store_true", help="强制轮换新 token")
     ot_.set_defaults(fn=cmd_observe_token)
 
