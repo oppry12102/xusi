@@ -1,23 +1,27 @@
-"""remote —— 控制端 fan-out：多台远端 xusi 的批操作（纯 ssh/scp，零新依赖）。
+"""remote —— 控制端 fan-out：多台远端 xusi 的批操作（纯 ssh/ssh+cat，零新依赖）。
 
 主机清单 etc/hosts.toml（与 WebUI「远端机器」页同源，600 权限）：每台远端
-一条 [[host]]，name 唯一。远端是零管理机器：~/xusi 自洽目录由控制端推送维护
-（remote install），命令 = ssh 过去执行 `<python> -m xusi <cmd>`——远端没有
-serve 进程，CLI 直调 agentops（跨进程并发由 registry.file_lock 兜底）。
+一条 [[host]]，name 唯一。远端是零管理机器：~/work/xusi 自洽目录（全队目录
+统一，与本地部署同构）由控制端推送维护（remote install），命令 = ssh 过去
+执行 `<python> -m xusi <cmd>`——远端没有 serve 进程，CLI 直调 agentops
+（跨进程并发由 registry.file_lock 兜底）。
 
 设计约束：
-- 零新依赖：系统 ssh/scp + sshpass（控制端 apt 一行）；不用 paramiko。
+- 零新依赖：系统 ssh + sshpass（控制端 apt 一行）；不用 paramiko。
 - 控制端不存 admin token——CLI 直调不鉴权 HTTP，鉴权就是 ssh 登录。
 - 推送 tar 结构性排除数据目录（etc/instances/.git/.venv），永不覆盖远端数据。
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shlex
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -25,7 +29,8 @@ from typing import Any
 
 from .config import ROOT, get_config
 
-REMOTE_DIR = "~/xusi"        # 远端自洽目录（per-host 可覆盖 dir=）
+REMOTE_DIR = "~/work/xusi"   # 远端自洽目录（per-host 可覆盖 dir=）——全队统一在
+                             # ~/work/xusi 下，与本地部署/控制端同构（决议 2026-09-05）
 REMOTE_PY = "python3.12"     # 远端 python（deadsnakes 3.12；per-host 可覆盖 python=）
 SSH_TIMEOUT = "15"
 
@@ -39,7 +44,8 @@ def hosts_file() -> Path:
 
 
 # 清单条目白名单（save_hosts 序列化用；未知键丢弃）
-HOST_FIELDS = ("name", "host", "port", "user", "password", "key", "dir", "python", "brains")
+HOST_FIELDS = ("name", "host", "port", "user", "password", "key", "dir", "python",
+               "brains", "via", "proxy")
 
 
 def load_hosts(*, missing_ok: bool = False) -> list[dict]:
@@ -115,46 +121,162 @@ def find_host(name: str) -> dict:
     raise RemoteError(f"清单里没有这台机器：{name}")
 
 
-# ── ssh/scp 通道 ────────────────────────────────────────────────────────
+# ── ssh 通道（ControlMaster 复用 + 链路竞速）─────────────────────────────
+#
+# 实测（海外机直连）：新建连接 2-4s（握手+认证多轮往返），复用通道单命令
+# ~0.6s。所以每条机器一条 ControlMaster 保温长连接（ControlPersist=120s）；
+# 多链路候选（direct/via 跳板/proxy 代理）并行计时探测，最快者当选并缓存
+# etc/link_cache.json（TTL 600s），连接层失败（ssh rc 255/超时）使缓存失效，
+# 下一次调用重新竞速——代理哪天变快会自动换过去。
+#
+# 传输不用 scp：上传 = ssh+cat（单往返）、下载 = ssh+cat（单往返），
+# 免去 scp 的第二条连接。
 
 
-def _ssh_prefix(h: dict) -> list[str]:
+_COMMON_OPTS = ("-o", "BatchMode=no", "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={SSH_TIMEOUT}", "-o", "GSSAPIAuthentication=no")
+
+
+def _mux_path(h: dict, kind: str, opts: dict) -> str:
+    key = (f"{h.get('user')}@{h.get('host')}:{h.get('port', 22)}-{kind}-"
+           f"{opts.get('proxy') or opts.get('relay') or ''}")
+    return f"/tmp/xusi-mux-{hashlib.sha1(key.encode()).hexdigest()[:12]}"
+
+
+def _build_ssh(h: dict, kind: str, opts: dict, remote_cmd: str) -> list[str]:
+    """完整 ssh 命令：ControlMaster 复用 + 按链路（direct/via/proxy）追加选项。"""
     args: list[str] = []
     if h.get("password"):
         args += ["sshpass", "-p", h["password"]]
-    args += ["ssh", "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=accept-new",
-             "-o", f"ConnectTimeout={SSH_TIMEOUT}", "-p", str(h.get("port", 22))]
+    args += ["ssh"] + list(_COMMON_OPTS)
     if h.get("key"):
         args += ["-i", str(Path(h["key"]).expanduser())]
-    args.append(f"{h['user']}@{h['host']}")
+    args += ["-o", "ControlMaster=auto", "-o", f"ControlPath={_mux_path(h, kind, opts)}",
+             "-o", "ControlPersist=120"]
+    if kind == "proxy":
+        m = re.match(r"^(socks5h?|http)://(.+)$", opts.get("proxy", ""))
+        if not m:
+            raise RemoteError(f"proxy 格式应为 socks5h://host:port（或 socks5:// http://）："
+                              f"{opts.get('proxy')!r}")
+        scheme, addr = m.group(1), m.group(2)
+        x = "5" if scheme.startswith("socks") else "connect"
+        args += ["-o", f"ProxyCommand=nc -X {x} -x {addr} %h %p"]
+    elif kind == "via":
+        relay = find_host(opts["relay"])
+        inner = ["ssh"] + list(_COMMON_OPTS) + ["-p", str(relay.get("port", 22)),
+                                                "-W", "%h:%p",
+                                                f"{relay['user']}@{relay['host']}"]
+        if relay.get("key"):
+            inner += ["-i", str(Path(relay["key"]).expanduser())]
+        inner_str = " ".join(inner)
+        if relay.get("password"):
+            inner_str = f"sshpass -p {shlex.quote(relay['password'])} {inner_str}"
+        args += ["-o", f"ProxyCommand={inner_str}"]
+    args += ["-p", str(h.get("port", 22)), f"{h['user']}@{h['host']}", remote_cmd]
     return args
 
 
-def _scp_prefix(h: dict, direction: str) -> list[str]:
-    """direction: "to" → scp 本地→远端；"from" → scp 远端→本地。"""
-    args: list[str] = []
-    if h.get("password"):
-        args += ["sshpass", "-p", h["password"]]
-    args += ["scp", "-o", "StrictHostKeyChecking=accept-new",
-             "-o", f"ConnectTimeout={SSH_TIMEOUT}", "-P", str(h.get("port", 22))]
-    if h.get("key"):
-        args += ["-i", str(Path(h["key"]).expanduser())]
-    if direction == "to":
-        args.append("-q")
-    args.append("")
-    # 占位：调用方替换 args[-1] 为 [src, dst]
-    return args
+def _link_candidates(h: dict) -> list[tuple[str, dict]]:
+    """链路候选：direct 恒在；via（清单里的跳板机）/ proxy（socks5h/socks5/http）
+    配了才参与竞速。"""
+    cands: list[tuple[str, dict]] = [("direct", {})]
+    if h.get("via"):
+        cands.append(("via", {"relay": h["via"]}))
+    if h.get("proxy"):
+        cands.append(("proxy", {"proxy": h["proxy"]}))
+    return cands
+
+
+_LINK_TTL = 600.0
+
+
+def _link_cache_file() -> Path:
+    return get_config().etc_dir / "link_cache.json"
+
+
+def _load_link_cache() -> dict:
+    try:
+        data = json.loads(_link_cache_file().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_link_cache(data: dict) -> None:
+    f = _link_cache_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    tmp = f.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(f)
+
+
+def invalid_link(h: dict) -> None:
+    """连接层失败后失效该机缓存——下一次调用重新竞速（写命令不做自动重试，
+    避免双发；WebUI 30s 轮询自然重试，会走新链路）。"""
+    key = h.get("name") or h.get("host")
+    data = _load_link_cache()
+    if key in data:
+        del data[key]
+        _save_link_cache(data)
+
+
+def _probe(h: dict, kind: str, opts: dict, timeout: int = 18) -> float | None:
+    """计时探测一条链路（冷连接全程：握手+认证+echo）。探测同时把该链路的
+    ControlMaster 保温（ControlPersist）——当选链路即是暖通道，后续命令免握手。"""
+    t0 = time.monotonic()
+    try:
+        cp = subprocess.run(_build_ssh(h, kind, opts, "echo ok"),
+                            capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, FileNotFoundError, RemoteError):
+        return None
+    if cp.returncode != 0:
+        return None
+    return time.monotonic() - t0
+
+
+def resolve_link(h: dict) -> tuple[str, dict]:
+    """链路竞速：多候选时并行探测，最快者当选并缓存（TTL 600s）；全失败回
+    direct。单候选（只有直连）直接返回，不探测。"""
+    cands = _link_candidates(h)
+    if len(cands) == 1:
+        return cands[0]
+    key = h.get("name") or h.get("host")
+    cache = _load_link_cache()
+    ent = cache.get(key) or {}
+    link = ent.get("link")
+    if link and time.time() - float(ent.get("at", 0)) < _LINK_TTL:
+        for kind, opts in cands:
+            if kind == link and opts == ent.get("opts"):
+                return (kind, opts)
+    with ThreadPoolExecutor(max_workers=len(cands)) as ex:
+        futs = {i: ex.submit(_probe, h, kind, opts)
+                for i, (kind, opts) in enumerate(cands)}
+        res = {i: f.result() for i, f in futs.items()}
+    ok = [(t, i) for i, t in res.items() if t is not None]
+    if not ok:
+        return ("direct", {})
+    best_i = min(ok)[1]
+    kind, opts = cands[best_i]
+    cache[key] = {"link": kind, "opts": opts, "at": time.time()}
+    _save_link_cache(cache)
+    return (kind, opts)
 
 
 def run_remote(h: dict, cmd: str, *, timeout: int = 300) -> subprocess.CompletedProcess:
-    """在远端执行一条 shell 命令（非交互，输出捕获）。"""
+    """在远端执行一条 shell 命令（非交互，输出捕获；链路自动竞速）。"""
+    kind, opts = resolve_link(h)
     try:
-        return subprocess.run(_ssh_prefix(h) + [cmd], capture_output=True, text=True,
-                              timeout=timeout)
+        cp = subprocess.run(_build_ssh(h, kind, opts, cmd), capture_output=True,
+                            text=True, timeout=timeout)
     except FileNotFoundError:
-        raise RemoteError("本机缺少 ssh/sshpass——控制端先 sudo apt-get install sshpass")
+        raise RemoteError("本机缺少 ssh/sshpass（或 proxy 链路缺 nc）——控制端先 "
+                          "sudo apt-get install sshpass netcat-openbsd")
     except subprocess.TimeoutExpired:
+        invalid_link(h)
         raise RemoteError(f"远端命令超时（{timeout}s）：{cmd[:80]}")
+    if cp.returncode == 255:
+        invalid_link(h)   # ssh 连接层失败（连不上/认证失败）——下次重新竞速
+    return cp
 
 
 def xusi_cmd(h: dict, argv: list[str], *, timeout: int = 300) -> subprocess.CompletedProcess:
@@ -167,24 +289,30 @@ def xusi_cmd(h: dict, argv: list[str], *, timeout: int = 300) -> subprocess.Comp
 
 
 def scp_to(h: dict, local: Path, remote_path: str) -> None:
+    """上传：ssh + cat 单往返（mkdir 与写文件合并一条命令）。"""
+    kind, opts = resolve_link(h)
     d = remote_path.rsplit("/", 1)[0] if "/" in remote_path else "."
-    cp = run_remote(h, f"mkdir -p {shlex.quote(d)}", timeout=30)
+    cmd = f"mkdir -p {shlex.quote(d)} && cat > {shlex.quote(remote_path)}"
+    try:
+        cp = subprocess.run(_build_ssh(h, kind, opts, cmd), input=local.read_bytes(),
+                            capture_output=True, timeout=180)
+    except FileNotFoundError:
+        raise RemoteError("本机缺少 ssh/sshpass——控制端先 sudo apt-get install sshpass")
     if cp.returncode != 0:
-        raise RemoteError(f"远端建目录失败：{(cp.stderr or '').strip()[:200]}")
-    args = _scp_prefix(h, "to")
-    args[-1] = f"{h['user']}@{h['host']}:{remote_path}"
-    cp = subprocess.run(args[:-1] + [str(local), args[-1]], capture_output=True, text=True)
-    if cp.returncode != 0:
-        raise RemoteError(f"scp 上传失败：{(cp.stderr or '').strip()[:200]}")
+        err = (cp.stderr or b"").decode(errors="replace")[:200]
+        raise RemoteError(f"上传失败：{err}")
 
 
 def scp_from(h: dict, remote_path: str, local: Path) -> None:
-    args = _scp_prefix(h, "from")
-    args[-1] = f"{h['user']}@{h['host']}:{remote_path}"
-    local.parent.mkdir(parents=True, exist_ok=True)
-    cp = subprocess.run(args[:-1] + [args[-1], str(local)], capture_output=True, text=True)
+    """下载：ssh + cat 单往返（stdout 原样落盘，二进制安全）。"""
+    kind, opts = resolve_link(h)
+    cp = subprocess.run(_build_ssh(h, kind, opts, f"cat {shlex.quote(remote_path)}"),
+                        capture_output=True, timeout=300)
     if cp.returncode != 0:
-        raise RemoteError(f"scp 下载失败：{(cp.stderr or '').strip()[:200]}")
+        err = (cp.stderr or b"").decode(errors="replace")[:200]
+        raise RemoteError(f"下载失败：{err}")
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(cp.stdout)
 
 
 # ── 代码 tar（推送载体）─────────────────────────────────────────────────
@@ -226,15 +354,34 @@ def _files_to_remote(h: dict, argv: list[str]) -> list[str]:
 
 
 def remote_status(h: dict, *, timeout: int = 60) -> dict:
-    """单机 status：远端 `xusi status --json` → {host, rows} 或 {host, error}。"""
-    cp = xusi_cmd(h, ["status", "--json"], timeout=timeout)
+    """单机 status：`test -d`、可收编探测与 `xusi status --json` 合并成一条
+    ssh 命令（免二次握手）→ {host, installed, rows} / {host, installed,
+    error} / {host, installed=False, adoptable_root}。"""
+    d = h.get("dir", REMOTE_DIR)
+    py = h.get("python", REMOTE_PY)
+    inner = " ".join(shlex.quote(a) for a in ["status", "--json"])
+    cmd = (f"if [ -d {d} ]; then cd {d} && {py} -m xusi {inner}; "
+           f'else wd=$(systemctl --user cat xusi.service 2>/dev/null '
+           f'| grep -m1 "^WorkingDirectory=" | cut -d= -f2-); '
+           f'if [ -n "$wd" ]; then echo __XUSI_ADOPTABLE__ "$wd"; '
+           f'else echo __XUSI_NOT_INSTALLED__; fi; fi')
+    cp = run_remote(h, cmd, timeout=timeout)
+    out = cp.stdout or ""
+    if "__XUSI_ADOPTABLE__" in out:
+        root = out.split("__XUSI_ADOPTABLE__", 1)[1].strip().splitlines()[0]
+        return {"host": h.get("name", ""), "installed": False,
+                "adoptable_root": root}
+    if "__XUSI_NOT_INSTALLED__" in out:
+        return {"host": h.get("name", ""), "installed": False, "rows": []}
     if cp.returncode != 0:
-        return {"host": h.get("name", ""), "error": (cp.stderr or cp.stdout).strip()[:200]}
+        return {"host": h.get("name", ""), "installed": True,
+                "error": (cp.stderr or cp.stdout).strip()[:200]}
     try:
-        rows = json.loads(cp.stdout)
+        rows = json.loads(out)
     except Exception:
-        return {"host": h.get("name", ""), "error": "输出不是 JSON（远端版本过旧？）"}
-    return {"host": h.get("name", ""), "rows": rows}
+        return {"host": h.get("name", ""), "installed": True,
+                "error": "输出不是 JSON（远端版本过旧？先 remote upgrade）"}
+    return {"host": h.get("name", ""), "installed": True, "rows": rows}
 
 
 def fan_out(fn, hosts: list[dict]) -> list[dict]:
@@ -264,14 +411,18 @@ def _sudo(h: dict, cmd: str) -> str:
 
 
 def _push_code(h: dict) -> None:
-    """打代码 tar → scp → 解压到 ~/xusi（只覆盖代码目录；数据目录结构性免疫）。"""
+    """打代码 tar → ssh+cat 上传 → 解压到远端自洽目录的父目录（tar 内路径以
+    xusi/ 开头、目录名锚定——只覆盖代码目录；数据目录结构性免疫）。
+    前提：dir 的末段必须是 xusi（零管理机用缺省 ~/work/xusi 即满足）。"""
     tar = build_code_tar()
+    d = h.get("dir", REMOTE_DIR)
+    parent = d.rsplit("/", 1)[0] if "/" in d else "."
     try:
         scp_to(h, tar, "/tmp/xusi-code.tgz")
     finally:
         shutil.rmtree(tar.parent, ignore_errors=True)
-    cp = run_remote(h, "tar xzf /tmp/xusi-code.tgz -C ~ && rm -f /tmp/xusi-code.tgz",
-                    timeout=120)
+    cp = run_remote(h, f"mkdir -p {parent} && tar xzf /tmp/xusi-code.tgz -C {parent} "
+                       f"&& rm -f /tmp/xusi-code.tgz", timeout=120)
     if cp.returncode != 0:
         raise RemoteError(f"远端解压失败：{(cp.stderr or '').strip()[:200]}")
 
@@ -304,11 +455,12 @@ def install_host(h: dict) -> list[str]:
     logs.append("推送代码包（xusi/ + docs/ + versions/）…")
     _push_code(h)
     # 播种密钥池：per-host brains 字段 > 控制端自己的 etc/brains.toml（决议② 全队同份）
+    d = h.get("dir", REMOTE_DIR)
     seed = h.get("brains") or str(get_config().brains_file)
     logs.append("播种密钥池（600）…")
     scp_to(h, Path(seed).expanduser().resolve(), "/tmp/xusi-brains.toml")
-    step("mkdir -p ~/xusi/etc && mv /tmp/xusi-brains.toml ~/xusi/etc/brains.toml "
-         "&& chmod 600 ~/xusi/etc/brains.toml", "落盘 brains.toml…", timeout=60)
+    step(f"mkdir -p {d}/etc && mv /tmp/xusi-brains.toml {d}/etc/brains.toml "
+         f"&& chmod 600 {d}/etc/brains.toml", "落盘 brains.toml…", timeout=60)
     logs.append("doctor --mode cli 自检：")
     cp = xusi_cmd(h, ["doctor", "--mode", "cli"], timeout=300)
     logs.append((cp.stdout or "") + (cp.stderr or ""))
@@ -318,9 +470,85 @@ def install_host(h: dict) -> list[str]:
 
 
 def upgrade_host(h: dict) -> None:
-    """重推代码 tar（xusi/ + docs/ + versions/）：管理面升级与内核版本发布
-    都是这一条——控制端 repo 即全队事实源。"""
+    """升级分两种形态（自动检测）：
+    - 零管理推 tar 机器（无 .git）→ 重推代码 tar（控制端 repo 即全队事实源）；
+    - 收编的存量部署（git checkout）→ git pull origin main——不推 tar，
+      避免覆盖它的工作树（本地 docs 等未跟踪文件）与 git 状态。"""
+    d = h.get("dir", REMOTE_DIR)
+    cp = run_remote(h, f"[ -d {d}/.git ] && echo __XUSI_GIT__", timeout=30)
+    if cp.returncode == 0 and "__XUSI_GIT__" in (cp.stdout or ""):
+        cp = run_remote(h, f"cd {d} && git pull origin main", timeout=300)
+        if cp.returncode != 0:
+            raise RemoteError(f"git pull 失败：{(cp.stderr or cp.stdout).strip()[-300:]}")
+        return
     _push_code(h)
+
+
+def _detect_root(h: dict) -> str:
+    """探测既有部署根：serve 单元的 WorkingDirectory 优先（停了 serve 的机器
+    单元文件仍在），退而查常见路径。找不到 = 空机（走 install）。"""
+    cp = run_remote(h, 'systemctl --user cat xusi.service 2>/dev/null '
+                       '| grep -m1 "^WorkingDirectory=" | cut -d= -f2-', timeout=30)
+    root = (cp.stdout or "").strip()
+    if root:
+        return root
+    for cand in (REMOTE_DIR, "~/xusi"):
+        cp = run_remote(h, f"[ -d {cand} ] && echo {cand}", timeout=30)
+        if (cp.stdout or "").strip():
+            return (cp.stdout or "").strip()
+    raise RemoteError("找不到既有 xusi 部署根——空机请用 remote install，"
+                      "或手填清单 dir 字段")
+
+
+def adopt_host(h: dict) -> list[str]:
+    """收编存量部署（自动化四步，幂等）：探测部署根 → 回写清单 dir/python →
+    升级（git pull / 推 tar 自动分派）→ 停+禁 serve（单头原则）→ doctor 验证。
+
+    不触碰 agent：注册表/实例目录原样接管，收编后既有 agent 出现在全队 status。"""
+    logs: list[str] = []
+    logs.append("探测既有部署根…")
+    root = _detect_root(h)
+    logs.append(f"  部署根：{root}")
+    h["dir"] = root
+    if not h.get("python"):
+        cp = run_remote(h, f"[ -x {root}/.venv/bin/python ] && echo VENV", timeout=30)
+        if "VENV" in (cp.stdout or ""):
+            h["python"] = ".venv/bin/python"
+    # 回写清单（dir 与缺省一致不写；python 与缺省不一致才写——保持清单最小）
+    saved = dict(h)
+    if saved.get("dir") == REMOTE_DIR:
+        saved.pop("dir", None)
+    if not saved.get("python") or saved.get("python") == REMOTE_PY:
+        saved.pop("python", None)
+    try:
+        hosts = load_hosts()
+        for i, x in enumerate(hosts):
+            if x.get("name") == h.get("name"):
+                hosts[i] = saved
+        save_hosts(hosts)
+        logs.append(f"  清单已回写：dir={h.get('dir')} python={h.get('python')}")
+    except RemoteError as e:
+        logs.append(f"  清单回写失败（可手填）：{e}")
+    logs.append("升级代码…")
+    upgrade_host(h)
+    logs.append("停 + 禁 serve（单头原则，幂等）…")
+    _stop_serve(h)
+    logs.append("doctor --mode cli 自检：")
+    cp = xusi_cmd(h, ["doctor", "--mode", "cli"], timeout=300)
+    logs.append((cp.stdout or "") + (cp.stderr or ""))
+    if cp.returncode != 0:
+        raise RemoteError("收编机 doctor 未全过（见输出；刚停 serve 30s 内端口"
+                          "TIME_WAIT 误报属预期，稍候重试）")
+    return logs
+
+
+def _stop_serve(h: dict) -> None:
+    """停 + 禁收编机的 xusi.service（单头原则：管理只走控制端）。已停/无单元
+    的机器幂等无害。"""
+    cp = run_remote(h, "systemctl --user disable --now xusi.service 2>&1 || true",
+                    timeout=60)
+    if cp.returncode != 0:
+        raise RemoteError(f"停 serve 失败：{(cp.stderr or '').strip()[:200]}")
 
 
 def backup_host(h: dict, agent_id: str, out_dir: Path) -> Path:
@@ -328,7 +556,8 @@ def backup_host(h: dict, agent_id: str, out_dir: Path) -> Path:
     cp = xusi_cmd(h, ["backup", agent_id], timeout=600)
     if cp.returncode != 0:
         raise RemoteError(f"远端备份失败：{(cp.stderr or cp.stdout).strip()[-300:]}")
-    cp = run_remote(h, "ls -t ~/xusi/etc/backups/*.tar.gz 2>/dev/null | head -1", timeout=30)
+    d = h.get("dir", REMOTE_DIR)
+    cp = run_remote(h, f"ls -t {d}/etc/backups/*.tar.gz 2>/dev/null | head -1", timeout=30)
     remote_path = cp.stdout.strip()
     if not remote_path:
         raise RemoteError("远端备份目录里没有包（backup 命令未产出？）")
@@ -347,3 +576,30 @@ def restore_host(h: dict, local_tar: Path, argv: list[str],
     remote_path = f"/tmp/xusi-remote/{local.name}"
     scp_to(h, local, remote_path)
     return xusi_cmd(h, ["restore", "--from", remote_path] + list(argv), timeout=timeout)
+
+
+# agent 家目录下允许 ssh tail 读取的只读数据文件（白名单，防路径注入）
+_READABLE_FILES = ("data/sessions.jsonl", "data/outbox.jsonl", "data/mailbox_log.jsonl")
+_AGENT_ID_RE = r"agent-[0-9a-f]{4}"
+
+
+def read_remote_file(h: dict, agent_id: str, rel: str, *, limit: int = 50,
+                     timeout: int = 60) -> list[dict]:
+    """ssh tail 读远端 agent 磁盘 JSONL（会话索引/邮箱等只读数据）——文件通道，
+    与「不反代」原则一致。agent_id 与路径都走白名单，防注入。"""
+    import re
+    if not re.fullmatch(_AGENT_ID_RE, agent_id):
+        raise RemoteError(f"非法 agent_id：{agent_id!r}")
+    if rel not in _READABLE_FILES:
+        raise RemoteError(f"不在可读白名单：{rel!r}")
+    d = h.get("dir", REMOTE_DIR)
+    cmd = (f"tail -n {int(limit)} {d}/instances/{shlex.quote(agent_id)}/{rel} "
+           f"2>/dev/null")
+    cp = run_remote(h, cmd, timeout=timeout)
+    rows = []
+    for line in (cp.stdout or "").splitlines():
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            pass   # 半行等坏 JSON 跳过，与 agentops._tail_jsonl 同构
+    return rows

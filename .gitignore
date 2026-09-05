@@ -25,6 +25,8 @@ etc/audit.jsonl
 etc/hosts.toml
 # 注册表跨进程 flock 载体（运行时自建，内容无意义）
 etc/.registry.lock
+# 链路竞速结果缓存（per-host 当选链路 + 时间戳，无敏感字段）
+etc/link_cache.json
 # 远端备份拉回目录（remote backup 的落点）
 etc/remote-backups/
 # agent 实例目录（config.toml 含 key、data/ 含 token 与会话）
