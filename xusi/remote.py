@@ -631,6 +631,35 @@ def restore_host(h: dict, local_tar: Path, argv: list[str],
     return xusi_cmd(h, ["restore", "--from", remote_path] + list(argv), timeout=timeout)
 
 
+def remote_patch(h: dict, agent_id: str, body: dict, *, apply_restart: bool = False,
+                 timeout: int = 180) -> dict:
+    """远端改参：inline python 直调 agentops.patch_agent——远端零管理机没有
+    serve（PATCH 无 HTTP 通道），与本地 WebUI 同一条实现。body 走 argv 传
+    JSON（shlex.quote 双层防护），键由远端 _PATCHABLE 白名单把关
+    （brains/name/note/expose/runtime），不可改字段得到同样的友好 400 文案。"""
+    d = h.get("dir", REMOTE_DIR)
+    py = h.get("python", REMOTE_PY)
+    code = ("import json,sys; from xusi import agentops; "
+            f"r = agentops.patch_agent(sys.argv[1], json.loads(sys.argv[2]), "
+            f"apply_restart={bool(apply_restart)}); "
+            "print(json.dumps(r, ensure_ascii=False))")
+    body_json = json.dumps(body, ensure_ascii=False)
+    cp = run_remote(h, f"cd {d} && {py} -c {shlex.quote(code)} "
+                     f"{shlex.quote(agent_id)} {shlex.quote(body_json)}",
+                    timeout=timeout)
+    if cp.returncode != 0:
+        # 取 stderr 最后一行 = AgentError 的可读文案（截掉 traceback 噪音）
+        err = (cp.stderr or cp.stdout or "").strip().splitlines()
+        msg = err[-1] if err else "未知错误"
+        if msg.startswith("xusi.agentops.AgentError: "):
+            msg = msg[len("xusi.agentops.AgentError: "):]
+        raise RemoteError(f"远端改参失败：{msg}")
+    try:
+        return json.loads(cp.stdout)
+    except Exception:
+        raise RemoteError("远端改参输出不是 JSON（远端版本过旧？先 remote upgrade）")
+
+
 # agent 家目录下允许 ssh tail 读取的只读数据文件（白名单，防路径注入）
 _READABLE_FILES = ("data/sessions.jsonl", "data/outbox.jsonl", "data/mailbox_log.jsonl")
 # agent id 字符级白名单：本机新生成是 agent-<4hex>，但存量老机还有 llm-N-xxxx

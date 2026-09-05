@@ -7,6 +7,7 @@
     python -m xusi status                # 全部 agent 一览
     python -m xusi doctor                # 环境自检
     python -m xusi create|delete         # agent 增删（进程内直调 agentops，免 HTTP）
+    python -m xusi patch                 # 改参（brains/name/note/expose/runtime）
     python -m xusi start|stop|pause|resume|restart
     python -m xusi mail|mailbox          # 投信/收信（与 agent 的唯一写通道）
     python -m xusi observe-token         # 签发观察台 token（CLI-only 机器用）
@@ -447,6 +448,42 @@ def cmd_delete(args) -> int:
     return 0
 
 
+def cmd_patch(args) -> int:
+    """改参（与 serve 的 PATCH 同一条 agentops.patch_agent 实现——CLI-only
+    远端机器也能直调）。可改字段 = 簿记层（name/note）+ 进程层（expose，
+    需重启）+ 大脑（brains，下次呼吸生效）+ 运行时（须停止态）。"""
+    from . import agentops
+    changes: dict = {}
+    if args.name is not None:
+        changes["name"] = args.name
+    if args.note is not None:
+        changes["note"] = args.note
+    if args.brains is not None:
+        changes["brains"] = [b.strip() for b in args.brains.split(",") if b.strip()]
+    if args.expose is not None:
+        changes["expose"] = args.expose.strip().lower() in ("on", "1", "true", "yes")
+    if args.runtime:
+        changes["runtime"] = args.runtime
+    if not changes:
+        print("error: 至少给一个可改字段（--brains/--name/--note/--expose/--runtime）",
+              file=sys.stderr)
+        return 2
+    try:
+        r = agentops.patch_agent(args.agent_id, changes)
+    except agentops.AgentError as e:
+        return _cli_agent_error(e)
+    if getattr(args, "json", False):
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+        return 0
+    print(f"  patched: {r['id']}")
+    if "brains" in changes:
+        eff = f"（{r['brains_effective']}）" if r.get("brains_effective") else ""
+        print(f"  brains : {' → '.join(r.get('brains', []))}{eff}")
+    if r.get("restart_required"):
+        print("  expose 变更已保存——需重启生效（`xusi restart <id>`）")
+    return 0
+
+
 def cmd_mail(args) -> int:
     from . import agentops
     try:
@@ -674,6 +711,8 @@ usage: xusi remote <cmd> [--on NAME] [参数...]
   check-brains --on NAME                全队密钥池连通性体检（/models + 最小 chat）
   brains    --on NAME                   推送控制端密钥池到远端（轮换 key / 池变更后）
   create    --on NAME <本地 create 参数>  在指定机器创建 agent（@file/--spec 自动上传）
+  patch     --on NAME <agent-id> [--brains a,b] [--name X] [--note Y] [--expose on|off]
+            [--runtime systemd|docker]    改参（brains 切换 / 簿记 / 运行时，同本地 patch）
   start|stop|pause|resume|restart|delete --on NAME <agent-id>
   mail      --on NAME <agent-id> <text>  投信（与 agent 的唯一写通道）
   mailbox   --on NAME <agent-id> [--limit N] [--box outbox|inbox]
@@ -819,6 +858,16 @@ def main() -> int:
     dl_ = sub.add_parser("delete", help="删除 agent（须先停止；home 进 .trash）")
     dl_.add_argument("agent_id")
     dl_.set_defaults(fn=cmd_delete)
+
+    pt_ = sub.add_parser("patch", help="改参 agent（brains/name/note/expose/runtime）")
+    pt_.add_argument("agent_id")
+    pt_.add_argument("--json", action="store_true", help="输出 JSON（remote 解析用）")
+    pt_.add_argument("--name", default=None)
+    pt_.add_argument("--note", default=None)
+    pt_.add_argument("--brains", default=None, help="逗号分隔（池条目名；老名自动升级）")
+    pt_.add_argument("--expose", default=None, help="on/off")
+    pt_.add_argument("--runtime", default=None, choices=("systemd", "docker"))
+    pt_.set_defaults(fn=cmd_patch)
 
     ml_ = sub.add_parser("mail", help="给 agent 投信（与 agent 的唯一写通道）")
     ml_.add_argument("agent_id")

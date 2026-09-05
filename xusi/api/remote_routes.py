@@ -5,7 +5,7 @@
 无端口、无监听）。全部端点 admin 鉴权；远端操作写控制端 audit。
 
 刻意不做：/v1/events 事件流反代（观察台直连，observe-token 端点供 token）；
-远端改参（CLI patch 未建）；任务队列（长操作同步等待，前端 spinner）。
+任务队列（长操作同步等待，前端 spinner）。
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from .. import agentops, remote
 from ..config import get_config
 from .auth import require_admin
-from .models import CreateAgentReq, MailReq, RemoteRestoreReq
+from .models import CreateAgentReq, MailReq, PatchAgentReq, RemoteRestoreReq
 
 router = APIRouter()
 
@@ -89,6 +89,27 @@ async def api_remote_agent(agent_id: str, host: str = Query(...),
         if row.get("id") == agent_id:
             return row
     raise HTTPException(404, f"远端 {h.get('name', host)} 上没有 agent {agent_id}")
+
+
+@router.patch("/api/remote/agents/{agent_id}")
+async def api_remote_patch(agent_id: str, req: PatchAgentReq, host: str = Query(...),
+                           apply_restart: bool = False,
+                           _rec: dict = Depends(require_admin)) -> dict:
+    """远端改参（以 brains 切换为主）：inline python 直调远端
+    agentops.patch_agent——与本地 PATCH 同一条实现，门控/白名单/手术重渲染
+    全部同源。expose 变更可带 ?apply_restart=true 立即换监听参数重启。"""
+    h = _host(host)
+    changes = req.model_dump(exclude_none=True)
+    if not changes:
+        raise HTTPException(400, "至少给一个可改字段")
+    try:
+        r = await asyncio.to_thread(remote.remote_patch, h, agent_id, changes,
+                                    apply_restart=apply_restart)
+    except remote.RemoteError as e:
+        raise HTTPException(400, str(e)) from None
+    agentops.audit("remote.patch", host=h.get("name", host), agent=agent_id,
+                   fields=sorted(changes))
+    return r
 
 
 @router.post("/api/remote/agents/{agent_id}/mail")

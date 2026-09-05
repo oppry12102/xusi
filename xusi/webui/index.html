@@ -832,14 +832,16 @@ async function del(id, name) {
 
 async function switchDefault(id, name) {
   if (me?.role !== "admin") return;                       // 与 openEdit 同口径
-  if (scope !== "local") return;                          // 远端改参未建（大脑切换 = PATCH）
   const a = agentsCache.find(x => x.id === id);
   const rest = (a?.brains || []).filter(b => b !== name);
   if (!rest.length) return;
   if (!confirm(`把「${a?.name || id}」的默认大脑切换为「${name}」？\n` +
       `同档故障转移序将变为：${[name, ...rest].join(" → ")}\n下次呼吸生效，不重启。`)) return;
+  const path = scope === "local"
+    ? `/api/agents/${id}`
+    : `/api/remote/agents/${id}?host=${encodeURIComponent(scope)}`;
   try {
-    await api(`/api/agents/${id}`, {method: "PATCH",
+    await api(path, {method: "PATCH",
       body: JSON.stringify({brains: [name, ...rest]})});  // 前置重排 = 切换默认
     refresh();
     if (cur === id) loadDetail();                         // 抽屉开着就刷详情
@@ -1076,7 +1078,7 @@ async function openDetail(id) {
   drawer.classList.add("open");
   const isR = scope !== "local";
   const editBtn = $("#d-edit");
-  editBtn.hidden = me?.role !== "admin" || isR;   // 远端改参未建
+  editBtn.hidden = me?.role !== "admin";
   editBtn.title = "改参（admin）";
   $("#d-id").textContent = isR ? `${scope} / ${id}` : id;
   $("#tabs").innerHTML = (isR ? REMOTE_TABS : TABS)
@@ -1464,7 +1466,9 @@ let editBrainsOk = false;
 async function openEdit(id) {
   if (me?.role !== "admin") { alert("改参需要 admin token"); return; }
   try {
-    const s = await api(`/api/agents/${id}`);
+    const s = scope === "local"
+      ? await api(`/api/agents/${id}`)
+      : await api(`/api/remote/agents/${id}?host=${encodeURIComponent(scope)}`);
     editCur = s;
     $("#e-name").value = s.name || "";
     $("#e-note").value = s.note || "";
@@ -1524,8 +1528,10 @@ async function saveEdit() {
   }
   $("#btn-edit-save").disabled = true; $("#e-err").textContent = "";
   try {
-    const r = await api(`/api/agents/${id}?apply_restart=${applyRestart}`,
-              {method: "PATCH", body: JSON.stringify(body)});
+    const path = scope === "local"
+      ? `/api/agents/${id}?apply_restart=${applyRestart}`
+      : `/api/remote/agents/${id}?host=${encodeURIComponent(scope)}&apply_restart=${applyRestart}`;
+    const r = await api(path, {method: "PATCH", body: JSON.stringify(body)});
     dlgEdit.close();
     if (r.brains_effective === "next_breath") alert("大脑已保存——下次呼吸生效（不重启）");
     refresh(); loadDetail();
