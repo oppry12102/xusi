@@ -8,17 +8,19 @@
 # 轮换 key：改这里后在管理界面对 agent 做任意 PATCH 触发重渲染，热重载即时生效。
 # ═══════════════════════════════════════════════════════════════════
 
+# models 列表 = 一家 key 多个平级大脑（展开为每模型一个池条目，不分级；
+# 条目名 = 模型名，其余字段继承厂商段）
 [brains.deepseek]
 api_key = ""
 base_url = "https://api.deepseek.com"
-model = "deepseek-v4-flash"
+models = ["deepseek-v4-pro", "deepseek-v4-flash"]
 tier = "power"
 context_window = 1048576
 
 [brains.glm]
 api_key = ""
 base_url = "https://api.z.ai/api/coding/paas/v4"
-model = "glm-5.3"
+models = ["glm-5.3", "glm-5.3-flash"]
 tier = "power"
 context_window = 1048576
 
@@ -39,6 +41,7 @@ tier = "power"
 context_window = 1048576
 
 # 新增一家：再写一个 [brains.<名字>] 表（OpenAI 兼容 /chat/completions 即可）。
+# 一家多个模型：models = ["model-a", "model-b"]（平级展开；单模型厂商仍用 model = "…"）。
 # 可选字段：timeout（秒，默认 180）、tier、price_prompt / price_completion（CNY/1K tokens，观测用）、
 # context_window（tokens；各脑窗口不一致。渲染取 default 同档（tier 相同，
 # 未打标签视同 power）已声明窗口的最小值，扣 8k 输出余量折进 [agent] max_context_tokens——

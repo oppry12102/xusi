@@ -451,7 +451,8 @@ def restore(backup_path: Path, *, new_id: str | None = None,
             "updated_at": now,
         }
         try:
-            _brains_mod.validate_selection(rec["brains"])
+            # 校验并规范化（老名自动升级为新名后落快照——见 brains.validate_selection）
+            rec["brains"] = _brains_mod.validate_selection(rec["brains"])
         except ValueError as e:
             shutil.rmtree(home, ignore_errors=True)
             raise BackupError(f"大脑池校验失败：{e}") from None

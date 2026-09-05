@@ -74,6 +74,10 @@
   .check{display:flex;gap:14px;flex-wrap:wrap}
   .check label{display:flex;align-items:center;gap:5px;font-weight:400;margin:0;
                background:#f6f7fa;padding:4px 10px;border-radius:8px}
+  .check.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:6px 12px}
+  .check.grid label{background:transparent;border:1px solid var(--line);white-space:nowrap;overflow:hidden}
+  .adv-card{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:8px;
+            display:flex;flex-direction:column;gap:12px;background:#fafbfd}
   .switch{display:flex;align-items:center;gap:8px}
   .err{color:var(--err);font-size:13px;white-space:pre-wrap}
   .hint{color:var(--sub)}
@@ -159,7 +163,6 @@
     </button>
   </div>
   <div id="hstate" class="hint" style="color:var(--sub);font-size:12.5px"></div>
-  <button id="btn-logout" hidden>退出</button>
   <select id="sel-scope" title="看板范围：本机 / 远端机器（切换后卡片与操作都作用于所选范围；配置在节点界面里）">
     <option value="local">本机</option>
   </select>
@@ -231,19 +234,41 @@
   <div class="dlg-h">新建 xuseek agent <button onclick="dlgNew.close()">✕</button></div>
   <div class="dlg-b">
     <div class="tabs">
-      <button id="f-tab-blank-btn" class="on" data-tab="blank">空白新建</button>
-      <button id="f-tab-clone-btn" data-tab="clone">从备份克隆</button>
+      <button id="f-tab-main-btn" class="on">主配置</button>
+      <button id="f-tab-opt-btn">可选配置</button>
     </div>
 
-    <div><label>目标机器（本机 = 这台管理面；远端 = 经 ssh 在目标机创建，同步等待 1-3 分钟）</label>
-      <select id="f-target"><option value="local">本机</option></select></div>
+    <div id="f-tab-main">
+      <div class="hint" id="f-scope-hint" style="font-size:12.5px"></div>
 
-    <div id="f-tab-blank">
-      <div><label>名称</label><input id="f-name" type="text" placeholder="如：astronomy（仅显示用；id 一律 agent-xxxx）"></div>
+      <div><label>名称（可选；留空 = 用 id 作显示名，agent 可自行改名）</label>
+        <input id="f-name" type="text" maxlength="64" placeholder="如：学习助手（留空则显示名 = agent id）"></div>
+
       <div><label>使命 mission（创建时渲染进 config.toml 一次；此后归 agent 自治，改它请投信）</label>
         <textarea id="f-mission" placeholder="持续获取中国A股的交易数据，形成本地数据库，并对外提供查询服务。"></textarea></div>
-      <div><label>大脑（首个为默认；顺序 = 故障转移序；密钥由管理面代持进出生配置）</label>
-        <div id="f-brains" class="check"></div></div>
+
+      <div><label>大脑（首个为默认；故障转移只在与默认同档的大脑之间按此顺序循环，power 在 power 档、economy 在 economy 档；economy 档不参与主循环轮换，供智能体按档调用）</label>
+        <div id="f-brains" class="check grid"></div></div>
+
+      <div style="display:flex;gap:12px">
+        <div style="flex:1"><label>xuseek-v2 版本（源码副本随实例隔离；缺省 = 仓库最新版）</label>
+          <select id="f-version"><option value="">最新版本</option></select></div>
+        <div style="flex:1"><label>运行时（创建后可切换：停止 → 改参 → 启动）</label>
+          <select id="f-runtime">
+            <option value="systemd">系统进程（systemd）</option>
+            <option value="docker">Docker 容器（host 网络；需内核 ≥ v2.7.19 与 docker 环境）</option>
+          </select></div>
+      </div>
+      <div style="display:flex;gap:12px">
+        <div style="flex:1"><label>端口（缺省自动分配）</label>
+          <select id="f-port"><option value="">自动分配</option></select></div>
+        <div style="flex:1;display:flex;align-items:end"><div class="switch">
+          <input id="f-expose" type="checkbox"><label for="f-expose" style="margin:0">暴露外网（监听 0.0.0.0）</label>
+        </div></div>
+      </div>
+    </div>
+
+    <div id="f-tab-opt" hidden>
       <div>
         <label>根智能体（可选）——互联发现的根目录</label>
         <div id="f-roots"></div>
@@ -254,55 +279,10 @@
           仅 v2.7.12+ 内核支持——选了旧版内核时创建会报错。
         </div>
       </div>
-      <details>
-        <summary style="cursor:pointer;font-size:13px;color:var(--sub);font-weight:550">附加配置（可选·高级）</summary>
-        <textarea id="f-extra" rows="3" style="margin-top:6px;font-family:var(--mono);font-size:12px"
-          placeholder='[capabilities]&#10;amem = true'></textarea>
-        <div class="hint" style="color:var(--sub);font-size:12px">
-          自由 TOML 原样追加进出生 config.toml 末尾（[capabilities] 等内核可选段）；落盘前整体校验，写坏会拒绝创建。
-        </div>
-      </details>
-      <div><label>xuseek-v2 版本（源码副本随实例隔离；缺省 = 仓库最新版）</label>
-        <select id="f-version"><option value="">最新版本</option></select></div>
-      <div style="display:flex;gap:12px">
-        <div style="flex:1"><label>端口（缺省自动分配）</label>
-          <select id="f-port"><option value="">自动分配</option></select></div>
-        <div style="flex:1;display:flex;align-items:end"><div class="switch">
-          <input id="f-expose" type="checkbox"><label for="f-expose" style="margin:0">暴露外网（监听 0.0.0.0）</label>
-        </div></div>
-      </div>
-      <div style="display:flex;gap:12px">
-        <div style="flex:1"><label>运行时（创建后可切换：停止 → 改参 → 启动）</label>
-          <select id="f-runtime">
-            <option value="systemd">系统进程（systemd）</option>
-            <option value="docker">Docker 容器（host 网络；需内核 ≥ v2.7.19 与 docker 环境）</option>
-          </select></div>
-        <div style="flex:1"></div>
-      </div>
       <div><label>备注（可选）</label><input id="f-note" type="text"></div>
-      <div id="f-err" class="err"></div>
-    </div>
-
-    <div id="f-tab-clone" hidden>
-      <div><label>选择备份（本地 etc/backups/）</label>
-        <select id="f-cbkey"><option value="">（加载中…）</option></select></div>
-      <div><label>新 id（自动生成，前缀统一 agent-；🎲 换一个。克隆 = 新的人，
-        出生 config 的 instance_id 会随新 id 手术改写）</label>
-        <div style="display:flex;gap:8px">
-          <input id="f-cnewid" type="text" readonly placeholder="选备份后生成" style="flex:1">
-          <button type="button" id="btn-cnewid-roll" title="换一个">🎲</button>
-        </div></div>
-      <div><label>端口（缺省自动分配）</label>
-        <select id="f-cport"><option value="">自动分配</option></select></div>
-      <div><label>大脑（默认勾选备份里的；缺失项 disabled）</label>
-        <div id="f-cbrains" class="check"></div></div>
-      <div id="f-cerr" class="err"></div>
-      <div class="hint" style="color:var(--sub);font-size:12px">
-        名称 / 使命沿用备份（改参对话框只能改簿记——mission 归 agent 自治，投信让它改）。
-        备注自动写「从备份克隆于 YYYY-MM-DD」。
-      </div>
     </div>
   </div>
+  <div id="f-err" class="err" style="min-height:27px;padding:0 18px 0"></div>
   <div class="dlg-f"><button onclick="dlgNew.close()">取消</button>
     <button id="btn-create" class="pri">创建并启动</button></div>
 </dialog>
@@ -369,7 +349,7 @@
         <option value="docker">Docker 容器（host 网络）</option>
       </select></div>
     <div><label>备注（可选）</label><input id="e-note" type="text"></div>
-    <div><label>大脑（首个勾选为默认；顺序 = 故障转移序）<span class="hint" style="font-weight:400">——下次呼吸生效，不重启</span></label>
+    <div><label>大脑（首个勾选为默认；与默认同档之间按此顺序故障转移）<span class="hint" style="font-weight:400">——下次呼吸生效，不重启</span></label>
       <div id="e-brains" class="check"></div></div>
     <div id="e-err" class="err"></div>
     <div class="hint" style="color:var(--sub);font-size:12px">
@@ -411,7 +391,6 @@ $("#ver").textContent = "";
 loadNode();
 document.getElementById("btn-node").onclick = openNodeDialog;
 document.getElementById("btn-new").onclick = openNew;
-document.getElementById("btn-logout").onclick = logout;
 document.getElementById("hosts-save").onclick = saveHosts;
 document.getElementById("tip-login").onclick = login;
 document.getElementById("tip-tok").addEventListener("keydown",
@@ -436,7 +415,6 @@ function setLogin(msg) {
   me = null; meAdmin = false; $("#login-tip").hidden = false; $("#cards").innerHTML = "";
   $("#summary").textContent = msg ? "⚠ " + msg : "";
   $("#hstate").textContent = "未认证";
-  $("#btn-logout").hidden = true;
 }
 
 async function login() {
@@ -445,12 +423,6 @@ async function login() {
   tok = v;
   localStorage.setItem(TOKKEY, tok);
   await refresh(true);
-}
-
-function logout() {
-  if (!confirm("退出并清除本浏览器保存的 token？")) return;
-  localStorage.removeItem(TOKKEY);
-  location.reload();
 }
 
 /* ── 节点徽章 / 改名 ─────────────────────────────── */
@@ -592,7 +564,6 @@ async function refresh(first = false) {
     me = who;
     meAdmin = (who.role === "admin");
     $("#ver").textContent = "v" + h.version;
-    $("#btn-logout").hidden = false;
     $("#login-tip").hidden = true;
     await loadScopes();
     if (scope === "local") {
@@ -854,7 +825,7 @@ async function switchDefault(id, name) {
   const rest = (a?.brains || []).filter(b => b !== name);
   if (!rest.length) return;
   if (!confirm(`把「${a?.name || id}」的默认大脑切换为「${name}」？\n` +
-      `故障转移序将变为：${[name, ...rest].join(" → ")}\n下次呼吸生效，不重启。`)) return;
+      `同档故障转移序将变为：${[name, ...rest].join(" → ")}\n下次呼吸生效，不重启。`)) return;
   try {
     await api(`/api/agents/${id}`, {method: "PATCH",
       body: JSON.stringify({brains: [name, ...rest]})});  // 前置重排 = 切换默认
@@ -866,11 +837,20 @@ async function switchDefault(id, name) {
 /* ── 新建 ─────────────────────────────────────────── */
 let _brainsPool = [];
 
+function switchCreateTab(tab) {
+  $("#f-tab-main-btn").classList.toggle("on", tab === "main");
+  $("#f-tab-opt-btn").classList.toggle("on", tab === "opt");
+  $("#f-tab-main").hidden = tab !== "main";
+  $("#f-tab-opt").hidden = tab !== "opt";
+}
+$("#f-tab-main-btn").onclick = () => switchCreateTab("main");
+$("#f-tab-opt-btn").onclick = () => switchCreateTab("opt");
+
 function renderBrainChecks(containerSel, defaults) {
   const defs = new Set(defaults || []);
   $(containerSel).innerHTML = _brainsPool.map(b =>
-    `<label><input type="checkbox" value="${esc(b.name)}" ${defs.has(b.name) ? "checked" : ""} ${b.has_key ? "" : "disabled"}>
-      ${esc(b.name)}${b.has_key ? "" : "（缺key）"} <small style="color:var(--sub)">${esc(b.model)}</small></label>`).join("");
+    `<label title="${esc(b.name)} — ${esc(b.model)}"><input type="checkbox" value="${esc(b.name)}" ${defs.has(b.name) ? "checked" : ""} ${b.has_key ? "" : "disabled"}>
+      ${esc(b.name)}${b.has_key ? "" : "（缺key）"}${b.model !== b.name ? ` <small style="color:var(--sub)">${esc(b.model)}</small>` : ""}</label>`).join("");
 }
 
 /* 根智能体动态行（[[roots]] 出生交割条目；后端做版本门槛与去重） */
@@ -907,18 +887,14 @@ async function openNew() {
   if (!tok) { alert("请先认证"); return; }
   if (me?.role !== "admin") { alert("创建 agent 需要 admin token"); return; }
   $("#f-err").textContent = ""; $("#f-mission").value = ""; $("#f-name").value = "";
-  $("#f-note").value = ""; $("#f-expose").checked = false; $("#f-extra").value = "";
+  $("#f-note").value = ""; $("#f-expose").checked = false;
   $("#f-runtime").value = "systemd";
   $("#f-roots").innerHTML = "";
-  $("#f-cerr").textContent = "";
-  $("#f-cbkey").innerHTML = `<option value="">（加载中…）</option>`;
+  switchCreateTab("main");
   // 目标机器：本机 / 每台远端（缺省 = 当前看板范围）
-  const tgt = $("#f-target");
-  tgt.innerHTML = `<option value="local">本机</option>` +
-    hostsCache.map(h => `<option value="${esc(h.name)}">${esc(h.name)}</option>`).join("");
-  tgt.value = scope;
-  onTargetChange();
-  switchNewTab("blank");
+  // 创建目标 = 当前看板范围（不能跨范围选择——避免建在远端、详情却查本机的错位）
+  $("#f-scope-hint").textContent = scope === "local"
+    ? "目标：本机" : `目标：远端 ${scope}`;
   try {
     const [bs, ps, vs] = await Promise.all([api("/api/brains"), api("/api/ports/available?count=12"), api("/api/versions")]);
     // 缺省根智能体预填（可删改）；取不到不阻塞其它字段
@@ -926,6 +902,7 @@ async function openNew() {
     (dr.roots || []).forEach(r => addRootRow(r.address, r.token));
     addRootRow();   // 末尾留一行空白手填行
     _brainsPool = bs;
+    // 全预选（少点击；不需要的取消勾选即可；默认 = 列表第一个 = 密钥池顺序）
     renderBrainChecks("#f-brains", bs.filter(b => b.has_key).map(b => b.name));
     const vers = vs.versions || [];
     $("#f-version").innerHTML = vers.length
@@ -935,95 +912,30 @@ async function openNew() {
       : `<option value="">（版本仓库为空——请管理员投放 zip 后再建 agent）</option>`;
     $("#f-port").innerHTML = `<option value="">自动分配</option>` +
       ps.ports.map(p => `<option value="${p}">${p}</option>`).join("");
-    $("#f-cport").innerHTML = `<option value="">自动分配</option>` +
-      ps.ports.map(p => `<option value="${p}">${p}</option>`).join("");
     // 缺省运行时预选（[manager].default_runtime；非法值由后端同样兜底 systemd）
     const drt = (vs.default_runtime || "").trim();
     $("#f-runtime").value = drt === "docker" ? "docker" : "systemd";
   } catch (e) { $("#f-err").textContent = e.message; }
   dlgNew.showModal();
-  loadCloneBackups();
 }
 
-let _cloneBackups = [];
-
-async function loadCloneBackups() {
-  $("#f-cbkey").innerHTML = `<option value="">（加载中…）</option>`;
-  try {
-    _cloneBackups = await api("/api/backups?with_meta=1");
-  } catch (e) {
-    $("#f-cerr").textContent = "加载备份列表失败：" + e.message;
-    _cloneBackups = [];
-  }
-  const sel = $("#f-cbkey");
-  if (!_cloneBackups.length) {
-    sel.innerHTML = `<option value="">（本地还没有备份——先用「📦 备份」做一个再来）</option>`;
-    return;
-  }
-  sel.innerHTML = `<option value="">（请选择…）</option>` + _cloneBackups.map((b, i) => {
-    const m = b.meta || {};
-    const src = m.agent_id || "?";
-    const when = b.mtime || m.snapshot_at || "?";
-    const reason = m.snapshot_reason || "-";
-    return `<option value="${i}">${esc(when)} · ${esc(src)} · ${esc(reason)} · ${(b.size_bytes/1024).toFixed(1)} KB</option>`;
-  }).join("");
-}
-
-function switchNewTab(tab) {
-  if (tab === "clone" && $("#f-target").value !== "local") return;   // 克隆暂只支持本机
-  $("#f-tab-blank-btn").classList.toggle("on", tab === "blank");
-  $("#f-tab-clone-btn").classList.toggle("on", tab === "clone");
-  $("#f-tab-blank").hidden = tab !== "blank";
-  $("#f-tab-clone").hidden = tab !== "clone";
-}
-
-function onTargetChange() {
-  const remote = $("#f-target").value !== "local";
-  $("#f-tab-clone-btn").hidden = remote;      // 从备份克隆 = 本机恢复，远端未做
-  if (remote) switchNewTab("blank");
-  $("#f-tab-blank-btn").hidden = false;
-}
-$("#f-target").addEventListener("change", onTargetChange);
-$("#f-tab-blank-btn").onclick = () => switchNewTab("blank");
-$("#f-tab-clone-btn").onclick = () => switchNewTab("clone");
-// 新 agent 的 id 前缀统一 agent-<4位hex>（与后端 gen_id 同款；克隆也是新 agent）
-const genAgentId = () => "agent-" + [...crypto.getRandomValues(new Uint8Array(2))]
-  .map(b => b.toString(16).padStart(2, "0")).join("");
-const rollCNewId = () => { $("#f-cnewid").value = genAgentId(); };
-$("#btn-cnewid-roll").onclick = rollCNewId;
-$('#f-cbkey').addEventListener('change', e => {
-  const i = parseInt(e.target.value, 10);
-  if (!Number.isFinite(i) || !_cloneBackups[i]) return;
-  const m = _cloneBackups[i].meta || {};
-  rollCNewId();
-  if (m.port) $("#f-cport").value = m.port;
-  renderBrainChecks("#f-cbrains", m.brains || []);
-  $("#f-cerr").textContent = "";
-});
-$("#btn-create").onclick = create;
-
-async function create() {
-  const tab = $("#f-tab-clone").hidden ? "blank" : "clone";
-  if (tab === "blank") return createBlank();
-  return createClone();
-}
+$("#btn-create").onclick = createBlank;
 
 async function createBlank() {
+  const mission = $("#f-mission").value.trim();
+  if (!mission) { $("#f-err").textContent = "请填写使命 mission"; return; }
   const brains = [...$("#f-brains").querySelectorAll("input:checked")].map(i => i.value);
+  if (!brains.length) { $("#f-err").textContent = "至少勾选一家大脑"; return; }
   let roots;
   try { roots = collectRoots(); } catch (e) { return; }
-  const body = {
-    name: $("#f-name").value.trim(), mission: $("#f-mission").value.trim(),
-    brains, expose: $("#f-expose").checked, note: $("#f-note").value.trim(),
-  };
+  const body = { name: $("#f-name").value.trim(), mission, brains,
+    expose: $("#f-expose").checked, note: $("#f-note").value.trim() };
   if (roots.length) body.roots = roots;
-  const extra = $("#f-extra").value;
-  if (extra.trim()) body.extra_config = extra;
   const p = $("#f-port").value; if (p) body.port = parseInt(p, 10);
   const sv = $("#f-version").value; if (sv) body.source_version = sv;
   const rt = $("#f-runtime").value; if (rt && rt !== "systemd") body.runtime = rt;
   $("#btn-create").disabled = true; $("#f-err").textContent = "";
-  const target = $("#f-target").value;
+  const target = scope;
   try {
     if (target === "local") {
       const a = await api("/api/agents", {method: "POST", body: JSON.stringify(body)});
@@ -1036,30 +948,6 @@ async function createBlank() {
       if (r.agent?.id) openDetail(r.agent.id);
     }
   } catch (e) { $("#f-err").textContent = e.message; }
-  finally { $("#btn-create").disabled = false; }
-}
-
-async function createClone() {
-  const i = parseInt($("#f-cbkey").value, 10);
-  if (!Number.isFinite(i) || !_cloneBackups[i]) {
-    $("#f-cerr").textContent = "请先选一个备份"; return;
-  }
-  const key = _cloneBackups[i].key;
-  const newId = $("#f-cnewid").value.trim();
-  if (!/^agent-[0-9a-f]{4}$/.test(newId)) {
-    $("#f-cerr").textContent = "新 id 由系统生成（agent-xxxx）；冲突报错时点 🎲 换一个"; return;
-  }
-  const brains = [...$("#f-cbrains").querySelectorAll("input:checked")].map(i => i.value);
-  if (!brains.length) { $("#f-cerr").textContent = "至少勾选一家大脑"; return; }
-  const mtime = (_cloneBackups[i].mtime || "").slice(0, 10) || "今天";
-  const note = `从备份克隆于 ${mtime}`;
-  const port = parseInt($("#f-cport").value, 10) || null;
-  $("#btn-create").disabled = true; $("#f-cerr").textContent = "";
-  try {
-    await api("/api/restore", {method: "POST", body: JSON.stringify({
-      key, new_id: newId, port, brains, note, overwrite: false})});
-    dlgNew.close(); refresh(); openDetail(newId);
-  } catch (e) { $("#f-cerr").textContent = e.message; }
   finally { $("#btn-create").disabled = false; }
 }
 
@@ -1590,7 +1478,8 @@ async function saveEdit() {
     note: $("#e-note").value.trim(),
   };
   if (editBrainsOk) {
-    // 池序收集勾选——与创建对话框同语义：首个勾选（池序）= 默认，顺序 = 故障转移序
+    // 池序收集勾选——与创建对话框同语义：首个勾选（池序）= 默认；
+    // 故障转移只发生在与默认同档之间（economy 档不参与主循环轮换）
     const brains = _brainsPool.map(b => b.name).filter(n =>
       [...$("#e-brains").querySelectorAll("input:checked")].some(i => i.value === n));
     if (!brains.length) { $("#e-err").textContent = "至少勾选一家大脑"; return; }

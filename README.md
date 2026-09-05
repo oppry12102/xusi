@@ -96,14 +96,15 @@ xusi/
 │   ├── agentops.py      agent 全生命周期 + 投信/收信（邮箱写通道）+ 只读观察与会话
 │   ├── systemdctl.py    systemd 用户单元封装（spawn 注入 PyPI 镜像 env）
 │   ├── registry.py      注册表（agent 簿记 + 期望态）etc/agents.json（600）
-│   ├── brains.py        密钥池 → 创建时渲染一次 agent config.toml
+│   ├── brains.py        密钥池 → 创建时渲染一次 agent config.toml（厂段 models=[...] 展开为每模型一个平级条目）
 │   ├── ports.py         端口三重检验（注册表∪内核监听∪bind试探）
 │   ├── authtok.py       管理面凭证（verify(admin token) → rec）
 │   ├── backup.py        本地备份（SIGSTOP 冻结窗快照）
 │   └── webui/           单文件管理页
 ├── etc/
 │   ├── xusi.toml        监听/端口段/版本仓库路径 + [admin].secret（admin token）
-│   ├── brains.toml      主密钥池（管理员维护；600，模板见 brains.toml.example）
+│   ├── brains.toml      主密钥池（管理员维护；600，模板见 brains.toml.example；
+│   │                     一家多模型写 models=[...]，展开为平级大脑（不分级））
 │   ├── agents.json      注册表（agent 簿记 + 期望态 + 创建快照）
 │   └── audit.jsonl      管理操作审计
 ├── instances/<id>/      每个 agent 一个 home（config.toml, data/, workspace/；

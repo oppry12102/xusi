@@ -10,6 +10,7 @@
     python -m xusi start|stop|pause|resume|restart
     python -m xusi mail|mailbox          # 投信/收信（与 agent 的唯一写通道）
     python -m xusi observe-token         # 签发观察台 token（CLI-only 机器用）
+    python -m xusi check-brains          # 实测密钥池各大脑连通性（/models + 最小 chat）
 
 CRUD 直调 agentops 是为了「远端零管理」：CLI-only 机器没有 serve 进程，
 CLI 与 serve 同一条实现（跨进程并发由 registry.file_lock 互斥）。
@@ -176,6 +177,34 @@ def cmd_init(args) -> int:
 
 
 # ── status / doctor ──────────────────────────────────────────────────
+
+def cmd_check_brains(args) -> int:
+    """实测密钥池每一条目连通性：GET /models（模型在册）+ 最小 chat。
+    纯标准库——CLI-only 远端机器直跑（「先测再加」固化成命令；
+    remote check-brains 走通用 fan-out 同一份实现）。"""
+    from . import brains as _brains
+    pool = _brains.pool_specs()
+    if not pool:
+        print("密钥池为空（etc/brains.toml 无 brains 段）", file=sys.stderr)
+        return 2
+    ok = True
+    for name, spec in pool.items():
+        if not (spec.get("api_key") and spec.get("base_url") and spec.get("model")):
+            print(f"  ·  {name}: 缺 api_key/base_url/model，跳过")
+            continue
+        rep = _brains.probe_brain(spec)
+        good = rep["chat_status"] == 200 and not rep["errors"]
+        ok = ok and good
+        lat = f"{rep['chat_latency']}s" if rep["chat_status"] else "—"
+        print(f"  [{'✓' if good else '✗'}] {name:22} /models"
+              f"{'在册' if rep['models_listed'] else '未列出'}  chat "
+              f"{rep['chat_status'] or '—'} {lat}  {rep['reply'][:40]!r}")
+        if rep.get("models_note"):
+            print(f"       {rep['models_note']}")
+        for e in rep["errors"]:
+            print(f"       {e}")
+    print("结论：" + ("全部通过 ✓" if ok else "存在未通过项 ✗"))
+    return 0 if ok else 1
 
 def cmd_status(args) -> int:
     from . import agentops
@@ -587,6 +616,17 @@ def _remote_upgrade(h: dict) -> int:
     return 0
 
 
+def _remote_brains(h: dict) -> int:
+    from . import remote
+    try:
+        remote.push_brains(h)
+    except remote.RemoteError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(f"  已推送密钥池：{h['name']}（{h.get('dir', '~/work/xusi')}/etc/brains.toml，600）")
+    return 0
+
+
 def _remote_backup(h: dict, args) -> int:
     from . import remote
     agent_id = (list(args.rest) or [""])[0]
@@ -631,6 +671,8 @@ usage: xusi remote <cmd> [--on NAME] [参数...]
 远端 xusi 批量管理（控制端 fan-out，纯 ssh/scp；清单 etc/hosts.toml）：
   status    [--on NAME] [--json]        全队 agent 一览
   doctor    [--on NAME]                 全队环境自检（CLI 模式）
+  check-brains --on NAME                全队密钥池连通性体检（/models + 最小 chat）
+  brains    --on NAME                   推送控制端密钥池到远端（轮换 key / 池变更后）
   create    --on NAME <本地 create 参数>  在指定机器创建 agent（@file/--spec 自动上传）
   start|stop|pause|resume|restart|delete --on NAME <agent-id>
   mail      --on NAME <agent-id> <text>  投信（与 agent 的唯一写通道）
@@ -710,6 +752,8 @@ def cmd_remote(args) -> int:
         return _remote_adopt(hosts[0])
     if rfn == "upgrade":
         return _remote_upgrade(hosts[0])
+    if rfn == "brains":
+        return _remote_brains(hosts[0])
     if rfn == "backup":
         return _remote_backup(hosts[0], args)
     if rfn == "restore":
@@ -745,6 +789,9 @@ def main() -> int:
     d_.add_argument("--mode", choices=("serve", "cli"), default="serve",
                     help="cli：跳过管理面 token 检查（远端零管理机器）")
     d_.set_defaults(fn=cmd_doctor)
+
+    cb_ = sub.add_parser("check-brains", help="实测密钥池各大脑连通性（/models + 最小 chat）")
+    cb_.set_defaults(fn=cmd_check_brains)
 
     c_ = sub.add_parser("create", help="创建并启动 agent（进程内直调 agentops）")
     c_.add_argument("--json", action="store_true", help="输出注册记录 JSON（remote 解析用）")

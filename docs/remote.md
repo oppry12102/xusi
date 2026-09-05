@@ -82,6 +82,7 @@ python3 -m xusi remote doctor               # 全队自检（--on 单机）
 
 ```bash
 python3 -m xusi remote upgrade --on VM-0-8-ubuntu   # 重推代码 tar
+python3 -m xusi remote brains --on VM-0-8-ubuntu    # 推送密钥池（轮换 key / 池变更后）
 # （控制端 versions/ 放了新内核 zip 后 upgrade 一次 = 全队内核版本发布）
 
 python3 -m xusi remote backup --on VM-0-8-ubuntu agent-xxxx

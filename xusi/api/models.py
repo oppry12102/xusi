@@ -12,9 +12,12 @@ class RootEntry(BaseModel):
 
 
 class CreateAgentReq(BaseModel):
-    name: str = Field(min_length=1, max_length=64, description="显示名（不进 id——id 一律 agent-xxxx）")
+    name: str = Field("", max_length=64, description="显示名（可选：留空回落为 id agent-xxxx——"
+                                                   "名字归 agent 自己，改参接口可改；id 一律 agent-xxxx）")
     mission: str = Field(min_length=1, description="长期使命（创建时渲染进 config.toml，此后由 agent 自治）")
-    brains: list[str] = Field(min_length=1, description="大脑列表（首个为默认，顺序=故障转移序）")
+    brains: list[str] = Field(min_length=1, description="大脑列表（首个为默认；故障转移只在与默认同档"
+                                                   "（tier 相同）的大脑之间按此顺序循环，economy 档供智能体"
+                                                   " llm_call 按档调用，不参与主循环轮换）")
     expose: bool = Field(False, description="true=监听 0.0.0.0 直接对外；默认 127.0.0.1 仅本机")
     port: int | None = Field(None, description="指定端口（缺省自动分配，自 8602 起）")
     budgets: dict | None = Field(None, description="预算 {max_rounds}（v2.7.5+ 内核只认 [limits] max_rounds；"
@@ -46,8 +49,8 @@ class PatchAgentReq(BaseModel):
     name: str | None = None
     note: str | None = None
     expose: bool | None = None
-    brains: list[str] | None = Field(None, description="大脑列表（首个为默认，顺序=故障转移序；"
-                                                        "下次呼吸生效，不重启）")
+    brains: list[str] | None = Field(None, description="大脑列表（首个为默认；故障转移只在与默认同档"
+                                                        "（tier 相同）的大脑之间按此顺序循环；下次呼吸生效，不重启）")
     runtime: str | None = Field(None, description="切换运行时（systemd/docker）：须先停止 agent，"
                                                   "切换后不自动启动（停止 → 改参 → 启动）")
 

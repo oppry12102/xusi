@@ -502,17 +502,26 @@ def install_host(h: dict):
     yield "推送代码包（xusi/ + docs/ + versions/）…"
     _push_code(h)
     # 播种密钥池：per-host brains 字段 > 控制端自己的 etc/brains.toml（决议② 全队同份）
-    d = h.get("dir", REMOTE_DIR)
-    seed = h.get("brains") or str(get_config().brains_file)
     yield "播种密钥池（600）…"
-    scp_to(h, Path(seed).expanduser().resolve(), "/tmp/xusi-brains.toml")
-    yield from step(f"mkdir -p {d}/etc && mv /tmp/xusi-brains.toml {d}/etc/brains.toml "
-                     f"&& chmod 600 {d}/etc/brains.toml", "落盘 brains.toml…", timeout=60)
+    push_brains(h)
     yield "doctor --mode cli 自检："
     cp = xusi_cmd(h, ["doctor", "--mode", "cli"], timeout=300)
     yield (cp.stdout or "") + (cp.stderr or "")
     if cp.returncode != 0:
         raise RemoteError("远端 doctor 未全过（见输出）")
+
+
+def push_brains(h: dict) -> None:
+    """把控制端密钥池推到远端（600）：per-host brains 字段 > 控制端自己的
+    etc/brains.toml（决议② 全队同份）。install 播种同源（同一条实现）——
+    轮换 key / 大脑池变更后全队执行：`xusi remote brains --on H`。"""
+    d = h.get("dir", REMOTE_DIR)
+    seed = h.get("brains") or str(get_config().brains_file)
+    scp_to(h, Path(seed).expanduser().resolve(), "/tmp/xusi-brains.toml")
+    cp = run_remote(h, f"mkdir -p {d}/etc && mv /tmp/xusi-brains.toml {d}/etc/brains.toml "
+                       f"&& chmod 600 {d}/etc/brains.toml", timeout=60)
+    if cp.returncode != 0:
+        raise RemoteError(f"落盘 brains.toml 失败：{(cp.stderr or cp.stdout).strip()[-200:]}")
 
 
 def upgrade_host(h: dict) -> None:

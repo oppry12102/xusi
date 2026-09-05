@@ -41,6 +41,7 @@ import socket
 import threading
 import time
 import tomllib
+import urllib.error
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -140,11 +141,11 @@ def _resolve_source_choice(src_ver: str) -> str:
     return avail[0]["version"]   # list_versions 已按版本号新→旧排序
 
 
-def _validate_brains(bl: list[str]) -> None:
-    """校验大脑列表（ brains.validate_selection 的 AgentError 适配——
-    create / restore 共用同一份断言，见 brains.py）。"""
+def _validate_brains(bl: list[str]) -> list[str]:
+    """校验大脑列表，返回规范化列表（老名已升级为新名——见 brains.py
+    validate_selection；create / patch / restore 共用同一份断言）。"""
     try:
-        brains.validate_selection(bl)
+        return brains.validate_selection(bl)
     except ValueError as e:
         raise AgentError(str(e)) from None
 
@@ -188,7 +189,54 @@ def _validate_roots(roots: list | None, src_ver: str) -> list[dict]:
     return uniq
 
 
-_HEADER_RE = re.compile(r"^\s*\[([A-Za-z0-9_.\-]+)\]\s*(?:#.*)?(?:\r?\n)?$")
+def _parse_header(ln: str) -> str | None:
+    """段头行 → 平铺段名；非段头行返回 None。
+
+    TOML 段头：[bare(.bare)*]，点 = 分层；引号段（["a.b"]）是**字面键**——
+    点不参与分层（brain 名可含点，如 [brains."glm-5.3"]）。[[x]] 数组表
+    不算（内层以 [ 开头）。解析失败（引号未闭合/非法字符）按非段头处理。"""
+    m = re.match(r'^\s*\[(.*?)\]\s*(?:#.*)?(?:\r?\n)?$', ln)
+    if not m:
+        return None
+    inner = m.group(1)
+    segs: list[str] = []
+    i, n = 0, len(inner)
+    while i < n:
+        c = inner[i]
+        if c.isspace():
+            i += 1
+            continue
+        if c == '"':
+            j = i + 1
+            buf: list[str] = []
+            while j < n and inner[j] != '"':
+                if inner[j] == "\\" and j + 1 < n:
+                    buf.append(inner[j + 1])
+                    j += 2
+                else:
+                    buf.append(inner[j])
+                    j += 1
+            if j >= n:
+                return None  # 引号未闭合
+            segs.append("".join(buf))
+            i = j + 1
+        elif c in "[]#=":
+            return None
+        else:
+            j = i
+            while j < n and not inner[j].isspace() and inner[j] not in '."=[#':
+                j += 1
+            if j == i:
+                return None
+            segs.append(inner[i:j])
+            i = j
+        while i < n and inner[i].isspace():
+            i += 1
+        if i < n:
+            if inner[i] != ".":
+                return None
+            i += 1
+    return ".".join(segs) if segs else None
 
 
 def _rewrite_brain_sections(agent: dict, chosen: list[str]) -> None:
@@ -210,15 +258,14 @@ def _rewrite_brain_sections(agent: dict, chosen: list[str]) -> None:
         raise AgentError(f"{p} 不存在（agent 首启前被删？）——无法改写大脑段，请先确认实例目录")
     except OSError as e:
         raise AgentError(f"读取 {p} 失败：{e}")
-    # 2) 行游走识别顶层段头。段头 = 行首(可空白)单个方括号 [名字]，允许尾随
-    #    注释；keepends 保行尾逐字节原样。[[x]] 数组表不匹配（要求 ] 后只有
-    #    空白/注释/换行）。
+    # 2) 行游走识别顶层段头（引号段按字面键解析，见 _parse_header）。keepends
+    #    保行尾逐字节原样。[[x]] 数组表不算（内层以 [ 开头）。
     lines = text.splitlines(keepends=True)
     hdr: list[tuple[int, str]] = []
     for i, ln in enumerate(lines):
-        m = _HEADER_RE.match(ln)
-        if m:
-            hdr.append((i, m.group(1)))
+        name = _parse_header(ln)
+        if name is not None:
+            hdr.append((i, name))
     # 3) 大脑相关 = [brain] 或 [brains.<name>]（[brains.x.extra] 子表会匹配
     #    startswith("brains.")——它随父块一起进入待删区；不单独放行，
     #    否则删除父块后它变孤儿段，校验会拦下）
@@ -311,7 +358,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     runtime = (runtime or "").strip() or cfg.default_runtime
     if runtime not in ("systemd", "docker"):
         raise AgentError(f"runtime 只能是 systemd 或 docker：{runtime!r}")
-    _validate_brains(brain_list)
+    brain_list = _validate_brains(brain_list)
     src_ver = _resolve_source_choice((source_version or "").strip())
     # docker 前置早校验（在持锁/解压之前失败——零副作用）：
     # ① 内核版本门槛：Dockerfile 自 v2.7.19 起才有（源仓库旧版解压不出它）
@@ -649,8 +696,7 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     # 对 agent 做任意 PATCH 即触发重渲染，下次呼吸生效）。
     brains_new = None
     if "brains" in changes:
-        bl = [str(b) for b in (changes["brains"] or [])]
-        _validate_brains(bl)
+        bl = _validate_brains([str(b) for b in (changes["brains"] or [])])
         _rewrite_brain_sections(agent, bl)
         registry.update_agent(agent_id, {"brains": bl})   # 快照即真相（卡片/状态 tab）
         brains_new = bl
@@ -879,14 +925,26 @@ def ui_url(agent_id: str) -> dict:
     }
 
 
-def _get(agent: dict, path: str, token: str) -> "httpx.Response":
-    """观察 GET。httpx 在函数内惰性 import：它是观察通道独有的第三方依赖，
-    模块级 import 会让「venv 缺 httpx」炸掉整个 agentops（api 与 CLI 全量
-    import 本模块），惰性后只废 observe 一条窄通道。"""
-    import httpx
-    url = f"http://127.0.0.1:{agent['port']}{path}"
-    return httpx.get(url, headers={"Authorization": f"Bearer {token}"},
-                     timeout=_OBSERVE_TIMEOUT)
+def _get(agent: dict, path: str, token: str) -> tuple[int, dict]:
+    """观察 GET（纯标准库 urllib——CLI 全路径零第三方依赖，远端零管理机
+    无 venv/httpx 也能读事件流）。HTTP 非 2xx 也返回状态码与 body（尽量按
+    JSON 解，解不动给 {}）；网络层错误（拒绝连接/超时）上抛 URLError/
+    TimeoutError，由调用方统一转 AgentError。"""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{agent['port']}{path}",
+        headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=_OBSERVE_TIMEOUT) as r:
+            status, raw = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, e.read()
+    try:
+        data = json.loads(raw.decode())
+    except (ValueError, UnicodeDecodeError):
+        data = {}
+    return status, data
 
 
 def _tail_jsonl(path: Path, limit: int) -> list[dict]:
@@ -944,26 +1002,18 @@ def observe(agent_id: str, what: str, limit: int = 80) -> Any:
     limit = max(1, min(int(limit), 500))
     path = f"/v1/{what}" if what == "status" else f"/v1/events?limit={limit}"
     try:
-        import httpx
-    except ImportError:
-        raise AgentError(
-            "缺少 httpx 依赖（pip install httpx）——只读观察不可用，"
-            "管理面其余功能不受影响") from None
-    try:
-        r = _get(agent, path, _observe_token(agent))
-        if r.status_code == 401:
+        status, data = _get(agent, path, _observe_token(agent))
+        if status == 401:
             # 内核判定手里 token 失效（文件被改/撤销）——补签一枚再试一次
-            r = _get(agent, path, _observe_token(agent, force_new=True))
-        if r.status_code == 401:
+            status, data = _get(agent, path, _observe_token(agent, force_new=True))
+        if status == 401:
             raise AgentError("观察台 token 全部失效（重新签发一个）")
-        if r.status_code != 200:
-            raise AgentError(f"上游 HTTP {r.status_code}")
-        try:
-            data = r.json()
-        except ValueError:
+        if status != 200:
+            raise AgentError(f"上游 HTTP {status}")
+        if not isinstance(data, dict):
             # 端口被非 xuseek 服务占用等：200 但响应不是 JSON
             raise AgentError("上游响应不是 JSON（端口可能被非 xuseek 服务占用）")
-    except httpx.HTTPError as e:
+    except (urllib.error.URLError, TimeoutError) as e:
         raise AgentError(f"无法连接 agent 内核（{type(e).__name__}）") from None
     if what == "events" and isinstance(data, dict):
         return data.get("events", [])

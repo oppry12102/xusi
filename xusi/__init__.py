@@ -11,4 +11,4 @@
 data/webui_tokens.json），会话索引读磁盘 sessions.jsonl。systemd 进程/信号
 是宿主职责，不算通信。
 """
-__version__ = "2.4.0"
+__version__ = "2.4.1"

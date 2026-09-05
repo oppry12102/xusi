@@ -73,7 +73,7 @@
 curl -X POST http://SERVER:8601/api/agents \
      -H "Authorization: Bearer <admin token>" -H "Content-Type: application/json" \
      -d '{"name":"astronomy","mission":"持续跟踪近地小行星……",
-          "brains":["glm","kimi"],"expose":false,"note":"","source_version":"",
+          "brains":["deepseek-v4-pro","glm-5.3","kimi"],"expose":false,"note":"","source_version":"",
           "runtime":"systemd",
           "roots":[{"address":"https://root.example.com","token":"rt-…"}],
           "extra_config":""}'
@@ -81,7 +81,11 @@ curl -X POST http://SERVER:8601/api/agents \
 
 - `name`：显示名（1–64 字符）。**不进 id**——id 一律 `agent-<4位随机hex>`，
   前缀统一；已有 agent 的 id 不变
-- `brains`：首个为默认大脑，顺序 = 故障转移序；必须都在密钥池且已配 key
+- `brains`：首个为默认大脑；**故障转移只在与默认同档（tier 相同）的大脑之间
+  按此顺序循环**（power 在 power 档、economy 在 economy 档；未标注视同 power），
+  economy 档不参与主循环轮换，供智能体 `llm_call(tier=...)` 按档调用；
+  必须都在密钥池且已配 key。池条目 = 模型名（厂商段 `models = [...]` 展开为
+  每模型一个平级条目，如 deepseek-v4-pro / glm-5.3-flash；不分级）
 - `source_version`：缺省 = 仓库最新版（解压成实例私有副本）；versions/ 是源码唯一
   事实源，仓库为空时创建报错
 - `budgets`：{max_rounds}——v2.7.5+ 内核只认 `[limits] max_rounds`（max_seconds
@@ -125,7 +129,8 @@ curl -X POST http://SERVER:8601/api/agents \
 - `port`：**创建后固定，PATCH 返回 400**——agent 对外联络 = ip+port，
   改端口等于换地址（断已建立的互联与观测台入口）；要换端口只能删了重建
   （或克隆到新端口）
-- `brains`：大脑列表（首个为默认，顺序 = 故障转移序；非空、无重复、都在
+- `brains`：大脑列表（首个为默认；**故障转移只在与默认同档（tier 相同）的
+  大脑之间按此顺序循环**，economy 档不参与主循环轮换；非空、无重复、都在
   密钥池且已配 key）。手术式重渲染 config.toml 的 `[brain]` + `[brains.*]`
   段（按密钥池模板，其余段逐字节保留）→ 原子落盘（先 tomllib 校验，任何
   失败**原文件不动**）→ 注册表快照同步。**下次呼吸生效，不重启**（内核
