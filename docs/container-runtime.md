@@ -38,6 +38,10 @@ instances/
   钉成管理面用户后：容器内大脑的能力与 systemd 模式**完全对齐**（同 uid，
   含可改自己那份内核代码），落盘文件属主一致。显式设 `"0:0"` 即恢复
   容器内 root（大脑近似宿主 root——对应隔离讨论的 root 档，谨慎使用）。
+- **cap_add: NET_BIND_SERVICE**：普通用户 bind 1024 以下端口会被内核拒绝
+  （agent-8e09 实测 Permission denied）。这个窄能力只放开特权端口绑定——
+  大脑想对外服务（监听 80/443）不再依赖转发规则。加/删该行后下次 spawn
+  重建容器即生效（镜像不变，重建秒级）。
 - **spawn 每次重渲染**：路径/端口/镜像 tag 恒与注册表一致（expose 切换后
   `--host` 变化自然生效）；不要手改——手改的内容下次 spawn 就被覆盖。
 - **镜像 tag 含内核版本**：`xuseek-agent-<id>:<source_version>`。容器是
