@@ -269,6 +269,15 @@ def cmd_doctor(args) -> int:
               f"端口 {cfg.port} 无监听但 bind 被拒——可能刚停止（TIME_WAIT 窗口），稍候重试")
     check("agent 端口段有富余", len(ports.available_ports(5)) >= 5,
           f"可用示例 {ports.available_ports(5)}")
+    try:
+        unpriv = Path("/proc/sys/net/ipv4/ip_unprivileged_port_start").read_text().strip()
+    except OSError:
+        unpriv = ""
+    check("非 root 可绑低端口（ip_unprivileged_port_start=0）", unpriv == "0",
+          "" if unpriv == "0" else
+          (f"当前值 {unpriv or '?'}——80/443 直听会被拒："
+           f"`sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0` 并落 "
+           f"/etc/sysctl.d/99-unprivileged-ports.conf（remote install 已缺省铺好）"))
     if getattr(args, "mode", "serve") == "cli":
         print("  [INFO] CLI 模式：跳过管理面 token 检查（CLI 直调不鉴权 HTTP）")
     else:

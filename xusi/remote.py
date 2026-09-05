@@ -440,7 +440,8 @@ def reset_mux(h: dict) -> None:
 def install_host(h: dict):
     """新机接入（讨论稿 §七引导清单，含环境检查与配齐）：sudo 检查 → python3.12
     （deadsnakes）→ docker（缺省运行时：缺失则装、用户不在组则加、验证可用）
-    → linger → 推代码 tar → 播种 brains → doctor 自检。幂等：已就绪的步骤跳过。
+    → linger → 低端口放开（sysctl.d）→ 推代码 tar → 播种 brains → doctor
+    自检。幂等：已就绪的步骤跳过（sysctl 重设无害）。
     返回步骤日志（含 doctor 输出）。"""
     def step(cmd: str, desc: str, timeout: int = 900) -> None:
         yield desc
@@ -499,6 +500,15 @@ def install_host(h: dict):
     # ④ linger（ssh 断开会话死 → agent 单元死）
     yield from step(_sudo(h, "loginctl enable-linger $(id -un)"), "开启用户会话常驻（linger）…",
                      timeout=60)
+    # ⑤ 低端口对非 root 放开（80/443 直听，host 网络下全队生效；sysctl.d
+    # 持久化重启不丢）。不靠 cap_add：--cap-add 只扩大 bounding set，非 root
+    # 进程 CapEff 仍为 0（实测无效）——特权端口直接取消（ip_unprivileged_port_start=0）
+    yield from step(_sudo(h, "sysctl -w net.ipv4.ip_unprivileged_port_start=0"),
+                    "放开非 root 低端口绑定（ip_unprivileged_port_start=0）…", timeout=60)
+    yield from step(
+        _sudo(h, "sh -c \"echo net.ipv4.ip_unprivileged_port_start=0 > "
+                 "/etc/sysctl.d/99-unprivileged-ports.conf\""),
+        "写入 /etc/sysctl.d 持久化…", timeout=60)
     yield "推送代码包（xusi/ + docs/ + versions/）…"
     _push_code(h)
     # 播种密钥池：per-host brains 字段 > 控制端自己的 etc/brains.toml（决议② 全队同份）

@@ -122,9 +122,10 @@ def _render_compose(unit: str, source_dir: Path, home: Path, host: str,
     （普通用户）就写不了 mailbox.jsonl / webui_tokens.json（投信与观察台
     token 签发会 PermissionError）。钉成管理面用户后容器内大脑的能力与
     systemd 模式完全对齐（同 uid），落盘文件属主一致，管理面读写照常。
-    另补 **cap_add: NET_BIND_SERVICE**——普通用户 bind 1024 以下端口会被
-    内核拒绝（agent-8e09 实测 Permission denied），给这个窄能力后大脑可
-    直接监听 80/443（不限制 agent 能力；该 cap 仅放开特权端口绑定）。"""
+    低端口直听（80/443）不靠 cap_add——Linux 语义上 --cap-add 只扩大
+    bounding set，非 root 进程 CapEff 仍为 0（实测无效，已回退）。特权
+    端口在宿主侧直接取消：sysctl ip_unprivileged_port_start=0（install
+    ⑤ 缺省铺好 + sysctl.d 持久化，host 网络下全队生效）。"""
     from .config import get_config
     cfg = get_config()
     pip_index = cfg.docker_pip_index
@@ -154,8 +155,6 @@ services:
     container_name: {_yq(unit)}
     network_mode: host
     user: {_yq(cfg.docker_user)}
-    cap_add:
-      - NET_BIND_SERVICE
     volumes:
       - {_yq(f"{home}:/data")}
       - {_yq(f"{source_dir}/xuseek:/app/xuseek")}
