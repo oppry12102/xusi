@@ -4,17 +4,28 @@
 mission·brains·budgets·roots 快照（出生配置已渲染进 config.toml，
 此后归 agent 自治，快照仅供展示）。
 
-写入原子（tmp + os.replace，600——roots 快照含根 token 明文），进程内加锁。
+写入原子（tmp + os.replace，600——roots 快照含根 token 明文），进程内加锁；
+进程间用 etc/.registry.lock 的 flock 互斥——serve 进程（reconcile 线程）与
+CLI 进程互不可见，进程内锁管不住这两者（file_lock，见下）。
 """
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 _LOCK = threading.RLock()
+
+# flock 载体：file_lock 的深度计数被 _LOCK 保护（同取同放），嵌套调用
+# （create 的外层锁 + add_agent 的内层锁）复用同一 fd，不会对新 fd 二次
+# flock 自锁。
+_lock_fd = None
+_lock_depth = 0
 
 # 期望态：running（常驻呼吸）/ stopped（停机，不自动拉起）/ paused（SIGSTOP 冻结）
 DESIRED_STATES = ("running", "stopped", "paused")
@@ -27,6 +38,35 @@ def now_iso() -> str:
 def _agents_file() -> Path:
     from .config import get_config
     return get_config().agents_file
+
+
+@contextmanager
+def file_lock():
+    """跨进程互斥（flock 建议锁）：注册表/端口分配的临界段在 CLI 进程与 serve
+    进程（reconcile 线程）之间互斥。锁文件内容无意义，仅作 flock 载体（"a"
+    打开避免 truncate 竞态）。与 _LOCK 同取同放、深度计数复用同一 fd——嵌套
+    （如 create_agent 外层持锁后调 add_agent）不会二次 flock 自锁。"""
+    global _lock_fd, _lock_depth
+    with _LOCK:
+        if _lock_depth == 0:
+            f = _agents_file().parent / ".registry.lock"
+            f.parent.mkdir(parents=True, exist_ok=True)
+            _lock_fd = open(f, "a")
+            try:
+                os.chmod(f, 0o600)
+            except OSError:
+                pass
+            fcntl.flock(_lock_fd, fcntl.LOCK_EX)
+        _lock_depth += 1
+    try:
+        yield
+    finally:
+        with _LOCK:
+            _lock_depth -= 1
+            if _lock_depth == 0:
+                fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+                _lock_fd.close()
+                _lock_fd = None
 
 
 def _load() -> dict:
@@ -68,7 +108,7 @@ def get_agent(agent_id: str) -> dict | None:
 
 
 def add_agent(rec: dict) -> dict:
-    with _LOCK:
+    with _LOCK, file_lock():
         data = _load()
         data["agents"].append(rec)
         _save(data)
@@ -77,7 +117,7 @@ def add_agent(rec: dict) -> dict:
 
 def update_agent(agent_id: str, patch: dict) -> dict | None:
     """合并更新（浅合并顶层键），自动刷新 updated_at。"""
-    with _LOCK:
+    with _LOCK, file_lock():
         data = _load()
         for a in data["agents"]:
             if a.get("id") == agent_id:
@@ -89,7 +129,7 @@ def update_agent(agent_id: str, patch: dict) -> dict | None:
 
 
 def remove_agent(agent_id: str) -> bool:
-    with _LOCK:
+    with _LOCK, file_lock():
         data = _load()
         before = len(data["agents"])
         data["agents"] = [a for a in data["agents"] if a.get("id") != agent_id]

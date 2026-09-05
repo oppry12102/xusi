@@ -328,9 +328,10 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     roots_norm = _validate_roots(roots, src_ver)
 
     agent_id = gen_id()
-    # 端口分配 → 注册表落盘必须整体持锁（见 ports.ALLOC_LOCK）：窗口内含解压与
-    # 渲染（分钟级）。锁内串行——create 本就是低频 admin 操作。
-    with ports.ALLOC_LOCK:
+    # 端口分配 → 注册表落盘必须整体持锁（ports.ALLOC_LOCK 进程内 + registry
+    # 跨进程 flock——CLI 进程与 serve 进程并发 create 时不撞端口）：窗口内含
+    # 解压与渲染（分钟级）。锁内串行——create 本就是低频 admin 操作。
+    with ports.ALLOC_LOCK, registry.file_lock():
         port = ports.allocate(port)
         home = cfg.instance_home(agent_id)
         unit = cfg.unit_name(agent_id)

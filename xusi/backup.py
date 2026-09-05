@@ -415,12 +415,13 @@ def restore(backup_path: Path, *, new_id: str | None = None,
             raise BackupError(f"恢复失败：{e}") from None
 
     # 4. 写注册表（端口优先级：用户显式 > overwrite 沿用旧端口 > 自动分配）。
-    # 「分配 → 落盘」与 create/patch 互斥（ports.ALLOC_LOCK，防 TOCTOU 撞端口）。
+    # 「分配 → 落盘」与 create/patch 互斥（ports.ALLOC_LOCK 进程内 + registry
+    # 跨进程 flock，防 TOCTOU 撞端口——CLI 与 serve 并发时进程内锁管不住）。
     # 大脑校验与 create/patch 共用 brains.validate_selection（原先这里手抄了
     # 一份等价检查，会漂移）。不重渲染 config——config.toml 已从包里拷来含
     # 正确 key，重渲染会覆盖恢复的一致性。
     now = registry.now_iso()
-    with ports.ALLOC_LOCK:
+    with ports.ALLOC_LOCK, registry.file_lock():
         if port is not None:
             # 用户传的优先，但与 create 同一把尺：in_range + 三重检验——否则
             # 注册表会落一个撞车/越界端口，到 wait_health 90s 超时才暴露
