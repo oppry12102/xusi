@@ -853,6 +853,14 @@ def _observe_token(agent: dict, *, force_new: bool = False) -> str:
         return raw
 
 
+def observe_token(agent_id: str, *, force_new: bool = False) -> str:
+    """签发/轮换 agent 观察台 token（公开包装，CLI `observe-token` 用）。
+
+    serve 进程在 observe() 里自动签发；CLI-only 机器没有 serve，管理员用此命令
+    手动签发一枚（写 data/webui_tokens.json，内核每请求重读，免重启生效）。"""
+    return _observe_token(get_agent_or_404(agent_id), force_new=force_new)
+
+
 def ui_url(agent_id: str) -> dict:
     """观测台直连入口：<host>:<port>/ui/?token=<观察 token>。
 

@@ -6,10 +6,18 @@
     python -m xusi uninstall             # 停止并移除管理面服务（不动 agent 数据）
     python -m xusi status                # 全部 agent 一览
     python -m xusi doctor                # 环境自检
+    python -m xusi create|delete         # agent 增删（进程内直调 agentops，免 HTTP）
+    python -m xusi start|stop|pause|resume|restart
+    python -m xusi mail|mailbox          # 投信/收信（与 agent 的唯一写通道）
+    python -m xusi observe-token         # 签发观察台 token（CLI-only 机器用）
+
+CRUD 直调 agentops 是为了「远端零管理」：CLI-only 机器没有 serve 进程，
+CLI 与 serve 同一条实现（跨进程并发由 registry.file_lock 互斥）。
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import secrets
 import subprocess
@@ -169,9 +177,12 @@ def cmd_init(args) -> int:
 
 # ── status / doctor ──────────────────────────────────────────────────
 
-def cmd_status(_args) -> int:
+def cmd_status(args) -> int:
     from . import agentops
     rows = agentops.list_status()
+    if getattr(args, "json", False):
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
     if not rows:
         print("(注册表中还没有 agent —— 在 WebUI 或 POST /api/agents 创建)")
         return 0
@@ -183,7 +194,7 @@ def cmd_status(_args) -> int:
     return 0
 
 
-def cmd_doctor(_args) -> int:
+def cmd_doctor(args) -> int:
     from . import brains, ports, systemdctl, versions
     cfg = get_config()
     ok = True
@@ -228,9 +239,12 @@ def cmd_doctor(_args) -> int:
               f"端口 {cfg.port} 无监听但 bind 被拒——可能刚停止（TIME_WAIT 窗口），稍候重试")
     check("agent 端口段有富余", len(ports.available_ports(5)) >= 5,
           f"可用示例 {ports.available_ports(5)}")
-    check("管理面 token 已初始化", bool(get_config().admin_secret),
-          "" if get_config().admin_secret else
-          "[admin].secret 缺失——`xusi init` 生成，或在 etc/xusi.toml 手填")
+    if getattr(args, "mode", "serve") == "cli":
+        print("  [INFO] CLI 模式：跳过管理面 token 检查（CLI 直调不鉴权 HTTP）")
+    else:
+        check("管理面 token 已初始化", bool(get_config().admin_secret),
+              "" if get_config().admin_secret else
+              "[admin].secret 缺失——`xusi init` 生成，或在 etc/xusi.toml 手填")
     droots = get_config().default_roots
     if droots:
         print(f"  [INFO] 缺省根智能体：{len(droots)} 个（创建对话框预填："
@@ -320,7 +334,346 @@ def cmd_restore(args) -> int:
     return 0
 
 
+# ── agent CRUD（进程内直调 agentops——与 serve 同一条实现；跨进程并发由
+#    registry.file_lock 互斥；CLI-only 机器没有 serve 也能全功能管理）────────
+
+
+def _cli_agent_error(e: Exception) -> int:
+    print(f"error: {e}", file=sys.stderr)
+    return 2
+
+
+def _arg_text(val: str) -> str:
+    """@file → 读文件内容（mission/extra_config 这类长文本）；否则原样返回。"""
+    if val.startswith("@"):
+        return Path(val[1:]).expanduser().read_text(encoding="utf-8")
+    return val
+
+
+def _parse_roots(items: list[str]) -> list[dict]:
+    roots = []
+    for it in items:
+        parts = it.split()
+        if len(parts) != 2:
+            raise ValueError(f"--roots 需成对 'ADDRESS TOKEN'：{it!r}")
+        roots.append({"address": parts[0], "token": parts[1]})
+    return roots
+
+
+def cmd_create(args) -> int:
+    from . import agentops
+    if getattr(args, "spec", None):
+        body = json.loads(Path(args.spec).expanduser().read_text(encoding="utf-8"))
+    else:
+        body = {
+            "name": args.name,
+            "mission": _arg_text(args.mission),
+            "brain_list": [b for b in args.brains.split(",") if b.strip()],
+            "expose": bool(args.expose),
+            "port": args.port,
+            "budgets": json.loads(args.budgets) if args.budgets else None,
+            "note": args.note or "",
+            "source_version": args.source_version or "",
+            "roots": _parse_roots(args.roots) if args.roots else None,
+            "extra_config": _arg_text(args.extra_config) if args.extra_config else "",
+            "runtime": args.runtime or "",
+        }
+    try:
+        r = agentops.create_agent(**body)
+    except (agentops.AgentError, ValueError, TypeError, OSError) as e:
+        return _cli_agent_error(e)
+    print(f"  created       : {r['id']}")
+    print(f"  name          : {r['name']}")
+    print(f"  port          : {r['port']}")
+    print(f"  runtime       : {r['runtime']}")
+    print(f"  source        : {r.get('source_version', '')}")
+    return 0
+
+
+def cmd_agent_op(args) -> int:
+    from . import agentops
+    fn = {"start": agentops.start, "stop": agentops.stop, "pause": agentops.pause,
+          "resume": agentops.resume, "restart": agentops.restart}[args.op]
+    try:
+        r = fn(args.agent_id)
+    except agentops.AgentError as e:
+        return _cli_agent_error(e)
+    print(f"  {args.op} ok: {r['id']} 期望态={r.get('desired_state', '')}")
+    return 0
+
+
+def cmd_delete(args) -> int:
+    from . import agentops
+    try:
+        r = agentops.delete(args.agent_id)
+    except agentops.AgentError as e:
+        return _cli_agent_error(e)
+    print(f"  deleted: {r.get('id', args.agent_id)}（home 进 .trash）")
+    return 0
+
+
+def cmd_mail(args) -> int:
+    from . import agentops
+    try:
+        r = agentops.mail(args.agent_id, args.text)
+    except agentops.AgentError as e:
+        return _cli_agent_error(e)
+    print(f"  已投信 {r['id']}（{r['at']}）")
+    return 0
+
+
+def cmd_mailbox(args) -> int:
+    from . import agentops
+    try:
+        r = agentops.mailbox(args.agent_id, limit=args.limit, box=args.box)
+    except agentops.AgentError as e:
+        return _cli_agent_error(e)
+    msgs = r["messages"]
+    if not msgs:
+        print("(邮箱为空)")
+        return 0
+    for m in msgs:
+        print(f"[{m.get('at', '?')}] {m.get('sender')}: {m.get('text')}")
+    return 0
+
+
+def cmd_observe_token(args) -> int:
+    from . import agentops
+    try:
+        tok = agentops.observe_token(args.agent_id, force_new=bool(args.new))
+    except agentops.AgentError as e:
+        return _cli_agent_error(e)
+    print(f"observe token: {tok}")
+    print("（观察台 URL 带 ?mtoken=<此 token> 打开即认证）")
+    return 0
+
+
+# ── remote（控制端 fan-out：远端 xusi 批量管理，纯 ssh/scp）─────────────
+
+
+def _remote_one(h: dict, fn) -> int:
+    from . import remote
+    try:
+        cp = fn(h)
+    except remote.RemoteError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if cp.stdout:
+        print(cp.stdout, end="" if cp.stdout.endswith("\n") else "\n")
+    if cp.returncode != 0:
+        if cp.stderr:
+            print(cp.stderr, file=sys.stderr, end="")
+        return 2
+    return 0
+
+
+def _remote_status(hosts: list[dict], json_out: bool) -> int:
+    from . import remote
+    results = remote.fan_out(remote.remote_status, hosts)
+    rc = 0
+    if json_out:
+        merged: list[dict] = []
+        for res in results:
+            if "error" in res:
+                merged.append({"host": res["host"], "error": res["error"]})
+                rc = 2
+            else:
+                merged += [{"host": res["host"], **row} for row in res.get("rows", [])]
+        print(json.dumps(merged, ensure_ascii=False, indent=2))
+        return rc
+    w = max((len(h.get("name", "")) for h in hosts), default=10) + 2
+    for res in results:
+        if "error" in res:
+            print(f"  {res['host']:<{w}} ERROR {res['error']}")
+            rc = 2
+            continue
+        rows = res.get("rows", [])
+        if not rows:
+            print(f"  {res['host']:<{w}} (没有 agent)")
+            continue
+        for r in rows:
+            proc = r.get("process", {})
+            rt = "容器" if r.get("runtime") == "docker" else "系统"
+            print(f"  {res['host']:<{w}} {r['id']:22} 端口{r['port']:5} "
+                  f"{rt}:{proc.get('active', '?'):9} 期望:{r['desired_state']:8} {r['name']}")
+    return rc
+
+
+def _remote_doctor(hosts: list[dict]) -> int:
+    from . import remote
+
+    def one(h: dict) -> dict:
+        cp = remote.xusi_cmd(h, ["doctor", "--mode", "cli"], timeout=120)
+        return {"host": h.get("name", ""), "rc": cp.returncode,
+                "out": (cp.stdout or "") + (cp.stderr or "")}
+
+    rc = 0
+    for res in remote.fan_out(one, hosts):
+        print(f"== {res['host']} ==")
+        for line in res["out"].splitlines():
+            print(f"  {line}")
+        if res["rc"] != 0:
+            rc = 2
+    return rc
+
+
+def _remote_install(h: dict) -> int:
+    from . import remote
+    try:
+        for line in remote.install_host(h):
+            print(f"  {line}")
+    except remote.RemoteError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(f"  完成：{h['name']} 已接入——零服务、零端口，~/xusi 自洽目录")
+    return 0
+
+
+def _remote_upgrade(h: dict) -> int:
+    from . import remote
+    try:
+        remote.upgrade_host(h)
+    except remote.RemoteError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(f"  已重推代码：{h['name']}")
+    return 0
+
+
+def _remote_backup(h: dict, args) -> int:
+    from . import remote
+    agent_id = (list(args.rest) or [""])[0]
+    if not agent_id:
+        print("error: 需要 agent id：xusi remote backup --on H <agent-id>",
+              file=sys.stderr)
+        return 2
+    out_dir = Path(args.out).expanduser() if getattr(args, "out", None) \
+        else get_config().etc_dir / "remote-backups" / h.get("name", "host")
+    try:
+        local = remote.backup_host(h, agent_id, out_dir)
+    except remote.RemoteError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(f"  备份已拉回：{local}")
+    return 0
+
+
+def _remote_restore(h: dict, args) -> int:
+    from . import remote
+    try:
+        cp = remote.restore_host(h, Path(args.from_path), list(args.rest))
+    except remote.RemoteError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if cp.stdout:
+        print(cp.stdout, end="" if cp.stdout.endswith("\n") else "\n")
+    if cp.returncode != 0:
+        if cp.stderr:
+            print(cp.stderr, file=sys.stderr, end="")
+        return 2
+    return 0
+
+
+class _UsageError(Exception):
+    pass
+
+
+_REMOTE_HELP = """\
+usage: xusi remote <cmd> [--on NAME] [参数...]
+
+远端 xusi 批量管理（控制端 fan-out，纯 ssh/scp；清单 etc/hosts.toml）：
+  status    [--on NAME] [--json]        全队 agent 一览
+  doctor    [--on NAME]                 全队环境自检（CLI 模式）
+  create    --on NAME <本地 create 参数>  在指定机器创建 agent（@file/--spec 自动上传）
+  start|stop|pause|resume|restart|delete --on NAME <agent-id>
+  mail      --on NAME <agent-id> <text>  投信（与 agent 的唯一写通道）
+  mailbox   --on NAME <agent-id> [--limit N] [--box outbox|inbox]
+  observe-token --on NAME <agent-id> [--new]
+  install   --on NAME                   新机接入：python3.12 + linger + 推代码 + 播种 brains
+  upgrade   --on NAME                   重推代码 tar（管理面升级 / 内核版本发布）
+  backup    --on NAME <agent-id> [--out DIR]  远端备份 → 拉回控制端
+  restore   --on NAME --from FILE [恢复参数]   备份包推上远端并恢复（跨主机迁移）\
+"""
+
+
+def _remote_main(argv: list[str]) -> int:
+    """remote 子命令手工分发——argparse 的 REMAINDER 与嵌套 subparsers 是死结
+    （透传的 --name 等选项会被顶回父解析器报 unrecognized），所以这里不用
+    argparse：固定形状 `xusi remote <cmd> [--on NAME] [flag] [rest...]`，
+    flag 从 rest 里手工提取，其余原样透传远端。"""
+    from types import SimpleNamespace
+    if not argv or argv[0] in ("-h", "--help"):
+        print(_REMOTE_HELP, end="")
+        return 0 if argv else 2
+    rcmd = argv[0]
+    rest = list(argv[1:])
+
+    def take(flag: str, default: str | None = None, required: bool = False) -> str | None:
+        nonlocal rest
+        if flag not in rest:
+            if required:
+                print(f"error: remote {rcmd} 需要 {flag}\n", file=sys.stderr)
+                print(_REMOTE_HELP, file=sys.stderr, end="")
+                raise _UsageError
+            return default
+        i = rest.index(flag)
+        rest.pop(i)
+        if i >= len(rest):
+            print(f"error: {flag} 缺值\n", file=sys.stderr)
+            print(_REMOTE_HELP, file=sys.stderr, end="")
+            raise _UsageError
+        return rest.pop(i)
+
+    try:
+        need_on = rcmd not in ("status", "doctor")
+        host = take("--on", required=need_on)
+        json_out = False
+        if rcmd == "status" and "--json" in rest:
+            rest.remove("--json")
+            json_out = True
+        out = take("--out") if rcmd == "backup" else None
+        from_path = take("--from", required=True) if rcmd == "restore" else None
+    except _UsageError:
+        return 2
+
+    return cmd_remote(SimpleNamespace(rfn=rcmd, host=host, rest=rest,
+                                      json=json_out, out=out, from_path=from_path))
+
+
+def cmd_remote(args) -> int:
+    from . import remote
+    rfn = args.rfn
+    try:
+        if rfn in ("status", "doctor"):
+            hosts = [remote.find_host(args.host)] if getattr(args, "host", None) \
+                else remote.load_hosts()
+        else:
+            hosts = [remote.find_host(args.host)]
+    except remote.RemoteError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    if rfn == "status":
+        return _remote_status(hosts, json_out=bool(getattr(args, "json", False)))
+    if rfn == "doctor":
+        return _remote_doctor(hosts)
+    if rfn == "install":
+        return _remote_install(hosts[0])
+    if rfn == "upgrade":
+        return _remote_upgrade(hosts[0])
+    if rfn == "backup":
+        return _remote_backup(hosts[0], args)
+    if rfn == "restore":
+        return _remote_restore(hosts[0], args)
+    if rfn == "create":
+        return _remote_one(hosts[0], lambda h: remote.remote_create(h, list(args.rest),
+                                                                    timeout=900))
+    return _remote_one(hosts[0], lambda h: remote.remote_agent_op(h, rfn, list(args.rest)))
+
+
 def main() -> int:
+    # remote 走手工分发（REMAINDER 透传与 argparse 不兼容）；先于 parse_args 拦截
+    if len(sys.argv) > 1 and sys.argv[1] == "remote":
+        return _remote_main(sys.argv[2:])
     p = argparse.ArgumentParser(prog="xusi", description="墟司 —— xuseek 智能体管理面")
     p.add_argument("--version", action="version", version=f"xusi {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -333,8 +686,63 @@ def main() -> int:
 
     sub.add_parser("install", help="安装 systemd 用户服务并启动").set_defaults(fn=cmd_install)
     sub.add_parser("uninstall", help="停止并移除管理面服务").set_defaults(fn=cmd_uninstall)
-    sub.add_parser("status", help="agent 一览").set_defaults(fn=cmd_status)
-    sub.add_parser("doctor", help="环境自检").set_defaults(fn=cmd_doctor)
+
+    st_ = sub.add_parser("status", help="agent 一览")
+    st_.add_argument("--json", action="store_true", help="JSON 输出（remote 汇总用）")
+    st_.set_defaults(fn=cmd_status)
+
+    d_ = sub.add_parser("doctor", help="环境自检")
+    d_.add_argument("--mode", choices=("serve", "cli"), default="serve",
+                    help="cli：跳过管理面 token 检查（远端零管理机器）")
+    d_.set_defaults(fn=cmd_doctor)
+
+    c_ = sub.add_parser("create", help="创建并启动 agent（进程内直调 agentops）")
+    c_.add_argument("--spec", default=None,
+                    help="整体 JSON 文件（与 POST /api/agents 的 body 同构）")
+    c_.add_argument("--name", default="")
+    c_.add_argument("--mission", default="", help="mission 文本；@file 读文件")
+    c_.add_argument("--brains", default="", help="逗号分隔，首个为默认大脑")
+    c_.add_argument("--runtime", default="", help="systemd / docker（缺省取配置默认）")
+    c_.add_argument("--expose", action="store_true")
+    c_.add_argument("--port", type=int, default=None)
+    c_.add_argument("--budgets", default=None, help="JSON 字符串")
+    c_.add_argument("--note", default=None)
+    c_.add_argument("--source-version", default=None)
+    c_.add_argument("--roots", action="append", default=None,
+                    help="'ADDRESS TOKEN' 成对，可重复")
+    c_.add_argument("--extra-config", default=None, help="自由 TOML；@file 读文件")
+    c_.set_defaults(fn=cmd_create)
+
+    for op in ("start", "stop", "pause", "resume", "restart"):
+        op_ = sub.add_parser(op, help=f"{op} agent")
+        op_.add_argument("agent_id")
+        op_.set_defaults(fn=cmd_agent_op, op=op)
+
+    dl_ = sub.add_parser("delete", help="删除 agent（须先停止；home 进 .trash）")
+    dl_.add_argument("agent_id")
+    dl_.set_defaults(fn=cmd_delete)
+
+    ml_ = sub.add_parser("mail", help="给 agent 投信（与 agent 的唯一写通道）")
+    ml_.add_argument("agent_id")
+    ml_.add_argument("text")
+    ml_.set_defaults(fn=cmd_mail)
+
+    mb_ = sub.add_parser("mailbox", help="读 agent 邮箱")
+    mb_.add_argument("agent_id")
+    mb_.add_argument("--limit", type=int, default=50)
+    mb_.add_argument("--box", choices=("outbox", "inbox"), default="outbox",
+                     help="outbox=来信 / inbox=投信历史")
+    mb_.set_defaults(fn=cmd_mailbox)
+
+    ot_ = sub.add_parser("observe-token", help="签发/轮换观察台 token（CLI-only 机器）")
+    ot_.add_argument("agent_id")
+    ot_.add_argument("--new", action="store_true", help="强制轮换新 token")
+    ot_.set_defaults(fn=cmd_observe_token)
+
+    # remote 只在此登记 help 条目；实际解析在 main() 入口拦截 → _remote_main
+    # 手工分发（argparse 的 REMAINDER 与嵌套 subparsers 是死结，见 _remote_main）
+    sub.add_parser("remote", help="多机 fan-out（控制端：远端 xusi 批量管理，纯 ssh/scp）") \
+       .set_defaults(fn=lambda _args: 2)
 
     init_ = sub.add_parser("init", help="生成 / 轮换 [admin].secret（管理面 admin token）")
     init_.add_argument("--secret", dest="secret", default=None,
