@@ -179,12 +179,6 @@
       </div>
       <div style="display:flex;gap:8px;margin-top:9px" id="dnode-actions"></div>
     </div>
-    <div style="border:1px dashed var(--line);border-radius:10px;padding:14px;color:var(--sub);font-size:12.5px;margin-top:12px">
-      与 agent 的唯一<b>写</b>通道是<b>管理邮箱</b>：你投信（agent 呼吸时收取）；agent 回信写 outbox（这里展示）。
-      详情页的事件流 / 会话 / 工具统计是<b>只读观察</b>（/v1/events·status，token 缺失时管理面自动签发一枚；
-      会话索引读磁盘，agent 停机也能看）。
-      互联是 xuseek 内核<b>自家业务</b>（根智能体 + [[roots]] 出生交割，见内核 docs/interconnect.md）——xusi 不参与。
-    </div>
     <div style="border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin-top:12px">
       <div style="font-weight:650;margin-bottom:8px">远端机器 <span style="font-weight:400;color:var(--sub);font-size:12.5px">多副本零管理的机器簿（etc/hosts.toml，与 CLI 同源）</span></div>
       <table class="jt" style="width:100%">
