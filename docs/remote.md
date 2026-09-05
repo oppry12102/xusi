@@ -10,7 +10,7 @@
 ```
 控制端（唯一有代码、有思想的地方）                      远端（哑执行机 × N）
 /home/ubuntu/work/xusi ──scp 代码tar(约0.5MB)──▶ ~/work/xusi/ （代码+数据自洽目录，唯一落盘）
- WebUI「远端机器」页 / xusi remote <cmd> ──ssh──▶ python3.12 -m xusi <cmd>
+ WebUI 节点界面（远端机器段）/ xusi remote <cmd> ──ssh──▶ python3.12 -m xusi <cmd>
  etc/hosts.toml（清单，600，页面与 CLI 同源）   agent 单元由用户 systemd 守护（linger 已开）
 ```
 
@@ -19,7 +19,7 @@ CLI 全路径纯标准库——fastapi/httpx 只有 `serve` 用，远端不需�
 
 ## 1. 机器清单 `etc/hosts.toml`
 
-控制端仓库的 `etc/`（gitignored、600）。WebUI「远端机器」页与 CLI 同源同一份文件：
+控制端仓库的 `etc/`（gitignored、600）。WebUI 节点界面里的「远端机器」配置段与 CLI 同源同一份文件：
 
 ```toml
 [[host]]
@@ -43,16 +43,21 @@ password = "Ht430022"           # 先明文（文件 600）；也可 key = "~/.s
 ### ① 接入新机
 
 ```bash
-# 1. 把机器写进清单（WebUI「远端机器」页，或手编 etc/hosts.toml）
+# 1. 把机器写进清单（WebUI 节点界面里的「远端机器」段，或手编 etc/hosts.toml）
 # 2. 一条命令接入
 python3 -m xusi remote install --on VM-0-8-ubuntu
 ```
 
-install 四步（幂等，已就绪的跳过）：
-1. `python3.12` + `python3.12-venv`（deadsnakes PPA——与主流一致、可持续升级）
-2. `loginctl enable-linger`（ssh 断开会话死 → agent 单元死的坑）
-3. 推代码 tar（xusi/ + docs/ + versions/——内核版本仓库随之发布）
-4. 播种密钥池 brains.toml（600）+ `doctor --mode cli` 自检
+install 六步（幂等，已就绪的跳过）：
+1. **环境检查**：sudo 可用性（免密或密码同登录密码——装 python/docker 全靠它）
+2. `python3.12` + `python3.12-venv`（deadsnakes PPA——与主流一致、可持续升级）
+3. **docker 配齐**（缺省运行时）：本体缺就装 docker.io；用户不在组就
+   `usermod -aG docker`（关掉保温连接强推新会话后验证）；compose 插件独立
+   检查——docker 装了不等于有 compose，缺就单装 docker-compose-v2
+4. `loginctl enable-linger`（ssh 断开会话死 → agent 单元死的坑）
+5. 推代码 tar（xusi/ + docs/ + versions/——内核版本仓库随之发布）+ 播种密钥池
+   brains.toml（600）
+6. `doctor --mode cli` 自检收尾
 
 前置：sudo 免密（或密码同登录密码，install 用 `echo | sudo -S`）。
 
@@ -99,8 +104,9 @@ python3 -m xusi remote restore --on 另一台 --from 包路径 [--new-id …] [-
 
 ## 4. WebUI 远程总控
 
-控制端 WebUI 顶栏有**看板范围下拉框**（本机 / 每台远端机器）与「⛭ 远端机器」
-配置页（hosts.toml 同源维护）。切到某台远端机器后：
+控制端 WebUI 顶栏有**看板范围下拉框**（本机 / 每台远端机器），远端机器配置
+在**节点界面**（顶栏节点徽章点开）的「远端机器」段（hosts.toml 同源维护）。
+切到某台远端机器后：
 
 - **卡片网格**渲染该机全部 agent（状态/运行时/大脑/端口同款徽章），卡片操作
   （启动/停止/暂停/重启/删除/备份/详情）全部经控制端中转 ssh 作用于远端；
@@ -137,7 +143,7 @@ proxy = "socks5h://127.0.0.1:1080"   # 候选链路：本机 socks5h/socks5/http
 # via = "HK-relay"                   # 或经清单里另一台机器做 ssh 跳板（双密码支持）
 ```
 
-只配直连的机器不探测；`proxy`/`via` 配了才参与竞速（WebUI「远端机器」页有代理列）。
+只配直连的机器不探测；`proxy`/`via` 配了才参与竞速（节点界面的「远端机器」段有代理列）。
 传输也不走 scp：上传/下载都是 ssh+cat 单往返，免第二条连接。
 
 ## 6. 存量部署收编（自动化）

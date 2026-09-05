@@ -427,46 +427,92 @@ def _push_code(h: dict) -> None:
         raise RemoteError(f"远端解压失败：{(cp.stderr or '').strip()[:200]}")
 
 
-def install_host(h: dict) -> list[str]:
-    """新机接入（讨论稿 §七引导清单）：python3.12（deadsnakes，与主流一致可升级）
+def reset_mux(h: dict) -> None:
+    """关掉该机全部链路的保温连接——强制下一命令走新会话（如刚改过用户组，
+    复用中的会话还带旧组）。"""
+    target = f"{h['user']}@{h['host']}"
+    for kind, opts in _link_candidates(h):
+        subprocess.run(["ssh", "-O", "exit", "-o",
+                        f"ControlPath={_mux_path(h, kind, opts)}", target],
+                       capture_output=True)
+
+
+def install_host(h: dict):
+    """新机接入（讨论稿 §七引导清单，含环境检查与配齐）：sudo 检查 → python3.12
+    （deadsnakes）→ docker（缺省运行时：缺失则装、用户不在组则加、验证可用）
     → linger → 推代码 tar → 播种 brains → doctor 自检。幂等：已就绪的步骤跳过。
     返回步骤日志（含 doctor 输出）。"""
-    logs: list[str] = []
-
     def step(cmd: str, desc: str, timeout: int = 900) -> None:
-        logs.append(desc)
+        yield desc
         cp = run_remote(h, cmd, timeout=timeout)
         if cp.returncode != 0:
             out = (cp.stderr or cp.stdout).strip()[-400:]
             raise RemoteError(f"{desc} 失败：{out}")
 
+    # ① 环境检查：sudo 可用性（免密或密码同登录密码——装 python/docker 全靠它）
+    yield "环境检查：sudo…"
+    cp = run_remote(h, f"{_sudo(h, 'true')}", timeout=60)
+    if cp.returncode != 0:
+        raise RemoteError("sudo 不可用（免密或密码同登录密码都试过）——"
+                          "请先在远端配好 sudo，或把 sudo 密码写进清单 password 字段")
+
+    # ② python3.12（deadsnakes，与主流一致可升级）
     py = h.get("python", REMOTE_PY)
     cp = run_remote(h, f"{py} --version 2>/dev/null", timeout=30)
     if cp.returncode != 0:
-        step(f"{_sudo(h, 'apt-get update -qq')} && "
+        yield from step(f"{_sudo(h, 'apt-get update -qq')} && "
              f"{_sudo(h, 'apt-get install -y -qq software-properties-common')} && "
              f"{_sudo(h, 'add-apt-repository -y ppa:deadsnakes/ppa')} && "
              f"{_sudo(h, f'apt-get install -y {py} {py}-venv')}",
              f"安装 {py} + venv（deadsnakes PPA）…", timeout=1200)
     else:
-        logs.append(f"{py} 已就绪，跳过安装")
-    step(_sudo(h, "loginctl enable-linger $(id -un)"), "开启用户会话常驻（linger）…",
-         timeout=60)
-    logs.append("推送代码包（xusi/ + docs/ + versions/）…")
+        yield f"{py} 已就绪，跳过安装"
+
+    # ③ docker（缺省运行时——缺了就装、组没加就加、最终验证可用）
+    cp = run_remote(h, "docker --version 2>/dev/null", timeout=30)
+    if cp.returncode != 0:
+        yield from step(_sudo(h, "apt-get install -y -qq docker.io docker-compose-v2"),
+             "安装 docker.io + compose v2…", timeout=1200)
+    else:
+        yield "docker 已安装"
+    cp = run_remote(h, "docker info >/dev/null 2>&1 && echo __OK__", timeout=60)
+    if "__OK__" not in (cp.stdout or ""):
+        yield from step(_sudo(h, "usermod -aG docker $(id -un)"), "加入 docker 组…", timeout=60)
+        reset_mux(h)   # 复用中的会话还带旧组——关掉保温连接，验证走新会话
+        cp = run_remote(h, "docker info >/dev/null 2>&1 && echo __OK__", timeout=60)
+        if "__OK__" not in (cp.stdout or ""):
+            yield "  提示：docker 组已加但当前仍不可用——创建容器 agent 前重连（新 ssh 会话即生效）"
+        else:
+            yield "  docker 可用 ✓"
+    else:
+        yield "  docker 可用 ✓"
+    # compose 插件独立检查：docker 本体装了不等于有 compose（docker.io 不带）——
+    # 缺省运行时渲染 compose 靠它，缺了就单独装
+    cp = run_remote(h, "docker compose version >/dev/null 2>&1 && echo __OK__",
+                    timeout=60)
+    if "__OK__" not in (cp.stdout or ""):
+        yield from step(_sudo(h, "apt-get install -y -qq docker-compose-v2"),
+                        "安装 docker compose 插件…", timeout=1200)
+    else:
+        yield "  docker compose 插件 ✓"
+
+    # ④ linger（ssh 断开会话死 → agent 单元死）
+    yield from step(_sudo(h, "loginctl enable-linger $(id -un)"), "开启用户会话常驻（linger）…",
+                     timeout=60)
+    yield "推送代码包（xusi/ + docs/ + versions/）…"
     _push_code(h)
     # 播种密钥池：per-host brains 字段 > 控制端自己的 etc/brains.toml（决议② 全队同份）
     d = h.get("dir", REMOTE_DIR)
     seed = h.get("brains") or str(get_config().brains_file)
-    logs.append("播种密钥池（600）…")
+    yield "播种密钥池（600）…"
     scp_to(h, Path(seed).expanduser().resolve(), "/tmp/xusi-brains.toml")
-    step(f"mkdir -p {d}/etc && mv /tmp/xusi-brains.toml {d}/etc/brains.toml "
-         f"&& chmod 600 {d}/etc/brains.toml", "落盘 brains.toml…", timeout=60)
-    logs.append("doctor --mode cli 自检：")
+    yield from step(f"mkdir -p {d}/etc && mv /tmp/xusi-brains.toml {d}/etc/brains.toml "
+                     f"&& chmod 600 {d}/etc/brains.toml", "落盘 brains.toml…", timeout=60)
+    yield "doctor --mode cli 自检："
     cp = xusi_cmd(h, ["doctor", "--mode", "cli"], timeout=300)
-    logs.append((cp.stdout or "") + (cp.stderr or ""))
+    yield (cp.stdout or "") + (cp.stderr or "")
     if cp.returncode != 0:
         raise RemoteError("远端 doctor 未全过（见输出）")
-    return logs
 
 
 def upgrade_host(h: dict) -> None:
@@ -500,15 +546,14 @@ def _detect_root(h: dict) -> str:
                       "或手填清单 dir 字段")
 
 
-def adopt_host(h: dict) -> list[str]:
+def adopt_host(h: dict):
     """收编存量部署（自动化四步，幂等）：探测部署根 → 回写清单 dir/python →
     升级（git pull / 推 tar 自动分派）→ 停+禁 serve（单头原则）→ doctor 验证。
 
     不触碰 agent：注册表/实例目录原样接管，收编后既有 agent 出现在全队 status。"""
-    logs: list[str] = []
-    logs.append("探测既有部署根…")
+    yield "探测既有部署根…"
     root = _detect_root(h)
-    logs.append(f"  部署根：{root}")
+    yield f"  部署根：{root}"
     h["dir"] = root
     if not h.get("python"):
         cp = run_remote(h, f"[ -x {root}/.venv/bin/python ] && echo VENV", timeout=30)
@@ -526,20 +571,19 @@ def adopt_host(h: dict) -> list[str]:
             if x.get("name") == h.get("name"):
                 hosts[i] = saved
         save_hosts(hosts)
-        logs.append(f"  清单已回写：dir={h.get('dir')} python={h.get('python')}")
+        yield f"  清单已回写：dir={h.get('dir')} python={h.get('python')}"
     except RemoteError as e:
-        logs.append(f"  清单回写失败（可手填）：{e}")
-    logs.append("升级代码…")
+        yield f"  清单回写失败（可手填）：{e}"
+    yield "升级代码…"
     upgrade_host(h)
-    logs.append("停 + 禁 serve（单头原则，幂等）…")
+    yield "停 + 禁 serve（单头原则，幂等）…"
     _stop_serve(h)
-    logs.append("doctor --mode cli 自检：")
+    yield "doctor --mode cli 自检："
     cp = xusi_cmd(h, ["doctor", "--mode", "cli"], timeout=300)
-    logs.append((cp.stdout or "") + (cp.stderr or ""))
+    yield (cp.stdout or "") + (cp.stderr or "")
     if cp.returncode != 0:
         raise RemoteError("收编机 doctor 未全过（见输出；刚停 serve 30s 内端口"
                           "TIME_WAIT 误报属预期，稍候重试）")
-    return logs
 
 
 def _stop_serve(h: dict) -> None:

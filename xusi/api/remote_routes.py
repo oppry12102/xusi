@@ -182,7 +182,7 @@ async def api_remote_install(host: str = Query(...),
     同步等待 2-5 分钟。"""
     h = _host(host)
     try:
-        logs = await asyncio.to_thread(remote.install_host, h)
+        logs = list(await asyncio.to_thread(remote.install_host, h))
     except remote.RemoteError as e:
         raise HTTPException(400, str(e))
     agentops.audit("remote.install", host=h.get("name", host))
@@ -196,7 +196,7 @@ async def api_remote_adopt(host: str = Query(...),
     停+禁 serve（单头原则）→ doctor 验证。既有 agent 原样接管。"""
     h = _host(host)
     try:
-        logs = await asyncio.to_thread(remote.adopt_host, h)
+        logs = list(await asyncio.to_thread(remote.adopt_host, h))
     except remote.RemoteError as e:
         raise HTTPException(400, str(e))
     agentops.audit("remote.adopt", host=h.get("name", host))
