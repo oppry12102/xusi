@@ -62,6 +62,15 @@ class HostsPutReq(BaseModel):
     hosts: list[dict] = Field(description="[[host]] 数组整表")
 
 
+class RemoteRestoreReq(BaseModel):
+    """远端恢复：from_path = 控制端本机备份包路径（通常来自 /api/remote/backups）。"""
+    host: str = Field(min_length=1, description="目标机器（清单 name）")
+    from_path: str = Field(min_length=1, description="备份 tar.gz 的控制端本机路径")
+    new_id: str | None = Field(None, description="恢复后用新 id（避免冲突）")
+    port: int | None = Field(None, description="恢复后端口（默认自动分配）")
+    overwrite: bool = Field(False, description="覆盖同名已存在 agent")
+
+
 class BackupReq(BaseModel):
     reason: str = Field("manual", description="备份原因（manual/pre-modify/...）；写进 meta")
 

@@ -18,6 +18,8 @@
 - agent_routes.py   /api/agents/* CRUD + 生命周期 + 投信 + 收信 + 日志 + 只读观察（events/status）+ 会话（sessions，磁盘）
 - backup_routes.py  /api/agents/{id}/backup, /api/agents/{id}/backups, /api/backups/*, /api/restore
 - hosts_routes.py   /api/hosts（远端机器清单——多副本零管理的机器簿，控制端）
+- remote_routes.py  /api/remote/*（WebUI 远程总控：远端 agent CRUD/邮箱/会话/
+  接入/升级/备份/恢复——serve 中转 ssh，浏览器只连控制端 :8601）
 """
 from __future__ import annotations
 
@@ -34,6 +36,7 @@ from .meta_routes import router as meta_router
 from .agent_routes import router as agent_router
 from .backup_routes import router as backup_router
 from .hosts_routes import router as hosts_router
+from .remote_routes import router as remote_router
 
 
 def _json_str(s: str) -> str:
@@ -112,3 +115,4 @@ app.include_router(meta_router)
 app.include_router(agent_router)
 app.include_router(backup_router)
 app.include_router(hosts_router)
+app.include_router(remote_router)
