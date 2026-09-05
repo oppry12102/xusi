@@ -46,6 +46,8 @@
 | `POST /api/remote/agents/{id}/mail?host=X` | admin | 投信（唯一写通道） |
 | `GET /api/remote/agents/{id}/mailbox?box=outbox\|inbox&limit=50&host=X` | admin | 收信 |
 | `GET /api/remote/agents/{id}/sessions?limit=30&host=X` | admin | 会话索引（ssh 读远端磁盘，不反代） |
+| `GET /api/remote/agents/{id}/events?limit=80&host=X` | admin | 事件流一次性快照（ssh 观察通道，与本地同一条 observe 实现；内存环形缓冲） |
+| `GET /api/remote/agents/{id}/boot?host=X` | admin | BOOT.md 自述全文（磁盘文件，agent 停机也能看） |
 | `POST /api/remote/agents/{id}/observe-token?host=X` | admin | 观察台 token（卡片「观察台 ↗」直连用） |
 | `POST /api/remote/install?host=X` | admin | 一键接入（python3.12+linger+推代码+播种 brains+自检；2-5 分钟，幂等） |
 | `POST /api/remote/adopt?host=X` | admin | 一键收编存量部署（探测根→回写清单→升级→停 serve→验证；幂等） |

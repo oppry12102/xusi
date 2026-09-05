@@ -460,6 +460,29 @@ def cmd_observe_token(args) -> int:
     return 0
 
 
+def cmd_events(args) -> int:
+    """事件流一次性快照（与 serve 的观察通道同一条 agentops.observe 实现——
+    CLI-only 机器也能看）。固定 JSON 输出（remote 透传解析用）。"""
+    from . import agentops
+    try:
+        rows = agentops.observe(args.agent_id, "events", args.limit)
+    except agentops.AgentError as e:
+        return _cli_agent_error(e)
+    print(json.dumps({"id": args.agent_id, "events": rows}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_boot(args) -> int:
+    """读磁盘 workspace/BOOT.md 自述全文（agent 停机也能看）。固定 JSON 输出。"""
+    from . import agentops
+    try:
+        r = agentops.boot(args.agent_id)
+    except agentops.AgentError as e:
+        return _cli_agent_error(e)
+    print(json.dumps(r, ensure_ascii=False, indent=2))
+    return 0
+
+
 # ── remote（控制端 fan-out：远端 xusi 批量管理，纯 ssh/scp）─────────────
 
 
@@ -768,6 +791,15 @@ def main() -> int:
     ot_.add_argument("--json", action="store_true", help="只输出 token 本身（remote 解析用）")
     ot_.add_argument("--new", action="store_true", help="强制轮换新 token")
     ot_.set_defaults(fn=cmd_observe_token)
+
+    ev_ = sub.add_parser("events", help="事件流一次性快照（只读观察，内存环形缓冲）")
+    ev_.add_argument("agent_id")
+    ev_.add_argument("--limit", type=int, default=80)
+    ev_.set_defaults(fn=cmd_events)
+
+    bt_ = sub.add_parser("boot", help="读磁盘 workspace/BOOT.md 自述全文")
+    bt_.add_argument("agent_id")
+    bt_.set_defaults(fn=cmd_boot)
 
     # remote 只在此登记 help 条目；实际解析在 main() 入口拦截 → _remote_main
     # 手工分发（argparse 的 REMAINDER 与嵌套 subparsers 是死结，见 _remote_main）

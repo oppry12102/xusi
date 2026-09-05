@@ -132,6 +132,36 @@ async def api_remote_sessions(agent_id: str, host: str = Query(...),
     return {"id": agent_id, "sessions": rows}
 
 
+@router.get("/api/remote/agents/{agent_id}/events")
+async def api_remote_events(agent_id: str, host: str = Query(...),
+                            limit: int = 80,
+                            _rec: dict = Depends(require_admin)) -> dict:
+    """事件流：远端 CLI events（与本地观察通道同一条 agentops.observe 实现——
+    ssh 过去在远端本机 curl 127.0.0.1，token 现取，agent 端口零暴露）。
+    一次性快照（内存环形缓冲，进程重启清零），不是直播。"""
+    h = _host(host)
+    cp = await asyncio.to_thread(remote.remote_agent_op, h, "events",
+                                 [agent_id, "--limit", str(limit)])
+    _check(cp, "读事件流")
+    try:
+        return json.loads(cp.stdout)
+    except Exception:
+        raise HTTPException(502, "远端输出不是 JSON（远端版本过旧？先 remote upgrade）")
+
+
+@router.get("/api/remote/agents/{agent_id}/boot")
+async def api_remote_boot(agent_id: str, host: str = Query(...),
+                          _rec: dict = Depends(require_admin)) -> dict:
+    """Boot 自述：远端 CLI boot（读磁盘 workspace/BOOT.md，agent 停机也能看）。"""
+    h = _host(host)
+    cp = await asyncio.to_thread(remote.remote_agent_op, h, "boot", [agent_id])
+    _check(cp, "读 BOOT.md")
+    try:
+        return json.loads(cp.stdout)
+    except Exception:
+        raise HTTPException(502, "远端输出不是 JSON（远端版本过旧？先 remote upgrade）")
+
+
 @router.post("/api/remote/agents/{agent_id}/observe-token")
 async def api_remote_observe_token(agent_id: str, host: str = Query(...),
                                    new: bool = False,

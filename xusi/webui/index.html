@@ -1182,8 +1182,9 @@ $("#btn-restore-go").onclick = async () => {
 
 /* ── 详情抽屉 ─────────────────────────────────────── */
 const TABS = ["状态", "事件", "会话", "信箱", "工具", "Boot", "日志"];
-// 远端详情：事件/工具（/v1/events 进程内存直播）、Boot、日志不反代——只留文件通道
-const REMOTE_TABS = ["状态", "信箱", "会话"];
+// 远端详情：事件（ssh 观察通道一次性快照）与 Boot（磁盘文件）可看；
+// 工具统计/日志暂不提供——「观测台 ↗」直连看全貌
+const REMOTE_TABS = ["状态", "事件", "信箱", "会话", "Boot"];
 async function openDetail(id) {
   cur = id; curTab = "状态";
   drawer.classList.add("open");
@@ -1234,6 +1235,29 @@ function closeDetail() {
 }
 function switchTab(t) { curTab = t; loadDetail(); }
 
+/* 事件流渲染（本地/远端共用——远端走 ssh 观察通道同一条 observe 实现） */
+function eventsHtml(evs) {
+  return evs.slice().reverse().map(e => {
+    const t = e.at || e.sent_at || e._logged_at || "";
+    const k = e.event || e.kind || "ev";
+    let body = "";
+    if (k === "llm_response") {
+      body = `${esc(e.brain || "")} 第${esc(String(e.round ?? "?"))}轮 · ${esc(String(e.elapsed_s ?? "–"))}s · ¥${esc(String(e.round_cost_cny ?? 0))} · ctx ${esc(String(e.context_tokens ?? "–"))} tok<br>` +
+             `<span style="color:var(--sub)">${esc((e.content || "").slice(0, 160))}${(e.content || "").length > 160 ? "…" : ""}</span>`;
+    } else if (k === "llm_request") {
+      body = `<span style="color:var(--sub)">第${esc(String(e.round ?? "?"))}轮 · 请求大脑…</span>`;
+    } else if (k === "tool_exec") {
+      body = `<b>${esc(e.tool || "")}</b> <span class="mono" style="font-size:11.5px">${esc(String(e.args || "").slice(0, 110))}</span><br>` +
+             `<span style="color:var(--sub)">${esc(String(e.preview || "").slice(0, 110))}</span>`;
+    } else if (k === "session_start") {
+      body = `<span style="color:var(--sub)">会话开始 ${esc(e.session_id || "")}</span>`;
+    } else {
+      body = esc(JSON.stringify(e).slice(0, 200));
+    }
+    return `<div class="ev"><span class="t">${fmtT(t)} · ${esc(k)}</span><br>${body}</div>`;
+  }).join("") || "<p>（事件流为空：agent 刚启动，或进程重启过——事件仅存于内存）</p>";
+}
+
 async function loadDetail() {
   const id = cur;
   paneSnap = snapshotPane();
@@ -1263,7 +1287,7 @@ async function loadDetail() {
           <b>使命</b><span>${esc(s.mission)}</span>
           ${s.note ? `<b>备注</b><span>${esc(s.note)}</span>` : ""}
           ${rootsRow}
-          <b>观察</b><span style="color:var(--sub)">远端 CLI-only 观察：事件流/工具统计/Boot/日志不反代——「观测台 ↗」直连看全貌。</span>
+          <b>观察</b><span style="color:var(--sub)">远端观察：事件（ssh 一次性快照）与 Boot（磁盘文件）可用；工具统计/日志暂不提供——「观测台 ↗」直连看全貌。</span>
         </div>`
       );
         return;
@@ -1293,28 +1317,16 @@ async function loadDetail() {
         </div>`
       );
     } else if (curTab === "事件") {
+      if (scope !== "local") {
+        // 远端事件 = ssh 观察通道一次性快照（与本地同一条 agentops.observe）
+        const r = await api(`/api/remote/agents/${id}/events?limit=80&host=${encodeURIComponent(scope)}`);
+        if (id !== cur) return;
+        setPane(eventsHtml(r.events || []));
+        return;
+      }
       const r = await api(`/api/agents/${id}/events?limit=80`);
       if (id !== cur) return;
-      const evs = r.events || [];
-      setPane(evs.slice().reverse().map(e => {
-        const t = e.at || e.sent_at || e._logged_at || "";
-        const k = e.event || e.kind || "ev";
-        let body = "";
-        if (k === "llm_response") {
-          body = `${esc(e.brain || "")} 第${esc(String(e.round ?? "?"))}轮 · ${esc(String(e.elapsed_s ?? "–"))}s · ¥${esc(String(e.round_cost_cny ?? 0))} · ctx ${esc(String(e.context_tokens ?? "–"))} tok<br>` +
-                 `<span style="color:var(--sub)">${esc((e.content || "").slice(0, 160))}${(e.content || "").length > 160 ? "…" : ""}</span>`;
-        } else if (k === "llm_request") {
-          body = `<span style="color:var(--sub)">第${esc(String(e.round ?? "?"))}轮 · 请求大脑…</span>`;
-        } else if (k === "tool_exec") {
-          body = `<b>${esc(e.tool || "")}</b> <span class="mono" style="font-size:11.5px">${esc(String(e.args || "").slice(0, 110))}</span><br>` +
-                 `<span style="color:var(--sub)">${esc(String(e.preview || "").slice(0, 110))}</span>`;
-        } else if (k === "session_start") {
-          body = `<span style="color:var(--sub)">会话开始 ${esc(e.session_id || "")}</span>`;
-        } else {
-          body = esc(JSON.stringify(e).slice(0, 200));
-        }
-        return `<div class="ev"><span class="t">${fmtT(t)} · ${esc(k)}</span><br>${body}</div>`;
-      }).join("") || "<p>（事件流为空：agent 刚启动，或进程重启过——事件仅存于内存）</p>");
+      setPane(eventsHtml(r.events || []));
     } else if (curTab === "会话") {
       if (scope !== "local") {
         // 远端会话 = ssh tail 读磁盘 sessions.jsonl（文件通道，不反代）
@@ -1372,6 +1384,18 @@ async function loadDetail() {
     } else if (curTab === "工具") {
       await renderToolsTab(id);
     } else if (curTab === "Boot") {
+      if (scope !== "local") {
+        // 远端 Boot = 磁盘文件（workspace/BOOT.md），ssh 透传 CLI boot
+        const r = await api(`/api/remote/agents/${id}/boot?host=${encodeURIComponent(scope)}`);
+        if (id !== cur) return;
+        setPane(
+          (r.truncated ? `<p class="hint">（BOOT.md 超过 64000 字符，仅显示前段——完整内容见远端实例目录 workspace/BOOT.md）</p>` : "") +
+          (r.exists && r.text
+            ? `<div class="md">${mdRender(r.text)}</div>`
+            : `<p class="hint">（还没有 BOOT.md——agent 首口呼吸后才会写自述）</p>`)
+        );
+        return;
+      }
       const r = await api(`/api/agents/${id}/boot`);
       if (id !== cur) return;
       setPane(
