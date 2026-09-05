@@ -21,6 +21,12 @@ etc/inter_agent_tokens.json
 etc/agents.json
 # 管理操作审计
 etc/audit.jsonl
+# 远端机器清单（控制端 fan-out：SSH 密码先明文——600 权限但绝不入库）
+etc/hosts.toml
+# 注册表跨进程 flock 载体（运行时自建，内容无意义）
+etc/.registry.lock
+# 远端备份拉回目录（remote backup 的落点）
+etc/remote-backups/
 # agent 实例目录（config.toml 含 key、data/ 含 token 与会话）
 instances/
 # xuseek-v2 源码（自管副本：部署时从 GitHub 拉取，见 etc/xusi.toml source_repo）
