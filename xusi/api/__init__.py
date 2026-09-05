@@ -17,6 +17,7 @@
 - meta_routes.py    /api/health, /api/whoami, /api/node, /api/brains, /api/versions, /api/ports, /, /api/docs.md
 - agent_routes.py   /api/agents/* CRUD + 生命周期 + 投信 + 收信 + 日志 + 只读观察（events/status）+ 会话（sessions，磁盘）
 - backup_routes.py  /api/agents/{id}/backup, /api/agents/{id}/backups, /api/backups/*, /api/restore
+- hosts_routes.py   /api/hosts（远端机器清单——多副本零管理的机器簿，控制端）
 """
 from __future__ import annotations
 
@@ -27,11 +28,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 
-from .. import __version__, agentops, backup, versions
+from .. import __version__, agentops, backup, remote, versions
 from ..systemdctl import SystemdError
 from .meta_routes import router as meta_router
 from .agent_routes import router as agent_router
 from .backup_routes import router as backup_router
+from .hosts_routes import router as hosts_router
 
 
 def _json_str(s: str) -> str:
@@ -90,6 +92,13 @@ async def _backup_error(_req: Request, exc: backup.BackupError):
                     status_code=400, media_type="application/json")
 
 
+@app.exception_handler(remote.RemoteError)
+async def _remote_error(_req: Request, exc: remote.RemoteError):
+    """远端机器清单的入参/解析错误 → 400（而非 500）。"""
+    return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
+                    status_code=400, media_type="application/json")
+
+
 @app.exception_handler(ValueError)
 async def _value_error(_req: Request, exc: ValueError):
     """node.set_name 等用户入参校验抛 ValueError，转 400 而非 500。"""
@@ -102,3 +111,4 @@ async def _value_error(_req: Request, exc: ValueError):
 app.include_router(meta_router)
 app.include_router(agent_router)
 app.include_router(backup_router)
+app.include_router(hosts_router)

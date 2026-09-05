@@ -158,6 +158,7 @@
   </div>
   <div id="hstate" class="hint" style="color:var(--sub);font-size:12.5px"></div>
   <button id="btn-logout" hidden>退出</button>
+  <button id="btn-hosts">⛭ 远端机器</button>
   <button id="btn-new" class="pri">＋ 新建 agent</button>
 </header>
 
@@ -193,6 +194,25 @@
     <div class="err" id="rename-err" hidden></div>
   </div>
   <div class="dlg-f"><button onclick="document.getElementById('dlg-rename').close()">取消</button><button class="pri" id="rename-go">保存</button></div>
+</dialog>
+
+<!-- 远端机器（多副本零管理的机器簿） -->
+<dialog id="dlg-hosts">
+  <div class="dlg-h">远端机器 <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">多副本零管理的机器簿（etc/hosts.toml，与 CLI 同源）</span>
+    <button onclick="document.getElementById('dlg-hosts').close()" style="margin-left:auto">✕</button></div>
+  <div class="dlg-b">
+    <table class="jt" style="width:100%">
+      <thead><tr><th>名字</th><th>IP / 域名</th><th>SSH 端口</th><th>用户</th><th>密码</th><th></th></tr></thead>
+      <tbody id="hosts-body"></tbody>
+    </table>
+    <div style="margin-top:8px"><button onclick="addHostRow()">＋ 添加</button></div>
+    <div class="hint" style="color:var(--sub);font-size:12px;margin-top:8px">
+      密码先明文（文件 600 权限）；也可用 SSH key。保存后 CLI 的 <span class="mono">xusi remote …</span>
+      与远程接入（install / create / status）即按此清单工作。
+    </div>
+    <div class="err" id="hosts-err" hidden></div>
+  </div>
+  <div class="dlg-f"><button onclick="document.getElementById('dlg-hosts').close()">取消</button><button class="pri" id="hosts-save">保存</button></div>
 </dialog>
 
 <main>
@@ -397,6 +417,8 @@ loadNode();
 document.getElementById("btn-node").onclick = openNodeDialog;
 document.getElementById("btn-new").onclick = openNew;
 document.getElementById("btn-logout").onclick = logout;
+document.getElementById("btn-hosts").onclick = openHosts;
+document.getElementById("hosts-save").onclick = saveHosts;
 document.getElementById("tip-login").onclick = login;
 document.getElementById("tip-tok").addEventListener("keydown",
   e => { if (e.key === "Enter") login(); });
@@ -481,6 +503,51 @@ async function doRename() {
     document.getElementById("dlg-rename").close();
     await loadNode();
   } catch (e) { $("#rename-err").textContent = String(e.message || e); $("#rename-err").hidden = false; }
+}
+
+/* ── 远端机器（多副本零管理的机器簿）────────────────────── */
+async function openHosts() {
+  $("#hosts-err").hidden = true;
+  $("#hosts-body").innerHTML = "";
+  try {
+    const r = await api("/api/hosts");
+    (r.hosts || []).forEach(h => addHostRow(h));
+  } catch (e) {
+    $("#hosts-err").textContent = String(e.message || e);
+    $("#hosts-err").hidden = false;
+  }
+  document.getElementById("dlg-hosts").showModal();
+}
+
+function addHostRow(h = {}) {
+  const tr = document.createElement("tr");
+  const mk = (v, ph) => { const i = document.createElement("input");
+    i.value = v ?? ""; i.placeholder = ph || ""; i.style.width = "100%"; return i; };
+  [mk(h.name, "如 VM-0-8-ubuntu"), mk(h.host, "1.2.3.4"),
+   mk(h.port ?? 22, "22"), mk(h.user, "ubuntu")].forEach(inp => {
+    const td = document.createElement("td"); td.appendChild(inp); tr.appendChild(td); });
+  const pw = mk(h.password ?? "", "先明文（600）"); pw.type = "password";
+  const td1 = document.createElement("td"); td1.appendChild(pw); tr.appendChild(td1);
+  const rm = document.createElement("button"); rm.textContent = "✕"; rm.title = "删除此行";
+  rm.onclick = () => tr.remove();
+  const td2 = document.createElement("td"); td2.appendChild(rm); tr.appendChild(td2);
+  $("#hosts-body").appendChild(tr);
+}
+
+async function saveHosts() {
+  const hosts = [...document.querySelectorAll("#hosts-body tr")].map(tr => {
+    const [name, host, port, user, pw] = tr.querySelectorAll("input");
+    return {name: name.value.trim(), host: host.value.trim(),
+            port: parseInt(port.value, 10) || 22,
+            user: user.value.trim(), password: pw.value};
+  });
+  try {
+    await api("/api/hosts", {method: "PUT", body: JSON.stringify({hosts})});
+    document.getElementById("dlg-hosts").close();
+  } catch (e) {
+    $("#hosts-err").textContent = String(e.message || e);
+    $("#hosts-err").hidden = false;
+  }
 }
 
 const fmtT = s => s ? new Date(s.replace("Z", "") + "Z").toLocaleString("zh-CN", {hour12: false}) : "-";

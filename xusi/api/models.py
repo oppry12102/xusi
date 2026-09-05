@@ -56,6 +56,12 @@ class MailReq(BaseModel):
     text: str = Field(min_length=1)
 
 
+class HostsPutReq(BaseModel):
+    """远端机器清单整表替换（每条目 name/host/user 必填；字段白名单见
+    remote.HOST_FIELDS——password 先明文，文件 600）。"""
+    hosts: list[dict] = Field(description="[[host]] 数组整表")
+
+
 class BackupReq(BaseModel):
     reason: str = Field("manual", description="备份原因（manual/pre-modify/...）；写进 meta")
 

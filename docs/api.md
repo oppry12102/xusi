@@ -29,6 +29,8 @@
 | `GET /api/default-roots` | admin | 缺省根智能体（`etc/xusi.toml` 的 `[[default_roots]]`，创建对话框预填；**每次直读盘面，换根 token 改 toml 即生效、免重启**）：`{"roots":[{address, token}]}` |
 | `GET /api/versions` | admin | xuseek-v2 版本仓库清单（创建时 `source_version` 用它） |
 | `GET /api/ports/available?count=10` | admin | 可用端口（自动分配下拉用） |
+| `GET /api/hosts` | admin | 远端机器清单（etc/hosts.toml；WebUI「远端机器」页用；**密码先明文回显**） |
+| `PUT /api/hosts` | admin | 整表替换清单（原子写 600；条目字段白名单见 remote.HOST_FIELDS，name/host/user 缺一报 400） |
 
 ## 2. Agent CRUD 与生命周期
 
