@@ -148,8 +148,19 @@
   .md th,.md td{border:1px solid var(--line);padding:4px 9px}
   .md th{background:#f6f7fa}
   .md a{color:var(--acc)}
-  .sendbox{display:flex;gap:8px;margin:10px 0}
+  /* 信箱输入条：钉在面板底部（滚动时固定，历史消息从其上方滚过）；
+     负边距抵消 #pane 的 padding，铺满整宽并贴住最底 */
+  .sendbox{display:flex;gap:8px;margin:10px -18px -14px;padding:10px 18px 14px;
+           position:sticky;bottom:0;z-index:2;background:var(--bg);
+           border-top:1px solid var(--line)}
   .sendbox textarea{min-height:52px}
+  /* 信箱对话：管理员靠右（强调色气泡），大脑靠左（卡片底气泡） */
+  .chatrow{display:flex;margin-bottom:8px}
+  .chatrow.me{justify-content:flex-end}
+  .bubble{max-width:78%;padding:7px 11px;border-radius:10px;border:1px solid var(--line);
+          background:var(--card);font-size:13px;white-space:pre-wrap;word-break:break-word}
+  .bubble .t{font-size:11px;font-family:var(--mono);opacity:.72;margin-bottom:3px}
+  .chatrow.me .bubble{background:var(--acc);border-color:var(--acc);color:#fff}
   #login-tip{margin:60px auto;max-width:440px;text-align:center;color:var(--sub)}
 </style>
 </head>
@@ -755,6 +766,7 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 
 /* ── 面板重绘的状态保全（信箱草稿等输入不被打扰）───────── */
 let paneSnap = null;
+let mailToBottom = false;   // 打开信箱 tab / 刚投递后：面板滚到底（最新消息在底部）
 
 function snapshotPane() {
   const pane = $("#pane");
@@ -1107,7 +1119,10 @@ function closeDetail() {
   cur = null; drawer.classList.remove("open");
   if (!pollTimer && tok) refresh(true);
 }
-function switchTab(t) { curTab = t; loadDetail(); }
+function switchTab(t) {
+  if (t === "信箱" && curTab !== "信箱") mailToBottom = true;
+  curTab = t; loadDetail();
+}
 
 /* 事件流渲染（本地/远端共用——远端走 ssh 观察通道同一条 observe 实现） */
 function eventsHtml(evs) {
@@ -1203,11 +1218,12 @@ async function loadDetail() {
       setPane(eventsHtml(r.events || []));
     } else if (curTab === "会话") {
       if (scope !== "local") {
-        // 远端会话 = ssh tail 读磁盘 sessions.jsonl（文件通道，不反代）
+        // 远端会话 = ssh tail 读磁盘 sessions.jsonl（文件通道，不反代）；
+        // tail 是时间正序，倒过来最新在前（与本地一致）
         const r = await api(`/api/remote/agents/${id}/sessions?limit=30&host=${encodeURIComponent(scope)}`);
         if (id !== cur) return;
         const ss = r.sessions || [];
-        setPane(ss.map(s => sessRowHtml(s)).join("") || "<p>（还没有完成的呼吸）</p>");
+        setPane(ss.slice().reverse().map(s => sessRowHtml(s)).join("") || "<p>（还没有完成的呼吸）</p>");
         return;
       }
       // 每口呼吸一条：点行展开完整总结（final_summary，markdown 渲染）
@@ -1231,14 +1247,11 @@ async function loadDetail() {
         if (id !== cur) return;
         setPane(
 `
-        <h4 style="margin:4px 0 6px">投信（追加 mailbox.jsonl，休眠中 5s 内唤醒——唯一的写通道）</h4>
+        ${mailChatHtml(o, m)}
         <div class="sendbox"><textarea id="m-txt" placeholder="给大脑写信…（改 mission / 换大脑 / 调预算都在这里）"></textarea>
-          <button class="pri" onclick="sendMail('${id}')">投递</button></div>
-        <h4 style="margin:12px 0 6px">来信（大脑 → 管理员）</h4>
-        ${(o.messages || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)} · ${esc(x.sender || "brain")}</div>${esc(x.text)}</div>`).join("") || "<p class='hint'>（大脑还没有来信——它有话想说时会出现在这里）</p>"}
-        <h4 style="margin:12px 0 6px">投信历史（管理员 → 大脑）</h4>
-        ${(m.messages || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)}</div>${esc(x.text)}</div>`).join("") || "<p class='hint'>（还没有投过信）</p>"}`
+          <button class="pri" onclick="sendMail('${id}')">投递</button></div>`
       );
+        if (mailToBottom) { $("#pane").scrollTop = $("#pane").scrollHeight; mailToBottom = false; }
         return;
       }
       const [o, m] = await Promise.all([
@@ -1247,14 +1260,11 @@ async function loadDetail() {
       if (id !== cur) return;
       setPane(
 `
-        <h4 style="margin:4px 0 6px">投信（追加 mailbox.jsonl，休眠中 5s 内唤醒——唯一的写通道；事件/会话观察为只读）</h4>
+        ${mailChatHtml(o, m)}
         <div class="sendbox"><textarea id="m-txt" placeholder="给大脑写信…（改 mission / 换大脑 / 调预算都在这里）"></textarea>
-          <button class="pri" onclick="sendMail('${id}')">投递</button></div>
-        <h4 style="margin:12px 0 6px">来信（大脑 → 管理员）</h4>
-        ${(o.messages || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)} · ${esc(x.sender || "brain")}</div>${esc(x.text)}</div>`).join("") || "<p class='hint'>（大脑还没有来信——它有话想说时会出现在这里）</p>"}
-        <h4 style="margin:12px 0 6px">投信历史（管理员 → 大脑）</h4>
-        ${(m.messages || []).slice().reverse().map(x => `<div class="mailrow"><div class="t">${fmtT(x.at)}</div>${esc(x.text)}</div>`).join("") || "<p class='hint'>（还没有投过信）</p>"}`
+          <button class="pri" onclick="sendMail('${id}')">投递</button></div>`
       );
+        if (mailToBottom) { $("#pane").scrollTop = $("#pane").scrollHeight; mailToBottom = false; }
     } else if (curTab === "工具") {
       await renderToolsTab(id);
     } else if (curTab === "Boot") {
@@ -1292,7 +1302,23 @@ async function sendMail(id) {
     ? `/api/agents/${id}/mail`
     : `/api/remote/agents/${id}/mail?host=${encodeURIComponent(scope)}`;
   try { await api(path, {method: "POST", body: JSON.stringify({text: t})});
-    $("#m-txt").value = ""; loadDetail(); } catch (e) { alert(e.message); }
+    $("#m-txt").value = ""; mailToBottom = true; loadDetail(); } catch (e) { alert(e.message); }
+}
+
+function mailChatHtml(o, m) {
+  /* 信箱 = 聊天对话：来信（大脑→管理员）与投信历史（管理员→大脑）按时间
+     合并成一条对话流——管理员靠右（强调色气泡），大脑靠左。 */
+  const rows = [
+    ...(o.messages || []).map(x => ({ ...x, who: "brain" })),
+    ...(m.messages || []).map(x => ({ ...x, who: "admin" })),
+  ].sort((a, b) => String(a.at || "").localeCompare(String(b.at || "")));
+  if (!rows.length) return "<p class='hint'>（还没有信件——在下方输入框投信，大脑有话想说时会出现在这里）</p>";
+  return rows.map(x => {
+    const me = x.who === "admin";
+    return `<div class="chatrow${me ? " me" : ""}"><div class="bubble">` +
+      `<div class="t">${fmtT(x.at)} · ${esc(me ? "管理员" : (x.sender || "brain"))}</div>` +
+      `${esc(x.text)}</div></div>`;
+  }).join("");
 }
 
 /* ── 呼吸总结（会话列表）与工具统计 ─────────────────── */
