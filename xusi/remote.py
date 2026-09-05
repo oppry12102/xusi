@@ -633,7 +633,10 @@ def restore_host(h: dict, local_tar: Path, argv: list[str],
 
 # agent 家目录下允许 ssh tail 读取的只读数据文件（白名单，防路径注入）
 _READABLE_FILES = ("data/sessions.jsonl", "data/outbox.jsonl", "data/mailbox_log.jsonl")
-_AGENT_ID_RE = r"agent-[0-9a-f]{4}"
+# agent id 字符级白名单：本机新生成是 agent-<4hex>，但存量老机还有 llm-N-xxxx
+# 等老命名（id 前缀不统一、不可枚举）——id 只用于拼实例目录名与 ssh 参数
+# （ssh 侧已 shlex.quote），字符级白名单即可防路径注入/越权；按前缀枚举反而漏掉老命名。
+_AGENT_ID_RE = r"[a-z0-9][a-z0-9-]{0,63}"
 
 
 def read_remote_file(h: dict, agent_id: str, rel: str, *, limit: int = 50,
