@@ -76,8 +76,11 @@ def gen_id(_name: str = "") -> str:
     """新 agent 的 id：前缀统一 agent-<4 位随机 hex>，与显示名彻底解耦——
     名字不进 id（拼音残根/英文词不再产生奇形前缀）；辨识度归别名
     （注册表 name 字段，管理员随时改、可重复，纯显示）。已有 agent 的 id 不动。
-    撞号重摇：本机注册表查重兜底（终身唯一性另由出生 config 的 instance_id
-    交割保证——那是实例自己的身份事实源，注册表只是「本机住着谁」的缓存）。"""
+
+    id 只是本机簿记句柄（注册表 = 「本机住着谁」的缓存）；agent 对外的
+    身份是 ip+port 与自己起的名字。撞号重摇（本机注册表查重）必须发生在
+    create_agent 的创建锁内：锁窗口含解压（分钟级），锁外查重的话 CLI
+    与 serve 并发 create 会各摇各的、双双注册同号。"""
     while True:
         aid = f"agent-{uuid.uuid4().hex[:4]}"
         if registry.get_agent(aid) is None:
@@ -189,12 +192,14 @@ def _validate_roots(roots: list | None, src_ver: str) -> list[dict]:
     return uniq
 
 
-def _parse_header(ln: str) -> str | None:
-    """段头行 → 平铺段名；非段头行返回 None。
+def _parse_header(ln: str) -> list[str] | None:
+    """段头行 → 段名分段列表（供结构级判断，见 _rewrite_brain_sections）；
+    非段头行返回 None。
 
     TOML 段头：[bare(.bare)*]，点 = 分层；引号段（["a.b"]）是**字面键**——
-    点不参与分层（brain 名可含点，如 [brains."glm-5.3"]）。[[x]] 数组表
-    不算（内层以 [ 开头）。解析失败（引号未闭合/非法字符）按非段头处理。"""
+    整段一个键、点不参与分层（["brains.notes"] ≠ brains 表的 notes 子表，
+    而 [brains."glm-5.3"] 的引号只在子键）。[[x]] 数组表不算（内层以 [
+    开头）。解析失败（引号未闭合/非法字符）按非段头处理。"""
     m = re.match(r'^\s*\[(.*?)\]\s*(?:#.*)?(?:\r?\n)?$', ln)
     if not m:
         return None
@@ -236,7 +241,7 @@ def _parse_header(ln: str) -> str | None:
             if inner[i] != ".":
                 return None
             i += 1
-    return ".".join(segs) if segs else None
+    return segs if segs else None
 
 
 def _rewrite_brain_sections(agent: dict, chosen: list[str]) -> None:
@@ -261,16 +266,19 @@ def _rewrite_brain_sections(agent: dict, chosen: list[str]) -> None:
     # 2) 行游走识别顶层段头（引号段按字面键解析，见 _parse_header）。keepends
     #    保行尾逐字节原样。[[x]] 数组表不算（内层以 [ 开头）。
     lines = text.splitlines(keepends=True)
-    hdr: list[tuple[int, str]] = []
+    hdr: list[tuple[int, list[str]]] = []
     for i, ln in enumerate(lines):
-        name = _parse_header(ln)
-        if name is not None:
-            hdr.append((i, name))
-    # 3) 大脑相关 = [brain] 或 [brains.<name>]（[brains.x.extra] 子表会匹配
-    #    startswith("brains.")——它随父块一起进入待删区；不单独放行，
-    #    否则删除父块后它变孤儿段，校验会拦下）
-    is_brain = lambda n: n == "brain" or (n.startswith("brains.") and len(n) > 7)
-    deleted = [i for i, n in hdr if is_brain(n)]
+        segs = _parse_header(ln)
+        if segs is not None:
+            hdr.append((i, segs))
+    # 3) 大脑相关 = [brain] 或 [brains.<name>]——按段结构判，不能拿平铺名
+    #    startswith：["brains.notes"] 是名为 brains.notes 的顶层**字面键**
+    #    （单段），不是 brains 表的子表——agent 自有配置，逐字节保留；
+    #    [brains."glm-5.3"] 引号只在子键（两段），照删。[brains.x.extra]
+    #    子表随父块一起进入待删区（不单独放行，否则删除父块后它变孤儿段，
+    #    校验会拦下）。
+    is_brain = lambda s: s == ["brain"] or (s[0] == "brains" and len(s) > 1)
+    deleted = [i for i, s in hdr if is_brain(s)]
     # 末尾补一个 \n = 与后续保留内容之间留空行分隔（被删块原本带的空行随块
     # 一起删掉了；render_brain_section 只保证块间空行，不保证块尾空行）
     rendered = "\n".join(brains.render_brain_section(chosen)) + "\n"
@@ -374,11 +382,13 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     # roots 校验在持端口锁之前——失败零副作用（版本门槛/条目形状，见 _validate_roots）
     roots_norm = _validate_roots(roots, src_ver)
 
-    agent_id = gen_id()
     # 端口分配 → 注册表落盘必须整体持锁（ports.ALLOC_LOCK 进程内 + registry
     # 跨进程 flock——CLI 进程与 serve 进程并发 create 时不撞端口）：窗口内含
     # 解压与渲染（分钟级）。锁内串行——create 本就是低频 admin 操作。
+    # gen_id 也进锁：它的注册表查重只有在锁内做才靠得住（锁外摇号 =
+    # 两边各查一次空表、双双落同一个号）。
     with ports.ALLOC_LOCK, registry.file_lock():
+        agent_id = gen_id()
         port = ports.allocate(port)
         home = cfg.instance_home(agent_id)
         unit = cfg.unit_name(agent_id)
@@ -691,17 +701,9 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     if bad:
         raise AgentError(f"不可修改的字段：{', '.join(sorted(bad))}（可改：{', '.join(sorted(_PATCHABLE))}）")
 
-    # 大脑段手术放最前（最易失败——失败时其余字段一律未落，400 语义干净）。
-    # 幂等 resync：与注册表快照相同也重渲染（轮换 brains.toml 的 key 后
-    # 对 agent 做任意 PATCH 即触发重渲染，下次呼吸生效）。
-    brains_new = None
-    if "brains" in changes:
-        bl = _validate_brains([str(b) for b in (changes["brains"] or [])])
-        _rewrite_brain_sections(agent, bl)
-        registry.update_agent(agent_id, {"brains": bl})   # 快照即真相（卡片/状态 tab）
-        brains_new = bl
-
     # runtime 切换：换进程载体（状态全在实例目录，只换载体）。
+    # 校验整体前置——brains 手术/注册表写入/载体清理都发生在全部校验之后，
+    # 任何 400 ⇒ 零副作用（否则 brains 已切、runtime 拒绝，半拉子状态）。
     # 门控：必须停止态——运行中切换会让新旧两个载体抢同一端口；
     # 切换后不自动启动（用户流程：停止 → 改参切运行时 → 启动）。
     runtime_new = None
@@ -711,9 +713,7 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
             raise AgentError(f"runtime 只能是 systemd 或 docker：{rt_new!r}")
         cur = agent.get("runtime") or "systemd"
         if rt_new != cur:
-            unit = _unit(agent)
-            rt = _rt(agent)
-            state = rt.unit_state(unit)
+            state = _rt(agent).unit_state(_unit(agent))
             if state in ("active", "activating") or agent.get("desired_state") != "stopped":
                 raise AgentError(
                     "切换运行时须先停止 agent：停止 → 改参切运行时 → 启动"
@@ -726,18 +726,33 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
                     raise AgentError(
                         "该内核版本不含 Dockerfile：容器运行时需 xuseek-v2 ≥ v2.7.19，"
                         "升级内核走 docs/kernel-upgrade.md")
-            # 旧载体防御性清理（幂等）：docker → compose down 回收容器防残留
-            # 占端口；涉 docker 一侧顺手清 compose 渲染目录（spawn 会重渲染）
-            try:
-                rt.stop(unit)
-            except (systemdctl.SystemdError, dockerctl.DockerError):
-                pass
-            if rt is dockerctl or rt_new == "docker":
-                try:
-                    dockerctl.cleanup(unit)
-                except Exception:
-                    pass
             runtime_new = rt_new
+
+    # 大脑段手术（最易失败）——此刻入参校验已全部通过，失败时其余字段一律
+    # 未落，400 语义干净。幂等 resync：与注册表快照相同也重渲染（轮换
+    # brains.toml 的 key 后对 agent 做任意 PATCH 即触发重渲染，下次呼吸生效）。
+    brains_new = None
+    if "brains" in changes:
+        bl = _validate_brains([str(b) for b in (changes["brains"] or [])])
+        _rewrite_brain_sections(agent, bl)
+        registry.update_agent(agent_id, {"brains": bl})   # 快照即真相（卡片/状态 tab）
+        brains_new = bl
+
+    # runtime 载体动作（校验全过才开始动载体）：旧载体防御性清理（幂等）——
+    # docker → compose down 回收容器防残留占端口；涉 docker 一侧顺手清
+    # compose 渲染目录（spawn 会重渲染）
+    if runtime_new is not None:
+        unit = _unit(agent)
+        rt = _rt(agent)
+        try:
+            rt.stop(unit)
+        except (systemdctl.SystemdError, dockerctl.DockerError):
+            pass
+        if rt is dockerctl or runtime_new == "docker":
+            try:
+                dockerctl.cleanup(unit)
+            except Exception:
+                pass
 
     hot = {}       # 写注册表即生效
     need_restart = False
@@ -925,11 +940,12 @@ def ui_url(agent_id: str) -> dict:
     }
 
 
-def _get(agent: dict, path: str, token: str) -> tuple[int, dict]:
+def _get(agent: dict, path: str, token: str) -> tuple[int, dict | None]:
     """观察 GET（纯标准库 urllib——CLI 全路径零第三方依赖，远端零管理机
     无 venv/httpx 也能读事件流）。HTTP 非 2xx 也返回状态码与 body（尽量按
-    JSON 解，解不动给 {}）；网络层错误（拒绝连接/超时）上抛 URLError/
-    TimeoutError，由调用方统一转 AgentError。"""
+    JSON 解，非 JSON body 返回 None——调用方要能区分「坏 body」与「空对象
+    {}」，见 observe 的端口占用诊断）；网络层错误（拒绝连接/超时）上抛
+    URLError/TimeoutError，由调用方统一转 AgentError。"""
     import urllib.error
     import urllib.request
     req = urllib.request.Request(
@@ -943,7 +959,7 @@ def _get(agent: dict, path: str, token: str) -> tuple[int, dict]:
     try:
         data = json.loads(raw.decode())
     except (ValueError, UnicodeDecodeError):
-        data = {}
+        data = None
     return status, data
 
 
@@ -1011,7 +1027,8 @@ def observe(agent_id: str, what: str, limit: int = 80) -> Any:
         if status != 200:
             raise AgentError(f"上游 HTTP {status}")
         if not isinstance(data, dict):
-            # 端口被非 xuseek 服务占用等：200 但响应不是 JSON
+            # 端口被非 xuseek 服务占用等：200 但响应不是 JSON（_get 对解不动
+            # 的 body 返回 None——不能吞成 {}，否则这里永远进不来）
             raise AgentError("上游响应不是 JSON（端口可能被非 xuseek 服务占用）")
     except (urllib.error.URLError, TimeoutError) as e:
         raise AgentError(f"无法连接 agent 内核（{type(e).__name__}）") from None

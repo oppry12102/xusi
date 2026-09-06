@@ -233,10 +233,14 @@ def snapshot(agent_id: str, *, reason: str = "manual",
         + (cfg_toml.stat().st_size if cfg_toml.is_file() else 0)
 
     # SIGSTOP 冻结 → tar → SIGCONT（即使 tar 抛错也解冻）——按 runtime 分派
-    # （docker 走容器内 exec 发信号，只冻 daemon 主进程）。进程已停止时跳过
-    # SIGSTOP/SIGCONT（无进程可冻结，且 kill 会失败）
-    if proc_active:
+    # （docker 走容器内 exec 发信号，只冻 daemon 主进程）。两种跳过：
+    # ① 进程已停止（无进程可冻结，且 kill 会失败）；② 进程本就处于冻结态
+    # （管理员 pause 的期望态）——SIGCONT 会把暂停的 agent 复活且无人再冻它
+    # （reconcile 只在管理面启动时跑一次），而 tar 对已冻结进程本就安全。
+    froze = False
+    if proc_active and not agentops._rt(agent).main_stopped(unit):
         agentops._rt(agent).kill_signal(unit, "SIGSTOP")
+        froze = True
     cfg = home / "config.toml"
     try:
         with tempfile.NamedTemporaryFile(
@@ -276,7 +280,7 @@ def snapshot(agent_id: str, *, reason: str = "manual",
         finally:
             tmp_path.unlink(missing_ok=True)
     finally:
-        if proc_active:
+        if froze:   # 只解冻我们自己冻的——暂停态（他人冻的）保持原样
             try:
                 agentops._rt(agent).kill_signal(unit, "SIGCONT")
             except Exception:

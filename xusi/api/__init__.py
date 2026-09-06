@@ -31,6 +31,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 
 from .. import __version__, agentops, backup, remote, versions
+from ..dockerctl import DockerError
 from ..systemdctl import SystemdError
 from .meta_routes import router as meta_router
 from .agent_routes import router as agent_router
@@ -79,6 +80,14 @@ async def _agent_error(_req: Request, exc: agentops.AgentError):
 
 @app.exception_handler(SystemdError)
 async def _systemd_error(_req: Request, exc: SystemdError):
+    return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
+                    status_code=500, media_type="application/json")
+
+
+@app.exception_handler(DockerError)
+async def _docker_error(_req: Request, exc: DockerError):
+    """docker 载体故障（daemon 未起 / 镜像构建失败等）→ 500 带诊断文案
+    （与 SystemdError 同级：环境侧故障，不是调用方参数错）。"""
     return Response(content=f'{{"detail": {_json_str(str(exc))}}}',
                     status_code=500, media_type="application/json")
 

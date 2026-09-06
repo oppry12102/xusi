@@ -318,13 +318,15 @@ def cmd_backup(args) -> int:
     if args.all:
         from . import registry
         from . import agentops as _aops
+        from .dockerctl import DockerError
+        from .systemdctl import SystemdError
         n_ok = n_skip = 0
         for a in registry.list_agents():
             try:
                 info = backup.snapshot(a["id"], reason=args.reason)
                 print(f"  ✓ {a['id']:28} {info['size_bytes']:>8} B  {info['key']}")
                 n_ok += 1
-            except backup.BackupError as e:
+            except (backup.BackupError, SystemdError, DockerError) as e:
                 print(f"  · {a['id']:28} 跳过：{e}", file=sys.stderr)
                 n_skip += 1
         print(f"==> 完成 {n_ok} 个，{n_skip} 个跳过")
@@ -332,7 +334,10 @@ def cmd_backup(args) -> int:
     if not args.agent_id:
         print("error: 需要 agent-id 或 --all", file=sys.stderr)
         return 2
-    info = backup.snapshot(args.agent_id, reason=args.reason)
+    try:
+        info = backup.snapshot(args.agent_id, reason=args.reason)
+    except backup.BackupError as e:
+        return _cli_agent_error(e)
     print(f"  agent  : {info['meta']['agent_id']}")
     print(f"  key    : {info['key']}")
     print(f"  size   : {info['size_bytes']} B")
@@ -401,6 +406,7 @@ def _parse_roots(items: list[str]) -> list[dict]:
 
 def cmd_create(args) -> int:
     from . import agentops
+    from . import dockerctl, systemdctl
     if getattr(args, "spec", None):
         body = json.loads(Path(args.spec).expanduser().read_text(encoding="utf-8"))
         # API body 同构翻译：API 字段 brains ↔ agentops 参数 brain_list
@@ -424,6 +430,9 @@ def cmd_create(args) -> int:
         r = agentops.create_agent(**body)
     except (agentops.AgentError, ValueError, TypeError, OSError) as e:
         return _cli_agent_error(e)
+    except (systemdctl.SystemdError, dockerctl.DockerError) as e:
+        # 创建含首启拉起：docker/systemd 载体故障打印诊断而非 traceback
+        return _cli_agent_error(e)
     if getattr(args, "json", False):
         print(json.dumps(r, ensure_ascii=False, indent=2))
         return 0
@@ -437,11 +446,14 @@ def cmd_create(args) -> int:
 
 def cmd_agent_op(args) -> int:
     from . import agentops
+    from .dockerctl import DockerError
+    from .systemdctl import SystemdError
     fn = {"start": agentops.start, "stop": agentops.stop, "pause": agentops.pause,
           "resume": agentops.resume, "restart": agentops.restart}[args.op]
     try:
         r = fn(args.agent_id)
-    except agentops.AgentError as e:
+    except (agentops.AgentError, SystemdError, DockerError) as e:
+        # 载体故障（docker daemon 未起/镜像失败等）也要打印诊断而非 traceback
         return _cli_agent_error(e)
     print(f"  {args.op} ok: {r['id']} 期望态={r.get('desired_state', '')}")
     return 0

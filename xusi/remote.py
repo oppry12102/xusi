@@ -47,6 +47,10 @@ def hosts_file() -> Path:
 HOST_FIELDS = ("name", "host", "port", "user", "password", "key", "dir", "python",
                "brains", "via", "proxy")
 
+# WebUI 编辑不到的键：整表替换时按盘面同名条目保留（收编回写的 dir/python、
+# 手工配置的 key/via/brains 不能因为改了个密码就静默丢掉——见 save_hosts）
+_HOST_KEEP = ("key", "dir", "python", "brains", "via")
+
 
 def load_hosts(*, missing_ok: bool = False) -> list[dict]:
     f = hosts_file()
@@ -91,7 +95,17 @@ def _dump_hosts(hosts: list[dict]) -> str:
 
 def save_hosts(hosts: list[dict]) -> None:
     """整表替换写盘（原子 + 600）。条目字段白名单（HOST_FIELDS）之外丢弃；
-    port 归一为 int；name/host/user 三者缺一报错。CLI 与 WebUI 共用。"""
+    port 归一为 int；name/host/user 三者缺一报错。CLI 与 WebUI 共用。
+
+    _HOST_KEEP 键例外：请求没带的从盘面同名条目带回——WebUI 只渲染 6 列，
+    不带回会把收编/手工写入的 key/dir/python 等静默清掉。"""
+    prev: dict[str, dict] = {}
+    try:
+        for old in load_hosts():
+            if old.get("name"):
+                prev[old["name"]] = old
+    except RemoteError:
+        pass   # 盘面没有/坏了：无旧值可带回，按纯整表替换走
     norm = []
     for h in hosts:
         rec: dict = {}
@@ -100,6 +114,11 @@ def save_hosts(hosts: list[dict]) -> None:
             if v is None or v == "":
                 continue
             rec[k] = int(v) if k == "port" else str(v)
+        old = prev.get(rec.get("name") or "")
+        if old:
+            for k in _HOST_KEEP:
+                if k not in rec and old.get(k):
+                    rec[k] = old[k]
         if not rec.get("name") or not rec.get("host") or not rec.get("user"):
             raise RemoteError(f"host 条目缺 name/host/user 字段：{rec.get('name', rec)}")
         norm.append(rec)

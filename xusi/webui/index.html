@@ -593,9 +593,11 @@ async function refreshRemote() {
   const res = (r.results || [])[0] || {};
   agentsCache = res.rows || [];
   $("#hstate").textContent = `远端 ${scope} · ${agentsCache.length} 个 agent`;
+  // 未接入空态只看 installed（remote_status 对未装机的机器不返回 error——
+  // error 只与 installed:true 同现，故不能把两者凑成同一个分支条件）
+  if (res.installed === false) { renderInstallEmpty(res.adoptable_root); return; }
   if (res.error) {
     $("#summary").textContent = "⚠ " + res.error;
-    if (!res.installed) { renderInstallEmpty(res.adoptable_root); return; }
     $("#cards").innerHTML =
       `<div class="hint" style="grid-column:1/-1">无法取得远端状态：${esc(res.error)}</div>`;
     return;

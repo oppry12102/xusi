@@ -30,8 +30,9 @@ display_timezone = "Asia/Shanghai"
 # ── 双运行时（agent 两种跑法：systemd 直跑 / docker 容器，见
 #    docs/container-runtime.md）──
 # 新建 agent 的缺省运行时（创建对话框预选此值，可逐次覆盖）：
-#   systemd = 系统进程（默认，systemd --user 瞬态单元）
+#   systemd = 系统进程（内置缺省——不写下面这行即是它）
 #   docker  = 容器（host 网络；需内核 ≥ v2.7.19 + docker 环境）
+# 本文件显式选 docker（整机缺省容器）；无 docker 的机器请改回 systemd。
 default_runtime = "docker"
 
 # docker 镜像构建/运行时的 PyPI 镜像（仅 docker 运行时生效）：

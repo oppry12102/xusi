@@ -61,9 +61,11 @@ class XusiConfig:
                                  # address/token 齐备才生效（与内核 [[roots]] 交割同规则）。
 
     # —— 双运行时 ——
-    default_runtime: str = "docker"  # 新建 agent 的缺省运行时：docker（容器，host 网络）
+    default_runtime: str = "systemd"  # 新建 agent 的缺省运行时：systemd（系统进程）
                                  # 或 docker（容器，host 网络；需内核 ≥ v2.7.19 与
                                  # docker 环境）。创建对话框预选此值，可逐次覆盖。
+                                 # 缺省 systemd 与全量文档一致；要整机缺省容器，
+                                 # 在 etc/xusi.toml 显式写 default_runtime = "docker"。
     docker_pip_index: str | None = None  # docker 镜像构建/运行时的 PyPI 镜像：
                                  # None = 内置默认（清华）；"" = 关闭镜像走 pypi.org。
     docker_apt_mirror: str = "mirrors.tencentyun.com"  # debian 源镜像（仅构建期生效，
@@ -138,7 +140,7 @@ def load_config() -> XusiConfig:
         if rt in ("systemd", "docker"):
             cfg.default_runtime = rt
         else:
-            print(f"警告：default_runtime 非法值 {rt!r}（只能是 systemd/docker），回退 docker")
+            print(f"警告：default_runtime 非法值 {rt!r}（只能是 systemd/docker），回退 systemd")
     if "docker_pip_index" in mgr:
         # 三态：键缺失 → None（dockerctl 用内置清华默认）；空串 → ""（显式关闭
         # 镜像走 pypi.org）；非空 → 指定镜像。TOML 裸写 None/null 是解析错误
