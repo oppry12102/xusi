@@ -224,6 +224,8 @@
 <main>
   <div class="bar">
     <span class="hint" id="summary"></span>
+    <button id="btn-stopped" class="mini" hidden
+      title="停止态（进程不活跃且非暂停）的 agent 缺省不显示；点我切换显隐">显示已停止</button>
     <span class="hint" style="margin-left:auto">看板每 15s 自动刷新（打开详情时暂停）</span>
   </div>
   <div id="login-tip" hidden>
@@ -565,6 +567,13 @@ const fmtDur = s => { if (!s) return "-"; const d = new Date(s); const ms = Date
   return m < 60 ? m + " 分钟" : Math.floor(m / 60) + " 小时 " + (m % 60) + " 分"; };
 
 /* ── 看板 ─────────────────────────────────────────── */
+// 停止态（进程不活跃且非暂停）缺省隐藏；选择记忆在本浏览器
+let showStopped = localStorage.getItem("xusi_show_stopped") === "1";
+$("#btn-stopped").onclick = () => {
+  showStopped = !showStopped;
+  localStorage.setItem("xusi_show_stopped", showStopped ? "1" : "0");
+  renderCards(agentsCache);
+};
 async function refresh(first = false) {
   if (!tok) { setLogin(); return; }
   if (first && !pollTimer) setPoll();
@@ -690,11 +699,22 @@ function rtBadge(a) {
 
 function renderCards(list) {
   const el = $("#cards");
+  const isStopped = a => (a.process || {}).active !== "active" && a.desired_state !== "paused";
   const nRun = list.filter(a => (a.process || {}).active === "active").length;
   const nDoc = list.filter(a => (a.runtime || "systemd") === "docker").length;
-  $("#summary").textContent = `共 ${list.length} 个 · 运行 ${nRun} · 容器 ${nDoc} · 暴露外网 ${list.filter(a => a.expose).length}`;
+  const nStopped = list.filter(isStopped).length;
+  const btnStop = $("#btn-stopped");
+  btnStop.hidden = !nStopped;
+  btnStop.textContent = (showStopped ? "隐藏已停止" : "显示已停止") + ` (${nStopped})`;
+  $("#summary").textContent = `共 ${list.length} 个 · 运行 ${nRun} · 容器 ${nDoc} · 暴露外网 ${list.filter(a => a.expose).length}` +
+    (nStopped ? ` · 停止 ${nStopped}${showStopped ? "" : "（已隐藏）"}` : "");
   if (!list.length) { el.innerHTML = `<div class="hint" style="grid-column:1/-1">还没有 agent —— 点右上角「新建 agent」创建第一个。</div>`; return; }
-  el.innerHTML = list.map(a => {
+  const visible = showStopped ? list : list.filter(a => !isStopped(a));
+  if (!visible.length) {
+    el.innerHTML = `<div class="hint" style="grid-column:1/-1">${nStopped} 个 agent 均已停止——点上方「显示已停止」查看。</div>`;
+    return;
+  }
+  el.innerHTML = visible.map(a => {
     const ds = a.desired_state, run = (a.process || {}).active === "active";
     const isR = scope !== "local";
     const acts = [];
