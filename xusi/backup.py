@@ -281,10 +281,20 @@ def snapshot(agent_id: str, *, reason: str = "manual",
             tmp_path.unlink(missing_ok=True)
     finally:
         if froze:   # 只解冻我们自己冻的——暂停态（他人冻的）保持原样
+            # TOCTOU 收尾：冻结窗内（tar 数秒）管理员 pause 了——它的 SIGSTOP
+            # 与我们的重叠（main_stopped 检查之后才落），registry 期望态已是
+            # paused；此时 SIGCONT 会把「管理员期望暂停」的 agent 复活且无人
+            # 再冻（reconcile 只在管理面启动跑）。解冻前重读期望态：paused ⇒
+            # 保持冻结，尊重 pause。
             try:
-                agentops._rt(agent).kill_signal(unit, "SIGCONT")
+                desired = (registry.get_agent(agent_id) or {}).get("desired_state")
             except Exception:
-                pass  # manager 自己也可能崩，但载体独立；下轮 reconcile 救
+                desired = None   # 注册表读不动：按原样解冻（旧行为）
+            if desired != "paused":
+                try:
+                    agentops._rt(agent).kill_signal(unit, "SIGCONT")
+                except Exception:
+                    pass  # manager 自己也可能崩，但载体独立；下轮 reconcile 救
 
     agentops.audit("backup.snapshot", agent=agent_id, key=key,
                    size=put_info["size_bytes"], reason=reason)

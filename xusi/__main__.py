@@ -334,9 +334,13 @@ def cmd_backup(args) -> int:
     if not args.agent_id:
         print("error: 需要 agent-id 或 --all", file=sys.stderr)
         return 2
+    from .dockerctl import DockerError
+    from .systemdctl import SystemdError
     try:
         info = backup.snapshot(args.agent_id, reason=args.reason)
-    except backup.BackupError as e:
+    except (backup.BackupError, SystemdError, DockerError) as e:
+        # 冻结窗要经载体发信号：载体故障与备份前置失败一样打印诊断
+        # （与 --all 分支同一捕获面）
         return _cli_agent_error(e)
     print(f"  agent  : {info['meta']['agent_id']}")
     print(f"  key    : {info['key']}")
@@ -474,6 +478,8 @@ def cmd_patch(args) -> int:
     远端机器也能直调）。可改字段 = 簿记层（name/note）+ 进程层（expose，
     需重启）+ 大脑（brains，下次呼吸生效）+ 运行时（须停止态）。"""
     from . import agentops
+    from .dockerctl import DockerError
+    from .systemdctl import SystemdError
     changes: dict = {}
     if args.name is not None:
         changes["name"] = args.name
@@ -491,7 +497,8 @@ def cmd_patch(args) -> int:
         return 2
     try:
         r = agentops.patch_agent(args.agent_id, changes)
-    except agentops.AgentError as e:
+    except (agentops.AgentError, SystemdError, DockerError) as e:
+        # 切 runtime 要查/停旧载体（unit_state/stop）：载体故障打印诊断而非 traceback
         return _cli_agent_error(e)
     if getattr(args, "json", False):
         print(json.dumps(r, ensure_ascii=False, indent=2))

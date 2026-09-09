@@ -47,8 +47,9 @@ def hosts_file() -> Path:
 HOST_FIELDS = ("name", "host", "port", "user", "password", "key", "dir", "python",
                "brains", "via", "proxy")
 
-# WebUI 编辑不到的键：整表替换时按盘面同名条目保留（收编回写的 dir/python、
-# 手工配置的 key/via/brains 不能因为改了个密码就静默丢掉——见 save_hosts）
+# WebUI 编辑不到的键：整表替换时按盘面旧条目保留（收编回写的 dir/python、
+# 手工配置的 key/via/brains 不能因为改了个密码就静默丢掉——匹配与显式
+# 清除规则见 save_hosts）
 _HOST_KEEP = ("key", "dir", "python", "brains", "via")
 
 
@@ -97,27 +98,38 @@ def save_hosts(hosts: list[dict]) -> None:
     """整表替换写盘（原子 + 600）。条目字段白名单（HOST_FIELDS）之外丢弃；
     port 归一为 int；name/host/user 三者缺一报错。CLI 与 WebUI 共用。
 
-    _HOST_KEEP 键例外：请求没带的从盘面同名条目带回——WebUI 只渲染 6 列，
-    不带回会把收编/手工写入的 key/dir/python 等静默清掉。"""
-    prev: dict[str, dict] = {}
+    _HOST_KEEP 键例外：请求没带的从盘面旧条目带回——WebUI 只渲染 6 列，
+    不带回会把收编/手工写入的 key/dir/python 等静默清掉。两条规则：
+    - 旧条目匹配：先按 name；name 变了按 host+user 兜底——WebUI 里改名
+      （host/user 没动）不再丢保留键。
+    - 显式清除：键**出现且值为 null** = 明确删除（不带回）；键根本不出现
+      才沿用旧值。TOML 无 null，落盘即「键不存在」——这是 API/CLI 层的
+      清除逃生舱（如 key 改回密码登录），WebUI 渲染不到的键发不出 null。"""
+    prev_name: dict[str, dict] = {}
+    prev_addr: dict[tuple[str, str], dict] = {}
     try:
         for old in load_hosts():
             if old.get("name"):
-                prev[old["name"]] = old
+                prev_name[old["name"]] = old
+            if old.get("host") and old.get("user"):
+                prev_addr[(old["host"], old["user"])] = old
     except RemoteError:
         pass   # 盘面没有/坏了：无旧值可带回，按纯整表替换走
     norm = []
     for h in hosts:
+        # 显式 null = 清除该保留键（与「键缺席 = 沿用旧值」区分）
+        cleared = {k for k in _HOST_KEEP if k in h and h[k] is None}
         rec: dict = {}
         for k in HOST_FIELDS:
             v = h.get(k)
             if v is None or v == "":
                 continue
             rec[k] = int(v) if k == "port" else str(v)
-        old = prev.get(rec.get("name") or "")
+        old = prev_name.get(rec.get("name") or "") \
+            or prev_addr.get((rec.get("host") or "", rec.get("user") or ""))
         if old:
             for k in _HOST_KEEP:
-                if k not in rec and old.get(k):
+                if k not in rec and k not in cleared and old.get(k):
                     rec[k] = old[k]
         if not rec.get("name") or not rec.get("host") or not rec.get("user"):
             raise RemoteError(f"host 条目缺 name/host/user 字段：{rec.get('name', rec)}")
