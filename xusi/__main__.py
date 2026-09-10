@@ -315,11 +315,13 @@ def cmd_doctor(args) -> int:
 def cmd_backup(args) -> int:
     """备份一个或全部 agent（运行中 SIGSTOP 冻结窗快照）；产物落到 etc/backups/。"""
     from . import backup
+    # 载体故障（docker daemon 未起/单元缺失竞态等）与 BackupError 同级收编，
+    # 单机与 --all 两条路径一致打印诊断而非 traceback
+    from .dockerctl import DockerError
+    from .systemdctl import SystemdError
     if args.all:
         from . import registry
         from . import agentops as _aops
-        from .dockerctl import DockerError
-        from .systemdctl import SystemdError
         n_ok = n_skip = 0
         for a in registry.list_agents():
             try:
@@ -334,8 +336,6 @@ def cmd_backup(args) -> int:
     if not args.agent_id:
         print("error: 需要 agent-id 或 --all", file=sys.stderr)
         return 2
-    from .dockerctl import DockerError
-    from .systemdctl import SystemdError
     try:
         info = backup.snapshot(args.agent_id, reason=args.reason)
     except (backup.BackupError, SystemdError, DockerError) as e:

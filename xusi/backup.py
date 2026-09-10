@@ -225,12 +225,17 @@ def snapshot(agent_id: str, *, reason: str = "manual",
     unit = get_config().unit_name(agent_id)
 
     # 估算 home 大小（仅 data + workspace，excluded 之后；config.toml 归 agent
-    # 自治、可能被它删掉——缺失按 0 计，别让估算把备份崩成未捕获的 500）
-    cfg_toml = home / "config.toml"
-    home_size = sum(
-        p.stat().st_size for p in (home / "data").rglob("*") if p.is_file()) \
-        + sum(p.stat().st_size for p in (home / "workspace").rglob("*") if p.is_file()) \
-        + (cfg_toml.stat().st_size if cfg_toml.is_file() else 0)
+    # 自治、可能被它删掉——缺失按 0 计，别让估算把备份崩成未捕获的 500）。
+    # 单次 stat：agent 的工具在 data/workspace 下高频增删文件，is_file()
+    # 与 stat() 分两次调用会在中间被删掉 → FileNotFoundError 裸 traceback
+    def _fz(p: Path) -> int:
+        try:
+            return p.stat().st_size if p.is_file() else 0
+        except FileNotFoundError:
+            return 0
+    home_size = sum(_fz(p) for p in (home / "data").rglob("*")) \
+        + sum(_fz(p) for p in (home / "workspace").rglob("*")) \
+        + _fz(home / "config.toml")
 
     # SIGSTOP 冻结 → tar → SIGCONT（即使 tar 抛错也解冻）——按 runtime 分派
     # （docker 走容器内 exec 发信号，只冻 daemon 主进程）。两种跳过：
@@ -239,7 +244,17 @@ def snapshot(agent_id: str, *, reason: str = "manual",
     # （reconcile 只在管理面启动时跑一次），而 tar 对已冻结进程本就安全。
     froze = False
     if proc_active and not agentops._rt(agent).main_stopped(unit):
-        agentops._rt(agent).kill_signal(unit, "SIGSTOP")
+        try:
+            agentops._rt(agent).kill_signal(unit, "SIGSTOP")
+        except Exception:
+            # 载体层可能已把信号落进去（如 docker exec 超时但 kill 已生效）而
+            # CLI 侧报错——无法确认冻结与否，补一发 SIGCONT 兜底（未冻则无害，
+            # 已冻则解冻回原样），再把错误抛给上层打印诊断
+            try:
+                agentops._rt(agent).kill_signal(unit, "SIGCONT")
+            except Exception:
+                pass
+            raise
         froze = True
     cfg = home / "config.toml"
     try:
@@ -281,11 +296,13 @@ def snapshot(agent_id: str, *, reason: str = "manual",
             tmp_path.unlink(missing_ok=True)
     finally:
         if froze:   # 只解冻我们自己冻的——暂停态（他人冻的）保持原样
-            # TOCTOU 收尾：冻结窗内（tar 数秒）管理员 pause 了——它的 SIGSTOP
-            # 与我们的重叠（main_stopped 检查之后才落），registry 期望态已是
-            # paused；此时 SIGCONT 会把「管理员期望暂停」的 agent 复活且无人
-            # 再冻（reconcile 只在管理面启动跑）。解冻前重读期望态：paused ⇒
-            # 保持冻结，尊重 pause。
+            # TOCTOU 收尾：冻结窗内（tar 数秒）管理员 pause 了。pause() 先落
+            # 期望态再发 SIGSTOP（见 agentops.pause），所以解冻前重读期望态
+            # 即可闭合窗口：读到 paused ⇒ 冻结保持（pause 已完成，或其 SIGSTOP
+            # 正在路上、随后即冻）；读到 running ⇒ 没有 pause 在途，安全解冻。
+            # 无条件 SIGCONT 会把「管理员期望暂停」的 agent 复活且无人再冻
+            # （reconcile 只在管理面启动跑）。期望 paused 但进程在跑（载体
+            # 自愈重启过）的，冻结到 paused 与期望态对齐，不算误伤。
             try:
                 desired = (registry.get_agent(agent_id) or {}).get("desired_state")
             except Exception:
@@ -408,8 +425,9 @@ def restore(backup_path: Path, *, new_id: str | None = None,
             if new_id:
                 _rewrite_instance_id(ct, agent_id)
     except Exception:
-        # 失败清理
-        import shutil
+        # 失败清理（注意：shutil 必须用模块顶部的全局导入——函数内再 import
+        # 会让它变函数局部名，此前所有错误路径的 shutil.rmtree 全成
+        # UnboundLocalError，把「注册表已删、home 残留」留一半）
         shutil.rmtree(home, ignore_errors=True)
         raise
 

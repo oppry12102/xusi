@@ -17,7 +17,7 @@
 #   tier              power/economy（档位是经济映射，未标注视同 power）
 #   context_window    该模型上下文窗口 tokens（护栏按同档可用脑最小窗口 − 8k 派生存量预算）
 #   temperature       数字；或 "default" = 请求不带该参数（如 kimi 只允许服务端默认）
-#   timeout           秒（读静默上限；v2.7.3x+ 内核默认 600，旧内核 180——慢脑显式抬）
+#   timeout           秒（读静默上限；v2.7.10+ 内核默认 600，更旧内核 180——慢脑显式抬）
 #   price_prompt / price_completion  CNY/1K tokens（成本观测用）
 #   note              该脑给智能体的使用提示，渲染成 config 注释（如"免费（自托管）"）
 # ═══════════════════════════════════════════════════════════════════

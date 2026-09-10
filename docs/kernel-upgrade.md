@@ -48,7 +48,12 @@ bak = home / f"xuseek-v2.old-{OLD}"
 for d in (tmp, bak):
     if d.exists(): shutil.rmtree(d)
 versions.extract(NEW, tmp)                  # 2) 官方解压器（坑①：勿用裸 unzip）
-shutil.move(str(src / ".venv"), str(tmp / ".venv"))   #   .venv 平移免重建（坑④）
+_venv = src / ".venv"
+if _venv.is_dir() and not _venv.is_symlink():
+    shutil.move(str(_venv), str(tmp / ".venv"))   #   .venv 平移免重建（坑④）——真目录才移；
+                                                  #   docker 实例常缺失或只是 v2.7.37+ 兼容软链，
+                                                  #   缺失/软链跳过，新树首启自补（systemd 重建
+                                                  #   真 venv / docker 补 /app/.venv 兼容链）
 src.rename(bak); tmp.rename(src)            #   旧树留作回滚
 registry.update_agent(AID, {"source_version": NEW})   # 3) 坑③：API 改不了这字段
 agentops.audit("upgrade_kernel", agent=AID, **{"from": OLD, "to": NEW})
@@ -178,8 +183,9 @@ mv instances/<id>/xuseek-v2.old-<旧版> instances/<id>/xuseek-v2
 **本 playbook 对 docker agent 原样可用**：停机 → 换目录 → 改注册表
 `source_version` → spawn_and_verify。区别只在最后一步——镜像 tag 含
 source_version（`xuseek-agent-<id>:<version>`），tag 变化自动触发镜像重建
-（含内核 selftest 门禁，比裸机多几分钟构建）。docker agent 跳过 §1 的
-`.venv 平移`步骤也安全（venv 烘培在镜像里；实例目录的 `.venv` 只是内核
-v2.7.37 起首启自建的兼容软链，旧链随旧树走、新树首启自动补链，平移无
-意义）；回滚同样只是改回旧版本号 + spawn（旧镜像还在，秒级起）。旧镜像清理交
-`docker image prune`。详见 `docs/container-runtime.md`。
+（含内核 selftest 门禁，比裸机多几分钟构建）。§1 的 `.venv 平移`对 docker
+实例自动跳过（真目录才移）：venv 烘培在镜像里，实例目录的 `.venv` 常缺失
+（v2.7.19–2.7.36）或只是 v2.7.37 起首启自建的兼容软链（旧链随旧树走、
+新树首启自动补链，平移无意义）。回滚同样只是改回旧版本号 + spawn（旧镜像
+还在，秒级起）。旧镜像清理交 `docker image prune`。详见
+`docs/container-runtime.md`。

@@ -590,8 +590,16 @@ def pause(agent_id: str) -> dict:
     rt = _rt(agent)
     if rt.unit_state(unit) != "active":
         raise AgentError("agent 未在运行，无法暂停（先 start）")
+    # 先落期望态再发信号：备份冻结窗收尾会重读期望态决定解冻与否（备份的
+    # SIGCONT 会把管理员刚 pause 的 agent 复活且无人再冻——reconcile 只在
+    # 管理面启动跑）。反序（先 SIGSTOP 后写注册表）留一个「信号已落、期望
+    # 态仍 running」的窗口，备份误判为自己冻的并解冻，之后才补写 paused。
+    # SIGSTOP 本身失败（罕见，unit 刚验过 active）：期望态已 paused，下轮
+    # reconcile 补冻，最终一致。
+    registry.update_agent(agent_id, {"desired_state": "paused"})
     rt.kill_signal(unit, "SIGSTOP")
-    return _finalize(agent_id, "paused", "pause")
+    audit(f"agent.pause", agent=agent_id)
+    return {"id": agent_id, "desired_state": "paused"}
 
 
 def resume(agent_id: str) -> dict:
@@ -741,6 +749,7 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     # runtime 载体动作（校验全过才开始动载体）：旧载体防御性清理（幂等）——
     # docker → compose down 回收容器防残留占端口；涉 docker 一侧顺手清
     # compose 渲染目录（spawn 会重渲染）
+    venv_removed = False
     if runtime_new is not None:
         unit = _unit(agent)
         rt = _rt(agent)
@@ -753,6 +762,15 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
                 dockerctl.cleanup(unit)
             except Exception:
                 pass
+        if runtime_new == "docker":
+            # 宿主真 venv 会遮蔽内核 v2.7.37+ 的 .venv 兼容软链（ln 跳过已
+            # 存在项），其解释器路径在容器内失效 = 09b6「8404 无法重启」的
+            # 复现路径。真目录删除（docker 用镜像烘培 venv；切回 systemd 时
+            # xuseek.sh 自建，无重建成本）；软链留给内核自愈，不动。
+            venv = _home(agent) / versions.SRC_DIR_NAME / ".venv"
+            if venv.is_dir() and not venv.is_symlink():
+                shutil.rmtree(venv, ignore_errors=True)
+                venv_removed = True
 
     hot = {}       # 写注册表即生效
     need_restart = False
@@ -779,6 +797,8 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     ad: dict[str, Any] = {"fields": sorted(changes), "restarted": restarted}
     if brains_new is not None:
         ad.update(brains=brains_new, brains_effective="next_breath")
+    if venv_removed:
+        ad["venv_removed"] = True
     audit("agent.patch", agent=agent_id, **ad)
     out = get_agent_or_404(agent_id)
     out = {**out, "restart_required": need_restart, "restarted": restarted}

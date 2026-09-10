@@ -225,7 +225,7 @@
   <div class="bar">
     <span class="hint" id="summary"></span>
     <button id="btn-stopped" class="mini" hidden
-      title="停止态（进程不活跃且非暂停）的 agent 缺省不显示；点我切换显隐">显示已停止</button>
+      title="期望已停止的 agent 缺省不显示；点我切换显隐">显示已停止</button>
     <span class="hint" style="margin-left:auto">看板每 15s 自动刷新（打开详情时暂停）</span>
   </div>
   <div id="login-tip" hidden>
@@ -426,6 +426,7 @@ async function api(path, opts = {}) {
 
 function setLogin(msg) {
   me = null; meAdmin = false; $("#login-tip").hidden = false; $("#cards").innerHTML = "";
+  $("#btn-stopped").hidden = true;
   $("#summary").textContent = msg ? "⚠ " + msg : "";
   $("#hstate").textContent = "未认证";
 }
@@ -486,14 +487,18 @@ async function doRename() {
 }
 
 /* ── 远端机器（多副本零管理的机器簿，嵌在节点界面里）────── */
+let hostsLoaded = false;   // GET 成功前禁保存：PUT 是整表替换，一次失败的
+                           // 读 + 误点「保存」会把机器簿整本清零（无撤销）
 async function loadHostsTable() {
   $("#hosts-err").hidden = true;
-  $("#hosts-body").innerHTML = "";
   try {
     const r = await api("/api/hosts");
+    $("#hosts-body").innerHTML = "";
     (r.hosts || []).forEach(h => addHostRow(h));
+    hostsLoaded = true;
   } catch (e) {
-    $("#hosts-err").textContent = String(e.message || e);
+    hostsLoaded = false;   // 表不清空（保留旧行供核对），但保存禁用
+    $("#hosts-err").textContent = String(e.message || e) + "（读取失败，已禁用保存防清空）";
     $("#hosts-err").hidden = false;
   }
 }
@@ -516,6 +521,11 @@ function addHostRow(h = {}) {
 }
 
 async function saveHosts() {
+  if (!hostsLoaded) {
+    $("#hosts-err").textContent = "机器簿尚未成功读取，禁止保存（避免整表清空）——请重开节点窗口重试";
+    $("#hosts-err").hidden = false;
+    return;
+  }
   const hosts = [...document.querySelectorAll("#hosts-body tr")].map(tr => {
     const [name, host, port, user, pw, px] = tr.querySelectorAll("input");
     const rec = {name: name.value.trim(), host: host.value.trim(),
@@ -567,7 +577,7 @@ const fmtDur = s => { if (!s) return "-"; const d = new Date(s); const ms = Date
   return m < 60 ? m + " 分钟" : Math.floor(m / 60) + " 小时 " + (m % 60) + " 分"; };
 
 /* ── 看板 ─────────────────────────────────────────── */
-// 停止态（进程不活跃且非暂停）缺省隐藏；选择记忆在本浏览器
+// 已停止（期望停止且不活跃）缺省隐藏；选择记忆在本浏览器
 let showStopped = localStorage.getItem("xusi_show_stopped") === "1";
 $("#btn-stopped").onclick = () => {
   showStopped = !showStopped;
@@ -606,6 +616,7 @@ async function refreshRemote() {
   // error 只与 installed:true 同现，故不能把两者凑成同一个分支条件）
   if (res.installed === false) { renderInstallEmpty(res.adoptable_root); return; }
   if (res.error) {
+    $("#btn-stopped").hidden = true;
     $("#summary").textContent = "⚠ " + res.error;
     $("#cards").innerHTML =
       `<div class="hint" style="grid-column:1/-1">无法取得远端状态：${esc(res.error)}</div>`;
@@ -615,6 +626,7 @@ async function refreshRemote() {
 }
 
 function renderInstallEmpty(adoptableRoot) {
+  $("#btn-stopped").hidden = true;
   $("#summary").textContent = adoptableRoot
     ? `${scope} 检测到既有 xusi 部署（${esc(adoptableRoot)}）——可一键收编接管`
     : `${scope} 尚未接入（远端没有 ~/work/xusi 自洽目录）`;
@@ -699,7 +711,9 @@ function rtBadge(a) {
 
 function renderCards(list) {
   const el = $("#cards");
-  const isStopped = a => (a.process || {}).active !== "active" && a.desired_state !== "paused";
+  // 只隐「期望停止且不活跃」——failed/activating/unknown（daemon 挂）等
+  // 不健康态照常显示，整队故障不能被渲染成「均已停止」
+  const isStopped = a => a.desired_state === "stopped" && (a.process || {}).active !== "active";
   const nRun = list.filter(a => (a.process || {}).active === "active").length;
   const nDoc = list.filter(a => (a.runtime || "systemd") === "docker").length;
   const nStopped = list.filter(isStopped).length;
@@ -752,9 +766,7 @@ function renderCards(list) {
         <span class="chip mono">${esc(a.listen_host || "127.0.0.1")}:${a.port}</span>
         ${(a.brains || []).map((b, i) => i === 0
           ? `<b class="chip bcur" title="默认大脑">${esc(b)}</b>`
-          : (isR
-            ? `<span class="chip">${esc(b)}</span>`
-            : `<span class="chip bclk" data-id="${a.id}" data-brain="${esc(b)}" title="点击切换为默认大脑（下次呼吸生效，不重启）">${esc(b)}</span>`)).join("")}
+          : `<span class="chip bclk" data-id="${a.id}" data-brain="${esc(b)}" title="点击切换为默认大脑（下次呼吸生效，不重启）">${esc(b)}</span>`).join("")}
       </div>
       <div class="row">
         <span>自动重启 <b>${(a.process || {}).auto_restarts ?? 0}</b></span>

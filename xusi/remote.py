@@ -100,33 +100,43 @@ def save_hosts(hosts: list[dict]) -> None:
 
     _HOST_KEEP 键例外：请求没带的从盘面旧条目带回——WebUI 只渲染 6 列，
     不带回会把收编/手工写入的 key/dir/python 等静默清掉。两条规则：
-    - 旧条目匹配：先按 name；name 变了按 host+user 兜底——WebUI 里改名
-      （host/user 没动）不再丢保留键。
+    - 旧条目匹配：先按 host+user+port（机器身份）；miss 再按 name 兜底——
+      WebUI 里改名不丢保留键，同名换机/同机双行（prod 与 test 不同 dir）
+      也不会串到别行的 key/dir/brains。
     - 显式清除：键**出现且值为 null** = 明确删除（不带回）；键根本不出现
       才沿用旧值。TOML 无 null，落盘即「键不存在」——这是 API/CLI 层的
       清除逃生舱（如 key 改回密码登录），WebUI 渲染不到的键发不出 null。"""
     prev_name: dict[str, dict] = {}
-    prev_addr: dict[tuple[str, str], dict] = {}
+    prev_addr: dict[tuple, dict] = {}
     try:
         for old in load_hosts():
             if old.get("name"):
                 prev_name[old["name"]] = old
             if old.get("host") and old.get("user"):
-                prev_addr[(old["host"], old["user"])] = old
+                prev_addr[(old["host"], old["user"], old.get("port"))] = old
     except RemoteError:
         pass   # 盘面没有/坏了：无旧值可带回，按纯整表替换走
     norm = []
     for h in hosts:
-        # 显式 null = 清除该保留键（与「键缺席 = 沿用旧值」区分）
-        cleared = {k for k in _HOST_KEEP if k in h and h[k] is None}
+        # 显式 null = 清除该键（与「键缺席 = 沿用旧值」区分）
+        cleared: set[str] = set()
         rec: dict = {}
         for k in HOST_FIELDS:
-            v = h.get(k)
-            if v is None or v == "":
+            if k not in h:
+                continue
+            v = h[k]
+            if v is None:
+                cleared.add(k)   # 显式 null = 清键（并抑制 keep-back 回带）
+                continue
+            if v == "":
                 continue
             rec[k] = int(v) if k == "port" else str(v)
-        old = prev_name.get(rec.get("name") or "") \
-            or prev_addr.get((rec.get("host") or "", rec.get("user") or ""))
+        # 旧条目匹配：身份键（host+user+port）优先于 name 标签——同名被
+        # 另一台机器复用、或同机双行改名时，name 命中会把别行的保留键污染
+        # 过来；身份 miss 才回退 name（覆盖换 host/换口的情形）
+        old = prev_addr.get((rec.get("host") or "", rec.get("user") or "",
+                             rec.get("port"))) \
+            or prev_name.get(rec.get("name") or "")
         if old:
             for k in _HOST_KEEP:
                 if k not in rec and k not in cleared and old.get(k):
@@ -470,9 +480,10 @@ def reset_mux(h: dict) -> None:
 
 def install_host(h: dict):
     """新机接入（讨论稿 §七引导清单，含环境检查与配齐）：sudo 检查 → python3.12
-    （deadsnakes）→ docker（缺省运行时：缺失则装、用户不在组则加、验证可用）
-    → linger → 低端口放开（sysctl.d）→ 推代码 tar → 播种 brains → doctor
-    自检。幂等：已就绪的步骤跳过（sysctl 重设无害）。
+    （deadsnakes）→ docker（容器运行时环境：缺失则装、用户不在组则加、验证
+    可用——缺省运行时看远端自己的 etc/xusi.toml default_runtime，本队现配
+    docker）→ linger → 低端口放开（sysctl.d）→ 推代码 tar → 播种 brains →
+    doctor 自检。幂等：已就绪的步骤跳过（sysctl 重设无害）。
     返回步骤日志（含 doctor 输出）。"""
     def step(cmd: str, desc: str, timeout: int = 900) -> None:
         yield desc
@@ -500,7 +511,7 @@ def install_host(h: dict):
     else:
         yield f"{py} 已就绪，跳过安装"
 
-    # ③ docker（缺省运行时——缺了就装、组没加就加、最终验证可用）
+    # ③ docker（容器运行时环境——缺了就装、组没加就加、最终验证可用）
     cp = run_remote(h, "docker --version 2>/dev/null", timeout=30)
     if cp.returncode != 0:
         yield from step(_sudo(h, "apt-get install -y -qq docker.io docker-compose-v2"),
@@ -519,7 +530,7 @@ def install_host(h: dict):
     else:
         yield "  docker 可用 ✓"
     # compose 插件独立检查：docker 本体装了不等于有 compose（docker.io 不带）——
-    # 缺省运行时渲染 compose 靠它，缺了就单独装
+    # docker 运行时渲染 compose 靠它，缺了就单独装
     cp = run_remote(h, "docker compose version >/dev/null 2>&1 && echo __OK__",
                     timeout=60)
     if "__OK__" not in (cp.stdout or ""):

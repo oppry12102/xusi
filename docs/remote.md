@@ -51,7 +51,7 @@ python3 -m xusi remote install --on VM-0-8-ubuntu
 install 六步（幂等，已就绪的跳过）：
 1. **环境检查**：sudo 可用性（免密或密码同登录密码——装 python/docker 全靠它）
 2. `python3.12` + `python3.12-venv`（deadsnakes PPA——与主流一致、可持续升级）
-3. **docker 配齐**（缺省运行时）：本体缺就装 docker.io；用户不在组就
+3. **docker 配齐**（容器运行时环境）：本体缺就装 docker.io；用户不在组就
    `usermod -aG docker`（关掉保温连接强推新会话后验证）；compose 插件独立
    检查——docker 装了不等于有 compose，缺就单装 docker-compose-v2
 4. `loginctl enable-linger`（ssh 断开会话死 → agent 单元死的坑）
