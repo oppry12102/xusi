@@ -7,9 +7,12 @@ main_stopped / kill_signal / reset_failed / journal_tail。
 容器名 = systemd 单元名（xusi-a-<id>，复用 cfg.unit_name）；compose.yaml 由
 管理面渲染在 instances/.compose/<unit>/compose.yaml —— 实例根（/data 挂载）
 之外的兄弟目录，容器内大脑看不到也改不到；spawn 每次重渲染，路径/端口/
-镜像 tag 恒与注册表一致。镜像 tag 含内核版本（xuseek-agent-<id>:<version>）：
-升级 source_version 后 tag 变化 → 镜像缺失 → 自动重建（构建含内核 selftest
-门禁）。容器是可弃的一次性运行时，实例状态全在 bind mount（见内核 DOCKER.md）。
+镜像 tag 恒与注册表一致。镜像与实例内容解耦（内核 v2.7.38 入口 shim：跑的
+是实例目录自己的 xuseek.sh，launcher/源码/.venv 全随实例目录）：fleet 同版本
+共享一个 tag（xuseek:<version>），同版本第二个实例起免构建；升级内核不
+重建镜像，「忘重建镜像」这一整类事故从结构上消失（重建只在换基础镜像/
+系统依赖时）。容器是可弃的一次性运行时，实例状态全在 bind mount（见内核
+DOCKER.md 与 docs/agent-lifecycle.md）。
 
 信号路径（main_stopped/kill_signal）走 docker exec 在容器内完成——管理面是
 普通用户（systemd --user），对宿主 root 的容器进程发不了信号；docker exec
@@ -101,14 +104,16 @@ def _compose_args(unit: str) -> list[str]:
     return ["docker", "compose", "-f", str(compose_file_for(unit)), "-p", unit]
 
 
-def _image_tag(unit: str, version: str) -> str:
-    """镜像 tag 按 agent + 内核版本：升级 source_version → tag 变 → 自动重建。"""
-    agent_id = unit[len("xusi-a-"):] if unit.startswith("xusi-a-") else unit
+def _image_tag(version: str) -> str:
+    """fleet 共享 tag（xuseek:<version>）：镜像只是运行环境（python/uv/系统
+    工具 + 兜底源码副本），与实例内容解耦——同版本 N 个实例只构建一次，
+    第二个起 spawn 的 image inspect 判存直接放行。构建上下文是某个实例的
+    内核副本，但副本间同源（同一版本 zip 解出），差异无实质影响。"""
     ver = (version or "latest").strip()
     # tag 合法字符集 [A-Za-z0-9._-]；非法字符替换为 -（版本号经 versions._VER_RE
     # 校验过，这里只是兜底）
     ver = "".join(c if c.isalnum() or c in "._-" else "-" for c in ver) or "latest"
-    return f"xuseek-agent-{agent_id}:{ver}"
+    return f"xuseek:{ver}"
 
 
 def _render_compose(unit: str, source_dir: Path, home: Path, host: str,
@@ -126,12 +131,14 @@ def _render_compose(unit: str, source_dir: Path, home: Path, host: str,
     bounding set，非 root 进程 CapEff 仍为 0（实测无效，已回退）。特权
     端口在宿主侧直接取消：sysctl ip_unprivileged_port_start=0（install
     ⑤ 缺省铺好 + sysctl.d 持久化，host 网络下全队生效）。
-    **HOME 三件套**（docs/proposal-docker-home-writable.md）：裸 user 起容器
-    时镜像 /etc/passwd 无此 uid → Docker 落 HOME=/，pip --user 撞 /.local、
-    缺省撞只读 /app/.venv——大脑装包死路。钉 HOME=/data（可写落点+缓存）、
-    PIP_TARGET/PYTHONPATH=/data/.local/site-packages（版本无关路径，别带
-    python3.x）：pip 缺省有地方落、装的包 daemon 与一切子进程处处可导。
-    --user 仍死路（venv 禁 user-site），但报错可行动（去掉 --user 即可）。"""
+    **HOME=/data 与 venv 即世界**（内核 v2.7.38 入口 shim，docs/
+    agent-lifecycle.md）：首启自建的 .venv 落实例目录（bind mount 持久），
+    pip 回到完全缺省语义（装进 venv，list/uninstall 正常）——PIP_TARGET/
+    PYTHONPATH 与 /app/xuseek 活挂载均已退役。HOME 仍钉 /data：uv/pip
+    缓存落 bind mount（/data/.cache/uv），裸 user 起容器时镜像 /etc/passwd
+    无此 uid → Docker 落 HOME=/ 的坑不再回来。healthcheck start_period
+    300s：首启自建 venv 现装依赖（实测 6~51s，冷缓存/弱网更久），窗口
+    给足（wait_health 的 docker 档 360s 同口径）。"""
     from .config import get_config
     cfg = get_config()
     pip_index = cfg.docker_pip_index
@@ -148,8 +155,8 @@ def _render_compose(unit: str, source_dir: Path, home: Path, host: str,
         pip_arg = f"        PIP_INDEX: {_yq(pip_index)}\n"
     health = f"curl -fsS http://127.0.0.1:{port}/v1/health || exit 1"
     return f"""# 由 xusi 管理面渲染（runtime=docker）——不要手改：spawn 每次都会重渲染，
-# 路径/端口/镜像 tag 恒与注册表一致。镜像 tag 含内核版本：升级 source_version
-# 后 tag 变化 → 自动重建（构建含内核 selftest 门禁）。排障见 docs/container-runtime.md。
+# 路径/端口/镜像 tag 恒与注册表一致。镜像 fleet 共享（xuseek:<version>）：
+# 升级 source_version 只换内核副本，镜像不动。排障见 docs/container-runtime.md。
 services:
   xuseek:
     build:
@@ -157,18 +164,15 @@ services:
       args:
         XUSEEK_EXTRAS: {_yq(cfg.docker_extras)}
         APT_MIRROR: {_yq(cfg.docker_apt_mirror)}
-{pip_arg}    image: {_yq(_image_tag(unit, version))}
+{pip_arg}    image: {_yq(_image_tag(version))}
     container_name: {_yq(unit)}
     network_mode: host
     user: {_yq(cfg.docker_user)}
     volumes:
       - {_yq(f"{home}:/data")}
-      - {_yq(f"{source_dir}/xuseek:/app/xuseek")}
     environment:
       TZ: {_yq(cfg.display_timezone)}
       HOME: "/data"
-      PIP_TARGET: "/data/.local/site-packages"
-      PYTHONPATH: "/data/.local/site-packages"
 {index_env}    restart: unless-stopped
     stop_grace_period: 30s
     command: ["serve", "--host", {_yq(host)}, "--port", {_yq(str(port))}]
@@ -176,7 +180,7 @@ services:
       test: ["CMD-SHELL", {_yq(health)}]
       interval: 15s
       timeout: 3s
-      start_period: 30s
+      start_period: 300s
       retries: 5
     logging:
       driver: json-file
@@ -214,16 +218,17 @@ def spawn_agent(unit: str, source_dir: str, home: str, host: str, port: int, *,
 
     构建参数（PIP_INDEX/APT_MIRROR/XUSEEK_EXTRAS）直接渲染进 compose 文件，
     不走 CLI 传参——文件自足可审计。构建在 compose up 之前同步完成，不挤占
-    wait_health 的 90s 验收窗（验收只量「容器 active + 端口监听」这段秒级过程）。
+    wait_health 的 rt 感知验收窗（docker 档 360s，首启自建 venv 也在窗内）。
     """
     ok, hint = docker_available()
     if not ok:
         raise DockerError(f"docker 不可用：{hint}")
     src = Path(source_dir)
-    if not (src / "Dockerfile").is_file():
+    if not (src / "docker-entrypoint.sh").is_file():
         raise DockerError(
-            f"该内核版本不含 Dockerfile（{src}）：容器运行时需 xuseek-v2 ≥ v2.7.19，"
-            f"升级内核走 docs/kernel-upgrade.md")
+            f"该内核版本不含入口 shim docker-entrypoint.sh（{src}）：容器运行时"
+            f"需 xuseek-v2 ≥ v2.7.38（模板已撤活挂载与 PIP_TARGET，旧内核镜像"
+            f"直跑 /app 副本会静默跑旧代码），升级内核走 docs/kernel-upgrade.md")
     state = unit_state(unit)
     if state in ("active", "activating"):
         raise DockerError(f"容器 {unit} 已在运行（{state}）")
@@ -247,7 +252,7 @@ def spawn_agent(unit: str, source_dir: str, home: str, host: str, port: int, *,
     tmp.chmod(0o600)
     os.replace(tmp, cf)
 
-    tag = _image_tag(unit, version)
+    tag = _image_tag(version)
     has_image = subprocess.run(["docker", "image", "inspect", tag],
                                capture_output=True, text=True,
                                timeout=30).returncode == 0
@@ -356,7 +361,7 @@ def _daemon_pid(unit: str) -> int | None:
     try:
         r = subprocess.run(
             # 模式不能以 "-" 开头（pgrep 会当选项解析）——用 python.* 前缀锚住
-            # daemon 的 cmdline（/app/.venv/bin/python -m xuseek serve …）
+            # daemon 的 cmdline（/data/xuseek-v2/.venv/bin/python -m xuseek serve …）
             ["docker", "exec", unit, "pgrep", "-f", "python.*-m xuseek serve"],
             capture_output=True, text=True, timeout=15)
     except (subprocess.TimeoutExpired, OSError):
@@ -413,7 +418,8 @@ def journal_tail(unit: str, n: int = 200) -> str:
 
 def cleanup(unit: str) -> None:
     """删 compose 渲染目录（delete/回滚/runtime 切换用）。镜像保留——
-    `docker image prune` 交给管理员（docs/container-runtime.md）。
+    fleet 共享（xuseek:<version>），本就不能按实例删；`docker image prune`
+    交给管理员（docs/container-runtime.md）。
 
     与同 unit 的 spawn 存在理论竞争窗口（rmtree vs mkdir）；spawn 端每次
     mkdir 都带 exist_ok=True，自愈。cleanup 是清理动作，不抛错——抛错会让

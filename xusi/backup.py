@@ -34,10 +34,10 @@ from typing import Protocol
 from . import __version__, agentops, brains, dockerctl, ports, registry, versions
 from .config import get_config
 
-# tar 内排除的路径/后缀（运行时产物或凭证）。.cache/.local：pip/HF 缓存与
-# pip 落点，可重装且 torch 量级 500MB+（docs/proposal-docker-home-writable.md
-# ——/data/.local 即 compose 三件套的 PIP_TARGET；任意层级匹配，09b6 自救
-# 布局 workspace/.local 同样排除）
+# tar 内排除的路径/后缀（运行时产物或凭证）。.venv = 实例环境的持久化缓存
+# （内核 v2.7.38 起随实例目录，丢了首启自愈重装一次，docs/agent-lifecycle.md
+# §2）；.cache/.local = pip/HF 缓存，可重装且 torch 量级 500MB+（任意层级
+# 匹配，09b6 旧布局 workspace/.local 同样排除）
 _EXCLUDE_DIRS = {".venv", "xuseek-v2", "__pycache__", ".pytest_cache",
                  ".cache", ".local"}
 _EXCLUDE_SUFFIXES = {".pyc", ".egg-info"}
@@ -384,6 +384,14 @@ def restore(backup_path: Path, *, new_id: str | None = None,
             raise BackupError(
                 f"备份的运行时是 docker，但本机 docker 不可用：{hint}——"
                 f"恢复到有 docker 环境的机器，或先装好 docker")
+        # 入口 shim 门槛同 create（agentops）：旧内核镜像直跑 /app 副本会
+        # 静默跑旧代码。空 source_version 的老包留给后面 versions 重建步
+        # 骤按既有路径报错。
+        sv = str(meta.get("source_version") or "").strip()
+        if sv and not versions.at_least(sv, "2.7.38"):
+            raise BackupError(
+                f"备份包内核 {sv} 早于 v2.7.38，无入口 shim——不支持恢复为 docker"
+                f"运行时。恢复为 systemd，或先在原机升级内核（≥ v2.7.38）再备份")
 
     # 1. 冲突检查
     existing = registry.get_agent(agent_id)

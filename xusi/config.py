@@ -62,7 +62,7 @@ class XusiConfig:
 
     # —— 双运行时 ——
     default_runtime: str = "systemd"  # 新建 agent 的缺省运行时：systemd（系统进程）
-                                 # 或 docker（容器，host 网络；需内核 ≥ v2.7.19 与
+                                 # 或 docker（容器，host 网络；需内核 ≥ v2.7.38 与
                                  # docker 环境）。创建对话框预选此值，可逐次覆盖。
                                  # 缺省 systemd 与全量文档一致；要整机缺省容器，
                                  # 在 etc/xusi.toml 显式写 default_runtime = "docker"。

@@ -343,9 +343,10 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     （systemd 直跑 / docker 容器）→ 端口验收。
 
     runtime：systemd（默认，系统进程）或 docker（容器，host 网络）——
-    缺省取 [manager].default_runtime。docker 要求内核 ≥ v2.7.19（Dockerfile
-    自该版本起才有）与本机 docker 环境，创建前早校验（失败零副作用，
-    不拖到验收超时）。创建后仍可切换（停止 → 改参 → 启动，见 patch_agent）。
+    缺省取 [manager].default_runtime。docker 要求内核 ≥ v2.7.38（入口 shim
+    docker-entrypoint.sh 自该版本起才有）与本机 docker 环境，创建前早校验
+    （失败零副作用，不拖到验收超时）。创建后仍可切换（停止 → 改参 → 启动，
+    见 patch_agent）。
 
     source_version：版本号 → 该版本源码解压成实例私有副本（instances/<id>/xuseek-v2/，
     删除时随 home 进 .trash）；缺省 → 版本仓库最新包（每 agent 自带私有副本，
@@ -369,11 +370,13 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     brain_list = _validate_brains(brain_list)
     src_ver = _resolve_source_choice((source_version or "").strip())
     # docker 前置早校验（在持锁/解压之前失败——零副作用）：
-    # ① 内核版本门槛：Dockerfile 自 v2.7.19 起才有（源仓库旧版解压不出它）
+    # ① 内核版本门槛：入口 shim 自 v2.7.38 起才有——compose 模板已撤
+    #    /app/xuseek 活挂载与 PIP_TARGET，旧内核镜像 ENTRYPOINT 直跑
+    #    /app 副本 = 静默跑旧代码 + pip 撞只读 /app/.venv
     # ② 本机 docker 环境可用（daemon + compose 插件；权限不足给可行动提示）
-    if runtime == "docker" and not versions.at_least(src_ver, "2.7.19"):
+    if runtime == "docker" and not versions.at_least(src_ver, "2.7.38"):
         raise AgentError(
-            f"容器运行时需要 xuseek-v2 ≥ v2.7.19（当前 {src_ver}）——"
+            f"容器运行时需要 xuseek-v2 ≥ v2.7.38（当前 {src_ver}）——"
             f"升级内核版本或改用 systemd 运行时")
     if runtime == "docker":
         ok, hint = dockerctl.docker_available()
@@ -422,7 +425,8 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
         except Exception as e:
             _fail(e)
 
-    # 锁外拉起：落盘后端口已被三重检验挡住，并发 create 不再互相等 90s 验收。
+    # 锁外拉起：落盘后端口已被三重检验挡住，并发 create 不再互相等对方的
+    # rt 感知验收窗（docker 档 360s）。
     # 失败路径同样回滚——「锁外等价」含失败语义，否则验收不过的 agent 会以
     # desired=running 赖在注册表里，靠 reconcile 反复拉起一个起不来的单元。
     # 例外：验收超时但单元仍在跑 = 首启装依赖慢于验收窗——再等一轮，别把
@@ -464,7 +468,7 @@ def _init_workspace(rec: dict, src_ver: str, roots: list | None = None,
 
 
 def spawn_and_verify(rec: dict) -> None:
-    """systemd 拉起 + 端口验收。失败抛 AgentError。
+    """拉起进程载体（systemd 单元 / docker 容器）+ 端口验收。失败抛 AgentError。
 
     公开给 backup.restore 复用（create 的私有实现提级——恢复与创建走同一条
     拉起路径，别再各自 systemdctl.spawn_agent）。"""
@@ -472,7 +476,15 @@ def spawn_and_verify(rec: dict) -> None:
     wait_health(rec["port"], rec["id"], rt=_rt(rec))
 
 
-def wait_health(port: int, agent_id: str, timeout: float = 90.0, *, rt=None) -> None:
+# wait_health 缺省验收窗（rt 感知，显式传值优先——reconcile 用 60s 短窗）：
+_WAIT_SYSTEMD = 90.0     # systemd 拉起即进程在，preflight 前最多装一轮依赖
+                         # （实测 ≤30s），90s 足够区分「慢」与「起不来」
+_WAIT_DOCKER = 360.0     # docker 首启自建 venv 现装依赖（实测 6~51s，冷缓存/
+                         # 弱网更久），与 compose healthcheck start_period 300s
+                         # 同口径再留一分钟余量
+
+
+def wait_health(port: int, agent_id: str, timeout: float | None = None, *, rt=None) -> None:
     """启动验收：进程载体 active（systemd 单元 / docker 容器，按 runtime 分派）
     且端口已进入监听（ss；host 网络下容器监听同样出现在宿主 ss 表）。失败抛
     AgentError（附日志尾部）。
@@ -485,10 +497,15 @@ def wait_health(port: int, agent_id: str, timeout: float = 90.0, *, rt=None) -> 
     主机缺 ss 时降级为 loopback connect 试探——ss 缺失会让
     _kernel_listening_ports 恒空集，健康 agent 也会验收超时（被误销毁）。
 
+    timeout：None（缺省）= 按 rt 取档——docker 360s（首启自建 venv 分钟级，
+    docs/agent-lifecycle.md §1）/ systemd 90s；显式传值优先。
+
     rt：Runtime 模块；调用方几乎都已有 agent dict（_rt(agent) 即得），传入
     免多读一次注册表。None 时回退注册表查询（兼容旧调用）。"""
     if rt is None:
         rt = _rt(registry.get_agent(agent_id) or {})
+    if timeout is None:
+        timeout = _WAIT_DOCKER if rt is dockerctl else _WAIT_SYSTEMD
     unit = get_config().unit_name(agent_id)
     have_ss = shutil.which("ss") is not None
     deadline = time.monotonic() + timeout
@@ -732,10 +749,11 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
                 ok, hint = dockerctl.docker_available()
                 if not ok:
                     raise AgentError(f"docker 不可用：{hint}")
-                if not (Path(_home(agent)) / versions.SRC_DIR_NAME / "Dockerfile").is_file():
+                if not (Path(_home(agent)) / versions.SRC_DIR_NAME
+                        / "docker-entrypoint.sh").is_file():
                     raise AgentError(
-                        "该内核版本不含 Dockerfile：容器运行时需 xuseek-v2 ≥ v2.7.19，"
-                        "升级内核走 docs/kernel-upgrade.md")
+                        "该内核版本不含入口 shim docker-entrypoint.sh：容器运行时需"
+                        " xuseek-v2 ≥ v2.7.38，升级内核走 docs/kernel-upgrade.md")
             runtime_new = rt_new
 
     # 大脑段手术（最易失败）——此刻入参校验已全部通过，失败时其余字段一律
@@ -750,8 +768,11 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
 
     # runtime 载体动作（校验全过才开始动载体）：旧载体防御性清理（幂等）——
     # docker → compose down 回收容器防残留占端口；涉 docker 一侧顺手清
-    # compose 渲染目录（spawn 会重渲染）
-    venv_removed = False
+    # compose 渲染目录（spawn 会重渲染）。实例目录不做任何 venv 预处理：
+    # 内核 v2.7.38 起两种运行时同用实例目录里那条 .venv，解释器失配由
+    # 首启自愈原地重建（docs/agent-lifecycle.md §2）——c65dd09 的「切到
+    # docker 删宿主真 venv」保护已随软链时代退役，删了反而毁掉可直接
+    # 平移的环境缓存。
     if runtime_new is not None:
         unit = _unit(agent)
         rt = _rt(agent)
@@ -764,17 +785,6 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
                 dockerctl.cleanup(unit)
             except Exception:
                 pass
-        if runtime_new == "docker":
-            # 宿主真 venv 会遮蔽内核 v2.7.37+ 的 .venv 兼容软链（ln 跳过已
-            # 存在项），其解释器路径在容器内失效 = 09b6「8404 无法重启」的
-            # 复现路径。真目录删除（docker 用镜像烘培 venv；切回 systemd 时
-            # xuseek.sh 自建，无重建成本）；软链留给内核自愈，不动。
-            venv = _home(agent) / versions.SRC_DIR_NAME / ".venv"
-            if venv.is_dir() and not venv.is_symlink():
-                # ignore_errors：删失败不拦切换；audit 按实际删净与否记，
-                # 别虚报 venv_removed
-                shutil.rmtree(venv, ignore_errors=True)
-                venv_removed = not venv.exists()
 
     hot = {}       # 写注册表即生效
     need_restart = False
@@ -801,8 +811,6 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     ad: dict[str, Any] = {"fields": sorted(changes), "restarted": restarted}
     if brains_new is not None:
         ad.update(brains=brains_new, brains_effective="next_breath")
-    if venv_removed:
-        ad["venv_removed"] = True
     audit("agent.patch", agent=agent_id, **ad)
     out = get_agent_or_404(agent_id)
     out = {**out, "restart_required": need_restart, "restarted": restarted}

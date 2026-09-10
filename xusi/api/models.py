@@ -32,7 +32,7 @@ class CreateAgentReq(BaseModel):
     source_version: str = Field("", description="xuseek-v2 版本号（GET /api/versions）。缺省 = 仓库最新版"
                                                 "（每 agent 自带私有副本，可单独迁移）。私有副本创建后不可改")
     runtime: str | None = Field(None, description="运行时：systemd（默认，系统进程）或 docker（容器，"
-                                                  "host 网络；需内核 ≥ v2.7.19 与本机 docker 环境）。"
+                                                  "host 网络；需内核 ≥ v2.7.38 与本机 docker 环境）。"
                                                   "缺省取 [manager].default_runtime；创建后可切换（停止 → 改参 → 启动）")
 
 
