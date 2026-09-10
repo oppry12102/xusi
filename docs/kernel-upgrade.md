@@ -179,6 +179,7 @@ mv instances/<id>/xuseek-v2.old-<旧版> instances/<id>/xuseek-v2
 `source_version` → spawn_and_verify。区别只在最后一步——镜像 tag 含
 source_version（`xuseek-agent-<id>:<version>`），tag 变化自动触发镜像重建
 （含内核 selftest 门禁，比裸机多几分钟构建）。docker agent 跳过 §1 的
-`.venv 平移`步骤也安全（venv 烘培在镜像里，实例目录没有 .venv）；
-回滚同样只是改回旧版本号 + spawn（旧镜像还在，秒级起）。旧镜像清理交
+`.venv 平移`步骤也安全（venv 烘培在镜像里；实例目录的 `.venv` 只是内核
+v2.7.37 起首启自建的兼容软链，旧链随旧树走、新树首启自动补链，平移无
+意义）；回滚同样只是改回旧版本号 + spawn（旧镜像还在，秒级起）。旧镜像清理交
 `docker image prune`。详见 `docs/container-runtime.md`。

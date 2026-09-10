@@ -61,6 +61,11 @@ instances/
   会抢同一端口）；切换时旧载体防御性清理（docker → `compose down` + 清渲染
   目录；镜像保留），切换后不自动启动。双向都可切——状态全在实例目录，
   换载体不丢任何东西。
+- 切换 systemd → docker 的一个前置：实例目录 `xuseek-v2/.venv` 若是宿主真
+  venv，**先删掉**（容器用镜像烘培的 venv，内核 v2.7.37 起首启会在原位补
+  兼容软链）。宿主真 venv 会**遮蔽**补链（内核不动已存在项），而它的解释器
+  路径在容器里多半失效——正是 09b6「8404 无法重启」的复现路径。docker →
+  systemd 反向切换不用管：留下的死链会被内核 venv 自愈识别并重建为真 venv。
 
 ## 语义对齐（与 systemd 模式逐项对照）
 
@@ -72,17 +77,22 @@ instances/
 | 日志 | journalctl | `docker logs --tail`（json-file 10m×3 轮转，防写穿磁盘） |
 | 备份冻结窗 | SIGSTOP/SIGCONT | 同走冻结窗（按 runtime 分派） |
 | 优雅停 | TimeoutStopSec=20 | `stop_grace_period: 30s` |
+| `.venv` 解释器路径 | `<实例>/xuseek-v2/.venv`（真 venv，xuseek.sh 首启自建） | **同路径**（兼容软链 → 镜像 `/app/.venv`；内核 v2.7.37 起首启自建，死链自愈） |
 
 UI 上的状态徽章/自动重启次数/在线时长/暂停徽章全部走同一份 `process` 字段
-形状——前端零差异。
+形状——前端零差异。`.venv` 同路径是内核 v2.7.37 起的兼容层（容器内
+`xuseek.sh` 每次启动幂等补链）：大脑自起脚本（watchdog/采集器）硬编码的
+解释器路径在两个运行时下恒有效——09b6「8404 无法重启」那类事故的结构性修复。
 
 ## 内核升级（容器版）
 
 **`docs/kernel-upgrade.md` 的 playbook 原样可用**：停机 → 解压新版本目录 →
 rename → 改注册表 `source_version` → spawn。区别只在拉起那一步——镜像 tag
 变了 → 自动重建（含 selftest 门禁，比裸机多几分钟构建）。docker agent 跳过
-`.venv 平移`步骤也安全（venv 烘培在镜像里，实例目录里没有 .venv）。旧镜像
-留盘不碍事，`docker image prune` 统一清理。
+`.venv 平移`步骤也安全（venv 烘培在镜像里；实例目录的 `.venv` 只是内核
+v2.7.37 起首启自建的兼容软链——升级换源码目录时旧链随旧树走，新树首启
+自动补链；删除只摘链不跟随）。旧镜像留盘不碍事，`docker image prune`
+统一清理。
 
 ## 降级表现与排障
 
