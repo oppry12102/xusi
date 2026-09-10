@@ -5,8 +5,11 @@
 > API 层「source_version 创建后不可改」约束的是**创建流程**；存量升级是目录级
 > 操作，本文是标准做法。前置：管理面代码 ≥ `ca56645`（分档语义与内核 v2.5.5
 > 对齐：未标注 tier 视同 power）。
-> **当前目标版本：v2.7.12（2026-09-02 投放）**。v2.5.x → v2.7.x 是同一套目录级
-> 流程；运行时依赖零变化（pyproject 只差版本号行），坑④的 .venv 平移结论不变。
+> **当前目标版本：v2.7.38（2026-09-10 投放，入口 shim）**。v2.5.x → v2.7.x 是
+> 同一套目录级流程；运行时依赖零变化（pyproject 只差版本号行），坑④的 .venv
+> 平移结论不变。v2.7.38 起容器入口 shim 优先跑实例目录自己的 `xuseek.sh`，
+> `.venv` 随实例目录落**真目录**（两种运行时同一条路径，见 §8 与
+> `docs/agent-lifecycle.md`）。
 > v2.7.5 清理了 `[agent]` 预算段（见 §5）——升级后存量 config.toml 里的该段是
 > 死配置，投信让 agent 清掉即可。v2.7.12 起**互联由内核自己完成**（根智能体 +
 > `[[roots]]` 出生交割，见 §5）；存量 agent 升级后 config 里没有 `[[roots]]`
@@ -50,10 +53,10 @@ for d in (tmp, bak):
 versions.extract(NEW, tmp)                  # 2) 官方解压器（坑①：勿用裸 unzip）
 _venv = src / ".venv"
 if _venv.is_dir() and not _venv.is_symlink():
-    shutil.move(str(_venv), str(tmp / ".venv"))   #   .venv 平移免重建（坑④）——真目录才移；
-                                                  #   docker 实例常缺失或只是 v2.7.37+ 兼容软链，
-                                                  #   缺失/软链跳过，新树首启自补（systemd 重建
-                                                  #   真 venv / docker 补 /app/.venv 兼容链）
+    shutil.move(str(_venv), str(tmp / ".venv"))   #   .venv 平移免重建（坑④）——v2.7.38 起两种
+                                                  #   运行时都是实例目录里的真目录，平移通用；
+                                                  #   软链 = v2.7.37 及更早的兼容层遗留，跳过
+                                                  #   （新树首启自建，属预期的「重装一次环境」）
 src.rename(bak); tmp.rename(src)            #   旧树留作回滚
 registry.update_agent(AID, {"source_version": NEW})   # 3) 坑③：API 改不了这字段
 agentops.audit("upgrade_kernel", agent=AID, **{"from": OLD, "to": NEW})
@@ -93,7 +96,7 @@ agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier =
 | ① | 用 `zipfile.extractall` / 裸 unzip 解内核包 → `xuseek.sh` 644 → systemd 报 `Permission denied` 拉不起 | 一律走 `versions.extract`：还原权限位、无条件保证 `xuseek.sh` 可执行、防 zip-slip |
 | ② | 后台脚本调 `systemctl --user` 全部 `not-found` | 先 `export XDG_RUNTIME_DIR=/run/user/$(id -u)` |
 | ③ | PATCH 改 `source_version` 被拒（`_PATCHABLE` 白名单不含它） | `registry.update_agent()` 直改；不改则 webui/备份恢复显示错版本 |
-| ④ | 担心 `.venv` 要重建 | 平移即可（`mv` 进新树，路径不变）；v2.7.4 依赖与 v2.5.x 完全一致（pyproject 只差版本号行），指纹不漂移不重装；今后依赖变了 xuseek.sh 也会按指纹自愈补装（有 uv 用 uv，失败回落 pip） |
+| ④ | 担心 `.venv` 要重建 | 平移即可（`mv` 进新树，路径不变）——v2.7.38 起两种运行时都是实例目录里的真目录，平移通用；依赖没变指纹不漂移不重装，变了 xuseek.sh 按指纹自愈补装（有 uv 用 uv，失败回落 pip）；干脆不平移也行：新树首启自建，只是多装一次（实测 6~51s） |
 | ⑤ | 担心停单元时 manager 抢拉 | 不会——reconcile 只在 manager 重启时跑，手动操作窗口安全 |
 | ⑥ | 升级收尾后 desired_state 停在 stopped（agentops.stop 落盘、spawn_and_verify 不回写）→ 下次 manager 重启 reconcile 按期望态把已升级的 agent 停掉 | §1 脚本收尾补 `agentops.start(AID)`（active 时只 finalize、不重拉） |
 
@@ -164,12 +167,16 @@ agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier =
 
 ```bash
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
-systemctl --user stop <unit>
+systemctl --user stop <unit>          # docker 实例改用 `python -m xusi stop <id>`
 mv instances/<id>/xuseek-v2/.venv instances/<id>/xuseek-v2.old-<旧版>/.venv
 mv instances/<id>/xuseek-v2 instances/<id>/xuseek-v2.failed
 mv instances/<id>/xuseek-v2.old-<旧版> instances/<id>/xuseek-v2
 # 再 registry.update_agent 改回旧版本号 + spawn_and_verify（同 §1 脚本尾段）
 ```
+
+回滚对两种运行时同样直接：`.venv` 是真目录（v2.7.38 起），`mv` 回旧树即用；
+docker 实例**不涉及镜像**——镜像 fleet 共享（`xuseek:<version>`）且与实例
+内容解耦，回滚只是换内核副本目录。
 
 ## 7. 批量升级建议
 
@@ -181,11 +188,13 @@ mv instances/<id>/xuseek-v2.old-<旧版> instances/<id>/xuseek-v2
 ## 8. 容器运行时（docker）的 agent
 
 **本 playbook 对 docker agent 原样可用**：停机 → 换目录 → 改注册表
-`source_version` → spawn_and_verify。区别只在最后一步——镜像 tag 含
-source_version（`xuseek-agent-<id>:<version>`），tag 变化自动触发镜像重建
-（含内核 selftest 门禁，比裸机多几分钟构建）。§1 的 `.venv 平移`对 docker
-实例自动跳过（真目录才移）：venv 烘培在镜像里，实例目录的 `.venv` 常缺失
-（v2.7.19–2.7.36）或只是 v2.7.37 起首启自建的兼容软链（旧链随旧树走、
-新树首启自动补链，平移无意义）。回滚同样只是改回旧版本号 + spawn（旧镜像
-还在，秒级起）。旧镜像清理交 `docker image prune`。详见
+`source_version` → spawn_and_verify。**镜像基本不动**——v2.7.38 入口 shim 起，
+跑的是实例目录自己的 launcher/源码/`.venv`；镜像 fleet 共享
+`xuseek:<version>`（只是运行环境 + 兜底副本），升到新版本时全队只构建一次
+（第一个升的实例触发，含内核 selftest 门禁，其余复用），「忘重建镜像」
+事故类从结构上消失。§1 的 `.venv 平移`对 docker 实例同样适用（v2.7.38 起
+也是真目录；旧版遗留的兼容软链会被守卫跳过、新树首启自建）。首启如遇
+解释器/依赖差异，venv 自愈原地重建或补装（分钟级，一次性）。回滚同 §6：
+换回旧树 + spawn，镜像无关、秒级起。镜像重建仅当换基础镜像（python 版本）
+或系统依赖变化；旧镜像清理交 `docker image prune`。详见
 `docs/container-runtime.md`。

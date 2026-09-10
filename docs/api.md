@@ -102,9 +102,9 @@ curl -X POST http://SERVER:8601/api/agents \
   末尾（`[capabilities]` 等内核可选段或未来新段）。落盘前整体 tomllib 校验，
   写坏直接拒绝创建（400）——xusi 不必追踪内核每个新配置段
 - `runtime`（可选）：`systemd`（默认，系统进程）或 `docker`（容器，host 网络）。
-  缺省取 `[manager].default_runtime`。docker 要求内核 ≥ v2.7.19 与本机 docker
-  环境（daemon + compose 插件、管理面用户入 docker 组），不满足创建即 400。
-  创建后可切换（见改参）
+  缺省取 `[manager].default_runtime`。docker 要求内核 ≥ v2.7.38（入口 shim）与
+  本机 docker 环境（daemon + compose 插件、管理面用户入 docker 组），不满足
+  创建即 400。创建后可切换（见改参）
 - 创建时 xusi 渲染一次 `config.toml`（出生配置：mission/brains/api_key/budgets/
   instance_id/roots/extra_config，chmod 600），**此后 xusi 不再改写该文件**
   （唯一例外：改参按密钥池手术式重渲染 [brain] + [brains.*] 段，见下）。

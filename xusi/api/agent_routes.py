@@ -55,8 +55,8 @@ async def api_agent_patch(req: PatchAgentReq, apply_restart: bool = False,
     if not changes:
         raise HTTPException(400, "请求体里没有任何要修改的字段")
     agent, _rec = pair
-    # patch 含 systemd 子进程；apply_restart 时还有 90s 级验收——
-    # 线程池跑，别冻事件循环
+    # patch 含 systemd/docker 子进程；apply_restart 时还有分钟级验收
+    # （wait_health rt 感知窗，docker 档 360s）——线程池跑，别冻事件循环
     return JSONResponse(await asyncio.to_thread(
         agentops.patch_agent, agent["id"], changes, apply_restart=apply_restart))
 
@@ -83,8 +83,8 @@ def _lifecycle(agent_id: str, action: str) -> dict:
 def _make_lifecycle_handler(action: str):
     async def _h(pair: tuple = Depends(require_agent)) -> JSONResponse:
         agent, _rec = pair
-        # 生命周期 = systemd 子进程 + 最长 90s 的验收（wait_health）——
-        # 必须丢线程池；在事件循环上同步等会冻住整个管理面
+        # 生命周期 = 载体子进程 + 最长分钟级的验收（wait_health rt 感知窗，
+        # docker 档 360s）——必须丢线程池；在事件循环上同步等会冻住整个管理面
         return JSONResponse(await asyncio.to_thread(
             _lifecycle, agent["id"], action))
     _h.__name__ = f"api_agent_{action}"

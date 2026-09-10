@@ -120,10 +120,10 @@ xusi/
   崩溃/误杀 5s 内自动拉起；② 管理面启动时 reconcile——机器重启后按注册表
   期望态（running/stopped/paused）拉齐。
 - **双运行时**：每个 agent 可跑 systemd 直跑（默认）或 docker 容器（host 网络，
-  需内核 ≥ v2.7.19 + docker 环境），界面一致、仅多「容器/系统」徽章。
-  **切换 = 停止 → 改参 → 启动**（状态全在实例目录，只换进程载体）；容器模式的
-  镜像 tag 含内核版本，升级内核自动重建（构建含内核 selftest 门禁）。前置、
-  目录布局与排障见 `docs/container-runtime.md`。
+  需内核 ≥ v2.7.38 + docker 环境），界面一致、仅多「容器/系统」徽章。
+  **切换 = 停止 → 改参 → 启动**（状态全在实例目录——含 launcher/源码/`.venv`，
+  只换进程载体）；容器镜像 fleet 共享（`xuseek:<version>`）且与实例内容解耦，
+  升级内核不重建镜像。前置、目录布局与排障见 `docs/container-runtime.md`。
 - **暂停** = SIGSTOP 冻结大脑（它自起的后台服务继续跑；容器模式同语义——
   exec 进容器只冻 daemon 主进程）；停止/重启一律优雅停，轮边界把会话落盘后再退。
 - **改参边界**：管理面可改簿记（name/note）、暴露开关（expose，需重启）、

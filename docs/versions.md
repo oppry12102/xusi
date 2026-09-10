@@ -53,4 +53,5 @@ zip -r /path/to/xusi/versions/xuseek-v2-v2.3.0.zip . \
 - **仓库为空 → 无法创建 agent**（create 报错、doctor FAIL）——请先投放版本包。
 - 已有 agent 不受影响。
 - **存量 agent 升级内核**（「创建后不可改」约束的是创建流程；升级是目录级操作）
-  的标准做法见 [kernel-upgrade.md](kernel-upgrade.md)。
+  的标准做法见 [kernel-upgrade.md](kernel-upgrade.md)；创建/迁移/升级/复原/组网
+  的整体生命周期见 [agent-lifecycle.md](agent-lifecycle.md)。

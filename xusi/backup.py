@@ -470,7 +470,7 @@ def restore(backup_path: Path, *, new_id: str | None = None,
     with ports.ALLOC_LOCK, registry.file_lock():
         if port is not None:
             # 用户传的优先，但与 create 同一把尺：in_range + 三重检验——否则
-            # 注册表会落一个撞车/越界端口，到 wait_health 90s 超时才暴露
+            # 注册表会落一个撞车/越界端口，到 wait_health 验收超时才暴露
             try:
                 ports.allocate(port)
             except ValueError as e:

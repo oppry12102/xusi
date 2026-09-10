@@ -7,8 +7,10 @@
 
 ## 前置
 
-1. 内核版本：**xuseek-v2 ≥ v2.7.19**（Dockerfile 自该版本起才有）。旧内核
-   创建 docker agent 直接 400；存量 agent 先走 `docs/kernel-upgrade.md` 升级。
+1. 内核版本：**xuseek-v2 ≥ v2.7.38**（入口 shim `docker-entrypoint.sh` 自该
+   版本起才有——shim 优先跑实例目录自己的 `xuseek.sh`，是现行 compose 模板的
+   硬前提；旧内核镜像直跑 `/app` 副本会静默跑旧代码）。旧内核创建 docker
+   agent 直接 400；存量 agent 先走 `docs/kernel-upgrade.md` 升级。
 2. 本机 docker 环境：daemon + compose 插件；**管理面用户要能访问
    `/var/run/docker.sock`**（`sudo usermod -aG docker <管理面用户>` 后**重新
    登录**——组权限在会话启动时固定，只重启 xusi 服务不够）。
@@ -23,14 +25,15 @@ instances/
 ├── <agent-id>/                 实例目录（与裸机同一目录语义，迁移原样搬走）
 │   ├── config.toml             （容器内 = /data/config.toml）
 │   ├── data/  workspace/       （bind mount，容器写入即宿主可见）
-│   └── xuseek-v2/              内核私有副本：build context + /app/xuseek 活挂载
+│   └── xuseek-v2/              内核私有副本：运行的代码（shim 直跑）+ build context
+│       └── .venv/              首启自建 venv（bind mount 持久；丢了自愈重装一次）
 └── .compose/
     └── xusi-a-<agent-id>/compose.yaml   管理面渲染（容器内不可见）
 ```
 
 - **compose.yaml 由管理面渲染在实例目录之外**（`instances/.compose/<unit>/`，
-  600 权限）——容器只挂载了实例根 `/data` 与内核代码 `/app/xuseek`，
-  渲染文件不在任何挂载里，容器内大脑看不到也改不到。
+  600 权限）——容器只挂载了实例根 `/data`（跑的代码就在里面），渲染文件不在
+  挂载里，容器内大脑看不到也改不到。
 - **容器运行用户 = 管理面用户**（compose 的 `user:` 行，缺省取管理面进程的
   uid + 主组 gid；`[manager].docker_user` 可改）。内核模板默认 root，但 root
   写进 `/data` 的文件宿主属主是 root——管理面（普通用户）就写不了
@@ -48,24 +51,26 @@ instances/
   无需任何 capability 或转发规则。
 - **spawn 每次重渲染**：路径/端口/镜像 tag 恒与注册表一致（expose 切换后
   `--host` 变化自然生效）；不要手改——手改的内容下次 spawn 就被覆盖。
-- **镜像 tag 含内核版本**：`xuseek-agent-<id>:<source_version>`。容器是
+- **镜像 fleet 共享**：`xuseek:<version>`（与实例内容解耦——跑的是实例目录
+  自己的 launcher/源码/`.venv`，镜像只是 python/uv/系统工具 + 兜底副本）。
+  同版本 N 个实例只构建一次，第二个起免构建；升级内核**不重建镜像**。容器是
   可弃的一次性运行时，实例状态全在 bind mount，重建/升级零状态损失。
 
 ## 创建 / 切换
 
 - 创建：对话框「运行时」选 Docker 容器（或 API `runtime:"docker"`）。
   首次 spawn 时若镜像缺失会**同步构建**（分钟级；构建含内核 selftest 门禁，
-  失败即 spawn 失败并带构建输出尾部）——构建不挤占 90s 验收窗
-  （验收只量「容器 active + 端口监听」）。
+  失败即 spawn 失败并带构建输出尾部）——构建在 up 之前完成，不挤占验收窗
+  （docker 档 360s，首启自建 venv 也在窗内）。
 - 切换：**停止 → 改参选运行时 → 启动**。运行中切换会被 400 拒绝（新旧载体
   会抢同一端口）；切换时旧载体防御性清理（docker → `compose down` + 清渲染
-  目录；镜像保留），切换后不自动启动。双向都可切——状态全在实例目录，
-  换载体不丢任何东西。
-- 切换 systemd → docker：实例目录 `xuseek-v2/.venv` 若是宿主真 venv，管理面
-  切换代码自动移除（容器用镜像烘培的 venv，内核 v2.7.37 起首启会在原位补
-  兼容软链）。宿主真 venv 会**遮蔽**补链（内核不动已存在项），而它的解释器
-  路径在容器里多半失效——正是 09b6「8404 无法重启」的复现路径。docker →
-  systemd 反向切换不用管：留下的死链会被内核 venv 自愈识别并重建为真 venv。
+  目录；镜像 fleet 共享、不按实例删），切换后不自动启动。双向都可切——状态
+  全在实例目录，换载体不丢任何东西。
+- 切换**零预处理**：两种运行时同用实例目录里那条 `xuseek-v2/.venv`，解释器
+  失配（宿主 ↔ 镜像 python）由首启自愈识别并原地重建（实测容器方向 6.1s、
+  宿主方向 16.2s，含全量依赖重装；指纹确定性往返）。历史上「切到 docker 要
+  删宿主 venv」的保护（c65dd09，防真目录遮蔽 v2.7.37 兼容软链）已随软链
+  时代退役——现在删了反而毁掉可直接平移的环境缓存。
 
 ## 语义对齐（与 systemd 模式逐项对照）
 
@@ -77,22 +82,23 @@ instances/
 | 日志 | journalctl | `docker logs --tail`（json-file 10m×3 轮转，防写穿磁盘） |
 | 备份冻结窗 | SIGSTOP/SIGCONT | 同走冻结窗（按 runtime 分派） |
 | 优雅停 | TimeoutStopSec=20 | `stop_grace_period: 30s` |
-| `.venv` 解释器路径 | `<实例>/xuseek-v2/.venv`（真 venv，xuseek.sh 首启自建） | **同路径**（兼容软链 → 镜像 `/app/.venv`；内核 v2.7.37 起首启自建，死链自愈） |
+| `.venv` 解释器路径 | `<实例>/xuseek-v2/.venv`（真 venv，xuseek.sh 首启自建） | **同一个东西**（同路径同内容；解释器失配自愈原地重建） |
 
 UI 上的状态徽章/自动重启次数/在线时长/暂停徽章全部走同一份 `process` 字段
-形状——前端零差异。`.venv` 同路径是内核 v2.7.37 起的兼容层（容器内
-`xuseek.sh` 每次启动幂等补链）：大脑自起脚本（watchdog/采集器）硬编码的
-解释器路径在两个运行时下恒有效——09b6「8404 无法重启」那类事故的结构性修复。
+形状——前端零差异。`.venv` 在两个运行时下是**同一个东西**（同路径同内容，
+不再是 v2.7.37 的兼容软链层）：大脑自起脚本（watchdog/采集器）硬编码的解释器
+路径恒有效；`rm -rf .venv` 也只是「重装一次环境」（实测 17~51s 自愈，数据
+零损伤）。
 
 ## 内核升级（容器版）
 
 **`docs/kernel-upgrade.md` 的 playbook 原样可用**：停机 → 解压新版本目录 →
-rename → 改注册表 `source_version` → spawn。区别只在拉起那一步——镜像 tag
-变了 → 自动重建（含 selftest 门禁，比裸机多几分钟构建）。docker agent 跳过
-`.venv 平移`步骤也安全（venv 烘培在镜像里；实例目录的 `.venv` 只是内核
-v2.7.37 起首启自建的兼容软链——升级换源码目录时旧链随旧树走，新树首启
-自动补链；删除只摘链不跟随）。旧镜像留盘不碍事，`docker image prune`
-统一清理。
+rename → 改注册表 `source_version` → spawn。**镜像不动**（launcher/源码/
+`.venv` 都随实例目录，跑的从来不是镜像里的代码）——「忘重建镜像」这一整类
+事故从结构上消失。`.venv 平移`两种运行时同用（都是真目录，`mv` 进新树即可；
+依赖变了自愈补装，python 没变则秒级）。镜像重建仅当换基础镜像（python
+版本）或系统依赖变化——此时实例 venv 因 python 小版本变自动重装（正确行为，
+无需干预）。旧镜像留盘不碍事，`docker image prune` 统一清理。
 
 ## 降级表现与排障
 
@@ -113,13 +119,13 @@ v2.7.37 起首启自建的兼容软链——升级换源码目录时旧链随旧
   不会触发重启。
 - **端口冲突**：host 网络 = 宿主机真实端口，与 systemd 同走注册表分配三重
   检验；最坏表现是内核绑不上 → 容器崩溃循环 + 验收超时（错误附日志尾部）。
-- **大脑改内核代码**：`/app/xuseek` 活挂载自它自己的 `xuseek-v2/xuseek`——
-  改的就是自己这份，重启生效、镜像重建不丢、改坏只影响它自己；改
-  `pyproject.toml` 想持久新依赖要重建镜像（见内核 DOCKER.md）。
-- **容器内 pip 装包死路**（`HOME=/`：`--user` 撞 `/.local`，缺省撞只读
-  `/app/.venv`）——2026-09-10 起根治：compose 渲染三件套 `HOME=/data` +
-  `PIP_TARGET` + `PYTHONPATH`（`/data/.local/site-packages`，版本无关），pip
-  缺省有落点、装的包 daemon 与子进程处处可导（提案与实证见
-  `docs/proposal-docker-home-writable.md`；备份排除 `.cache`/`.local`）。
-  `--user` 仍是死路（venv 禁 user-site），报错可行动；存量 agent 下次重启
-  重渲染即生效。
+- **大脑改内核代码**：改的就是自己实例目录里的 `xuseek-v2/xuseek`（shim
+  优先跑这份）——重启生效、镜像无关、改坏只影响它自己；改 `pyproject.toml`
+  加依赖也不用碰镜像：venv 自愈按新依赖清单现装（见内核 DOCKER.md）。
+- **容器内 pip 装包**：完全缺省语义——装进实例自己的 `.venv`，`pip list`/
+  `uninstall` 正常，daemon 与子进程处处可导。历史上的「三件套」方案
+  （`HOME=/data` + `PIP_TARGET` + `PYTHONPATH`，2026-09-10~09-11 短暂上线）
+  已随 v2.7.38 入口 shim 退役（始末见 `docs/agent-lifecycle.md`）。`HOME`
+  仍钉 `/data`：uv/pip 缓存落 bind mount（`/data/.cache/uv`），也避开裸
+  user 起容器时 Docker 落 `HOME=/` 的坑；`pip --user` 在 venv 里仍是死路
+  （venv 禁 user-site），报错可行动（去掉 `--user` 即可）。
