@@ -23,6 +23,7 @@ import platform
 import re
 import shutil
 import socket
+import stat
 import tarfile
 import tempfile
 import time
@@ -230,9 +231,10 @@ def snapshot(agent_id: str, *, reason: str = "manual",
     # 与 stat() 分两次调用会在中间被删掉 → FileNotFoundError 裸 traceback
     def _fz(p: Path) -> int:
         try:
-            return p.stat().st_size if p.is_file() else 0
-        except FileNotFoundError:
-            return 0
+            st = p.stat()
+            return st.st_size if stat.S_ISREG(st.st_mode) else 0
+        except OSError:
+            return 0   # 消失（FileNotFound）/stat 不可达都按 0，估算不崩
     home_size = sum(_fz(p) for p in (home / "data").rglob("*")) \
         + sum(_fz(p) for p in (home / "workspace").rglob("*")) \
         + _fz(home / "config.toml")

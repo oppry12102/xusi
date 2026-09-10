@@ -689,6 +689,10 @@ function daemonRowHtml(s) {
 
 function stateBadge(a) {
   const p = a.process || {};
+  // failed/activating 单列，不洗白成「已停止」——与下方 isStopped 显隐语义
+  // 对齐：不健康态要被管理员看见，而不是藏进停止堆里（daemon 挂 ≠ 已停止）
+  if (p.active === "failed") return `<span class="badge b-err" title="载体报故障退出（非正常停止）——查日志/详情">故障</span>`;
+  if (p.active === "activating") return `<span class="badge b-init" title="单元启动中">启动中</span>`;
   if (p.active !== "active") return `<span class="badge b-stop">已停止</span>`;
   if (a.desired_state === "paused") return `<span class="badge b-pau">已暂停 ⏸</span>`;
   const dm = a.daemon || {};

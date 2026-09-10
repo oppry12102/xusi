@@ -594,8 +594,9 @@ def pause(agent_id: str) -> dict:
     # SIGCONT 会把管理员刚 pause 的 agent 复活且无人再冻——reconcile 只在
     # 管理面启动跑）。反序（先 SIGSTOP 后写注册表）留一个「信号已落、期望
     # 态仍 running」的窗口，备份误判为自己冻的并解冻，之后才补写 paused。
-    # SIGSTOP 本身失败（罕见，unit 刚验过 active）：期望态已 paused，下轮
-    # reconcile 补冻，最终一致。
+    # SIGSTOP 本身失败（罕见，unit 刚验过 active）：期望态已 paused、进程
+    # 仍在跑——留待下次管理面重启的 reconcile 收敛（它只在启动时跑，见上），
+    # 期间注册表 paused 与实际不符；比反序的「备份复活 pause」窗口轻得多。
     registry.update_agent(agent_id, {"desired_state": "paused"})
     rt.kill_signal(unit, "SIGSTOP")
     audit(f"agent.pause", agent=agent_id)
@@ -634,7 +635,8 @@ def restart(agent_id: str) -> dict:
 def _finalize(agent_id: str, desired: str, action: str) -> dict:
     """生命周期动作收尾：写 desired_state → 审计 → 返回统一形态。
 
-    5 个 start/stop/pause/resume/restart 共用——成功路径必以这一行收尾。"""
+    4 个 start/stop/resume/restart 共用（pause 单飞：要先落期望态再发信号，
+    见其注释）——成功路径必以这一行收尾。"""
     registry.update_agent(agent_id, {"desired_state": desired})
     audit(f"agent.{action}", agent=agent_id)
     return {"id": agent_id, "desired_state": desired}
@@ -769,8 +771,10 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
             # xuseek.sh 自建，无重建成本）；软链留给内核自愈，不动。
             venv = _home(agent) / versions.SRC_DIR_NAME / ".venv"
             if venv.is_dir() and not venv.is_symlink():
+                # ignore_errors：删失败不拦切换；audit 按实际删净与否记，
+                # 别虚报 venv_removed
                 shutil.rmtree(venv, ignore_errors=True)
-                venv_removed = True
+                venv_removed = not venv.exists()
 
     hot = {}       # 写注册表即生效
     need_restart = False
