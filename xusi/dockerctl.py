@@ -125,7 +125,13 @@ def _render_compose(unit: str, source_dir: Path, home: Path, host: str,
     低端口直听（80/443）不靠 cap_add——Linux 语义上 --cap-add 只扩大
     bounding set，非 root 进程 CapEff 仍为 0（实测无效，已回退）。特权
     端口在宿主侧直接取消：sysctl ip_unprivileged_port_start=0（install
-    ⑤ 缺省铺好 + sysctl.d 持久化，host 网络下全队生效）。"""
+    ⑤ 缺省铺好 + sysctl.d 持久化，host 网络下全队生效）。
+    **HOME 三件套**（docs/proposal-docker-home-writable.md）：裸 user 起容器
+    时镜像 /etc/passwd 无此 uid → Docker 落 HOME=/，pip --user 撞 /.local、
+    缺省撞只读 /app/.venv——大脑装包死路。钉 HOME=/data（可写落点+缓存）、
+    PIP_TARGET/PYTHONPATH=/data/.local/site-packages（版本无关路径，别带
+    python3.x）：pip 缺省有地方落、装的包 daemon 与一切子进程处处可导。
+    --user 仍死路（venv 禁 user-site），但报错可行动（去掉 --user 即可）。"""
     from .config import get_config
     cfg = get_config()
     pip_index = cfg.docker_pip_index
@@ -160,6 +166,9 @@ services:
       - {_yq(f"{source_dir}/xuseek:/app/xuseek")}
     environment:
       TZ: {_yq(cfg.display_timezone)}
+      HOME: "/data"
+      PIP_TARGET: "/data/.local/site-packages"
+      PYTHONPATH: "/data/.local/site-packages"
 {index_env}    restart: unless-stopped
     stop_grace_period: 30s
     command: ["serve", "--host", {_yq(host)}, "--port", {_yq(str(port))}]

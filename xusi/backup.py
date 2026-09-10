@@ -34,8 +34,12 @@ from typing import Protocol
 from . import __version__, agentops, brains, dockerctl, ports, registry, versions
 from .config import get_config
 
-# tar 内排除的路径/后缀（运行时产物或凭证）
-_EXCLUDE_DIRS = {".venv", "xuseek-v2", "__pycache__", ".pytest_cache"}
+# tar 内排除的路径/后缀（运行时产物或凭证）。.cache/.local：pip/HF 缓存与
+# pip 落点，可重装且 torch 量级 500MB+（docs/proposal-docker-home-writable.md
+# ——/data/.local 即 compose 三件套的 PIP_TARGET；任意层级匹配，09b6 自救
+# 布局 workspace/.local 同样排除）
+_EXCLUDE_DIRS = {".venv", "xuseek-v2", "__pycache__", ".pytest_cache",
+                 ".cache", ".local"}
 _EXCLUDE_SUFFIXES = {".pyc", ".egg-info"}
 _EXCLUDE_FILES = {"webui_tokens.json"}
 

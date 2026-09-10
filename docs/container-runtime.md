@@ -116,3 +116,10 @@ v2.7.37 起首启自建的兼容软链——升级换源码目录时旧链随旧
 - **大脑改内核代码**：`/app/xuseek` 活挂载自它自己的 `xuseek-v2/xuseek`——
   改的就是自己这份，重启生效、镜像重建不丢、改坏只影响它自己；改
   `pyproject.toml` 想持久新依赖要重建镜像（见内核 DOCKER.md）。
+- **容器内 pip 装包死路**（`HOME=/`：`--user` 撞 `/.local`，缺省撞只读
+  `/app/.venv`）——2026-09-10 起根治：compose 渲染三件套 `HOME=/data` +
+  `PIP_TARGET` + `PYTHONPATH`（`/data/.local/site-packages`，版本无关），pip
+  缺省有落点、装的包 daemon 与子进程处处可导（提案与实证见
+  `docs/proposal-docker-home-writable.md`；备份排除 `.cache`/`.local`）。
+  `--user` 仍是死路（venv 禁 user-site），报错可行动；存量 agent 下次重启
+  重渲染即生效。
