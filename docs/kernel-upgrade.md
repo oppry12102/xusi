@@ -31,7 +31,8 @@
 ```bash
 export XDG_RUNTIME_DIR=/run/user/$(id -u)   # 坑②：systemctl --user 必需
 cd <xusi 目录>
-python3 - <<'EOF'
+python3.12 - <<'EOF'        # 坑⑧：裸 python3 在 Ubuntu 22.04 远端是 3.10，
+                            #   无 tomllib（xusi 需 ≥3.11）——用 deadsnakes 3.12
 import sys, shutil
 sys.path.insert(0, ".")
 from xusi import registry, agentops, versions
