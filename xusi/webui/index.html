@@ -51,6 +51,7 @@
   .b-sleep{background:#e8eefb;color:#3f66c2} .b-park{background:#f6f7fa;color:#8a93a8}
   .b-init{background:#fdf3e3;color:var(--warn)}
   .b-sys{background:#f0f1f4;color:var(--sub)} .b-doc{background:#e3f2ef;color:#1d7a6e}
+  .b-del{color:var(--err)}
   .row{display:flex;gap:8px;flex-wrap:wrap;color:var(--sub);font-size:12.5px;align-items:center}
   .chip{background:#f0f2f7;border-radius:6px;padding:0 7px;font-size:12px;color:var(--ink)}
   .chip.bcur{background:#eaf0fb;color:var(--acc);font-weight:700}
@@ -194,16 +195,16 @@
       <div style="display:flex;gap:8px;margin-top:9px" id="dnode-actions"></div>
     </div>
     <div style="border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin-top:12px">
-      <div style="font-weight:650;margin-bottom:8px">远端机器 <span style="font-weight:400;color:var(--sub);font-size:12.5px">多副本零管理的机器簿（etc/hosts.toml，与 CLI 同源）</span></div>
+      <div style="font-weight:650;margin-bottom:8px;display:flex;align-items:center">远端机器
+        <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">机器簿（etc/hosts.toml，与 CLI 同源）· 加入时连接校验，之后只读，改删走编辑</span>
+        <button id="btn-host-add" style="margin-left:auto">＋ 加入服务器</button>
+        <button id="btn-host-health" style="margin-left:6px" title="重测全部机器连通性">↻ 体检</button>
+      </div>
       <table class="jt" style="width:100%">
-        <thead><tr><th>名字</th><th>IP / 域名</th><th>SSH 端口</th><th>用户</th><th>密码</th><th>代理（可选）</th><th></th></tr></thead>
+        <thead><tr><th>名字</th><th>地址</th><th>用户</th><th>健康</th><th style="text-align:right">操作</th></tr></thead>
         <tbody id="hosts-body"></tbody>
       </table>
-      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-        <button onclick="addHostRow()">＋ 添加</button>
-        <button class="pri" id="hosts-save">保存机器清单</button>
-        <span class="hint" style="color:var(--sub);font-size:12px">密码先明文（600）；代理 socks5h://…/http://… 与直连自动竞速；保存后看板下拉框即刻生效</span>
-      </div>
+      <div class="hint" style="color:var(--sub);font-size:12px;margin-top:6px">密码不在列表显示（编辑时可见）；🔑=密钥登录 ⛓=走代理。健康 = ssh 连通体检，打开窗口自动测、每 60s 复测。</div>
       <div class="err" id="hosts-err" hidden></div>
     </div>
   </div>
@@ -219,6 +220,28 @@
     <div class="err" id="rename-err" hidden></div>
   </div>
   <div class="dlg-f"><button onclick="document.getElementById('dlg-rename').close()">取消</button><button class="pri" id="rename-go">保存</button></div>
+</dialog>
+
+<dialog id="dlg-host">
+  <div class="dlg-h"><span id="host-dlg-title">加入服务器</span>
+    <span style="font-weight:400;color:var(--sub);font-size:12.5px;margin-left:8px">连接校验通过后写入机器簿</span>
+    <button onclick="document.getElementById('dlg-host').close()" style="margin-left:auto">✕</button></div>
+  <div class="dlg-b">
+    <div><label>名字（清单内唯一，看板下拉用）</label><input type="text" id="host-f-name" maxlength="64" placeholder="如 tx-bj-3"></div>
+    <div style="display:flex;gap:8px"><div style="flex:1"><label>IP / 域名</label><input type="text" id="host-f-ip" placeholder="1.2.3.4"></div>
+    <div style="width:92px"><label>SSH 端口</label><input type="number" id="host-f-port" min="1" max="65535" value="22"></div></div>
+    <div><label>用户名</label><input type="text" id="host-f-user" placeholder="ubuntu"></div>
+    <div><label>密码 <span id="host-f-pw-hint" style="font-weight:400;color:var(--sub)"></span></label><input type="password" id="host-f-pw" autocomplete="new-password"></div>
+    <div><label>代理（可选）</label><input type="text" id="host-f-proxy" placeholder="socks5h://127.0.0.1:1080"></div>
+    <div id="host-f-warn" class="hint" style="color:var(--warn);min-height:16px" hidden></div>
+    <div id="host-f-status" class="hint" style="min-height:18px"></div>
+    <div class="err" id="host-f-err" hidden></div>
+  </div>
+  <div class="dlg-f">
+    <button id="host-f-test">测试连接</button>
+    <button onclick="document.getElementById('dlg-host').close()">取消</button>
+    <button class="pri" id="host-f-save">加入</button>
+  </div>
 </dialog>
 
 <main>
@@ -404,7 +427,13 @@ $("#ver").textContent = "";
 loadNode();
 document.getElementById("btn-node").onclick = openNodeDialog;
 document.getElementById("btn-new").onclick = openNew;
-document.getElementById("hosts-save").onclick = saveHosts;
+document.getElementById("btn-host-add").onclick = openHostAdd;
+document.getElementById("btn-host-health").onclick = refreshHostsHealth;
+document.getElementById("host-f-test").onclick = testHostConn;
+document.getElementById("host-f-save").onclick = saveHostForm;
+document.getElementById("dlg-node").addEventListener("close", () => {
+  if (hostsHealthTimer) { clearInterval(hostsHealthTimer); hostsHealthTimer = null; }
+});
 document.getElementById("tip-login").onclick = login;
 document.getElementById("tip-tok").addEventListener("keydown",
   e => { if (e.key === "Enter") login(); });
@@ -465,7 +494,10 @@ function openNodeDialog() {
     b.onclick = () => { document.getElementById("dlg-node").close(); openRenameDialog(); };
     acts.appendChild(b);
   }
-  if (meAdmin && tok) loadHostsTable();   // 远端机器簿（节点界面内的配置段）
+  if (meAdmin && tok) {
+    loadHostsTable();   // 远端机器簿（节点界面内的配置段）
+    if (!hostsHealthTimer) hostsHealthTimer = setInterval(refreshHostsHealth, 60000);
+  }
   document.getElementById("dlg-node").showModal();
 }
 
@@ -486,78 +518,221 @@ async function doRename() {
   } catch (e) { $("#rename-err").textContent = String(e.message || e); $("#rename-err").hidden = false; }
 }
 
-/* ── 远端机器（多副本零管理的机器簿，嵌在节点界面里）────── */
-let hostsLoaded = false;   // GET 成功前禁保存：PUT 是整表替换，一次失败的
-                           // 读 + 误点「保存」会把机器簿整本清零（无撤销）
+/* ── 远端机器（机器簿：只读列表 + 弹窗加入/编辑 + ssh 连通健康指示）────── */
+let hostsCache = [];     // 权威清单快照（含 password 等隐藏字段；PUT 整表替换用）
+let hostsHealth = {};    // name → {ok, hostname, seconds, error, at}
+let hostsLoaded = false; // GET 成功前禁写：PUT 是整表替换，失败读 + 误写会把机器簿清零
+let hostsHealthTimer = null;
+
+const HOST_HIDDEN_FIELDS = ["key", "dir", "python", "brains", "via"];
+const hostIdentityChanged = (old, cur) =>
+  old.host !== cur.host || (old.port || 22) !== cur.port || old.user !== cur.user;
+
 async function loadHostsTable() {
   $("#hosts-err").hidden = true;
   try {
     const r = await api("/api/hosts");
-    $("#hosts-body").innerHTML = "";
-    (r.hosts || []).forEach(h => addHostRow(h));
+    hostsCache = r.hosts || [];
     hostsLoaded = true;
+    renderHostsTable();
+    refreshHostsHealth();
   } catch (e) {
-    hostsLoaded = false;   // 表不清空（保留旧行供核对），但保存禁用
-    $("#hosts-err").textContent = String(e.message || e) + "（读取失败，已禁用保存防清空）";
+    hostsLoaded = false;
+    $("#hosts-err").textContent = String(e.message || e) + "（读取失败——加入/编辑/删除已禁用，重开窗口重试）";
     $("#hosts-err").hidden = false;
   }
 }
 
-function addHostRow(h = {}) {
-  const tr = document.createElement("tr");
-  const mk = (v, ph) => { const i = document.createElement("input");
-    i.value = v ?? ""; i.placeholder = ph || ""; i.style.width = "100%"; return i; };
-  [mk(h.name, "如 VM-0-8-ubuntu"), mk(h.host, "1.2.3.4"),
-   mk(h.port ?? 22, "22"), mk(h.user, "ubuntu")].forEach(inp => {
-    const td = document.createElement("td"); td.appendChild(inp); tr.appendChild(td); });
-  const pw = mk(h.password ?? "", "先明文（600）"); pw.type = "password";
-  const td1 = document.createElement("td"); td1.appendChild(pw); tr.appendChild(td1);
-  const px = mk(h.proxy ?? "", "如 socks5h://127.0.0.1:1080");
-  const td1b = document.createElement("td"); td1b.appendChild(px); tr.appendChild(td1b);
-  const rm = document.createElement("button"); rm.textContent = "✕"; rm.title = "删除此行";
-  rm.onclick = () => tr.remove();
-  const td2 = document.createElement("td"); td2.appendChild(rm); tr.appendChild(td2);
-  $("#hosts-body").appendChild(tr);
+function hostBadge(h) {
+  const hb = hostsHealth[h.name] || {};
+  if (hb.ok === true)
+    return `<span class="badge b-run" title="ssh 连通 · ${esc(hb.hostname || "")} · ${esc(hb.seconds ?? "")}s · ${esc(hb.at || "")}">在线</span>`;
+  if (hb.ok === false)
+    return `<span class="badge b-err" title="${esc(hb.error || "不可达")}（${esc(hb.at || "")}）">不可达</span>`;
+  return `<span class="badge b-stop" title="尚未体检">检测中</span>`;
 }
 
-async function saveHosts() {
+function renderHostsTable() {
+  const tb = $("#hosts-body");
+  tb.innerHTML = "";
+  if (!hostsCache.length) {
+    tb.innerHTML = `<tr><td colspan="5" class="hint" style="text-align:center">机器簿为空——点「＋ 加入服务器」接入第一台</td></tr>`;
+    return;
+  }
+  hostsCache.forEach((h, i) => {
+    const tr = document.createElement("tr");
+    const extras = [];
+    if (h.key) extras.push("🔑 密钥登录");
+    if (h.proxy) extras.push("⛓ 代理");
+    if (HOST_HIDDEN_FIELDS.some(k => h[k])) extras.push("⚙ 隐藏配置");
+    const tip = extras.length ? `<span class="hint" title="${esc(extras.join(" / "))}">${esc(extras[0])}</span>` : "";
+    tr.innerHTML = `<td>${esc(h.name)}</td>
+      <td class="mono">${esc(h.host)}:${h.port || 22}</td>
+      <td>${esc(h.user)}</td>
+      <td>${hostBadge(h)}</td>
+      <td style="white-space:nowrap;text-align:right">${tip}
+        <button onclick="openHostEdit(${i})">编辑</button>
+        <button class="b-del" onclick="delHost(${i})">删除</button></td>`;
+    tb.appendChild(tr);
+  });
+}
+
+async function refreshHostsHealth() {
+  try {
+    const r = await api("/api/hosts/health");
+    hostsHealth = {};
+    (r.health || []).forEach(x => { hostsHealth[x.name] = x; });
+    renderHostsTable();
+  } catch (e) { /* 体检失败不拦列表——下轮再试 */ }
+}
+
+function hostFormValues() {
+  return {
+    name: $("#host-f-name").value.trim(),
+    host: $("#host-f-ip").value.trim(),
+    port: parseInt($("#host-f-port").value, 10) || 22,
+    user: $("#host-f-user").value.trim(),
+    password: $("#host-f-pw").value,
+    proxy: $("#host-f-proxy").value.trim(),
+  };
+}
+
+function openHostAdd() {
+  hostEditIndex = -1;
+  ["host-f-name", "host-f-ip", "host-f-user", "host-f-pw", "host-f-proxy"].forEach(id => $(`#${id}`).value = "");
+  $("#host-f-port").value = "22";
+  $("#host-dlg-title").textContent = "加入服务器";
+  $("#host-f-pw-hint").textContent = "";
+  $("#host-f-save").textContent = "加入";
+  $("#host-f-warn").hidden = true;
+  $("#host-f-status").textContent = "";
+  $("#host-f-err").hidden = true;
+  document.getElementById("dlg-host").showModal();
+  setTimeout(() => $("#host-f-name").focus(), 30);
+}
+
+let hostEditIndex = -1;
+function openHostEdit(i) {
+  const h = hostsCache[i];
+  if (!h) return;
+  hostEditIndex = i;
+  $("#host-f-name").value = h.name || "";
+  $("#host-f-ip").value = h.host || "";
+  $("#host-f-port").value = h.port || 22;
+  $("#host-f-user").value = h.user || "";
+  $("#host-f-pw").value = "";
+  $("#host-f-proxy").value = h.proxy || "";
+  $("#host-dlg-title").textContent = `编辑 ${h.name}`;
+  $("#host-f-pw-hint").textContent = h.password ? "· 留空保留原密码" : "";
+  $("#host-f-save").textContent = "保存";
+  $("#host-f-warn").hidden = true;
+  $("#host-f-status").textContent = "";
+  $("#host-f-err").hidden = true;
+  document.getElementById("dlg-host").showModal();
+  setTimeout(() => $("#host-f-ip").focus(), 30);
+}
+
+async function testHostConn() {
+  const v = hostFormValues();
+  if (!v.host || !v.user) {
+    $("#host-f-err").textContent = "IP 与用户名必填"; $("#host-f-err").hidden = false;
+    return false;
+  }
+  const st = $("#host-f-status");
+  st.textContent = "连接测试中…"; st.style.color = "var(--sub)";
+  try {
+    const r = await api("/api/hosts/probe", {method: "POST", body: JSON.stringify(v)});
+    if (r.ok) {
+      st.textContent = `✓ 连接成功（${r.hostname}，${r.seconds}s）`; st.style.color = "var(--ok)";
+      return true;
+    }
+    st.textContent = `✗ 连接失败：${r.error || "不可达"}`; st.style.color = "var(--err)";
+    return false;
+  } catch (e) {
+    st.textContent = ""; $("#host-f-err").textContent = String(e.message || e); $("#host-f-err").hidden = false;
+    return false;
+  }
+}
+
+async function saveHostForm() {
+  const v = hostFormValues();
+  if (!v.name || !v.host || !v.user) {
+    $("#host-f-err").textContent = "名字 / IP / 用户名必填"; $("#host-f-err").hidden = false;
+    return;
+  }
   if (!hostsLoaded) {
-    $("#hosts-err").textContent = "机器簿尚未成功读取，禁止保存（避免整表清空）——请重开节点窗口重试";
+    $("#host-f-err").textContent = "机器簿尚未成功读取，禁止写入——请关闭窗口重开重试";
+    $("#host-f-err").hidden = false;
+    return;
+  }
+  // 加入/编辑前必过连接校验（校验通过才写入）
+  if (!(await testHostConn())) return;
+
+  let rec;
+  if (hostEditIndex >= 0) {
+    const old = hostsCache[hostEditIndex];
+    rec = {...old, ...v};
+    if (!v.password) rec.password = old.password || "";   // password 不是保留键，留空 = 保留原值
+    if (!v.proxy) rec.proxy = "";
+    // 改身份（IP/端口/用户）时，隐藏字段（key/dir/python/brains/via）按身份键匹配不会跟随——确认一次
+    if (HOST_HIDDEN_FIELDS.some(k => old[k]) && hostIdentityChanged(old, v)) {
+      if (!confirm(`该条目带隐藏配置（key/dir/python 等）。改 IP/端口/用户后这些配置不会跟随、将丢失。继续保存？`)) return;
+    }
+    hostsCache[hostEditIndex] = rec;
+  } else {
+    rec = {...v};
+    if (!rec.password) delete rec.password;
+    if (!rec.proxy) delete rec.proxy;
+    hostsCache.push(rec);
+  }
+  try {
+    await api("/api/hosts", {method: "PUT", body: JSON.stringify({hosts: hostsCache})});
+    await loadScopes();               // 看板范围下拉框立即反映新清单
+    document.getElementById("dlg-host").close();
+    renderHostsTable();
+    refreshHostsHealth();
+    $("#hosts-err").hidden = true;
+  } catch (e) {
+    $("#host-f-err").textContent = String(e.message || e);
+    $("#host-f-err").hidden = false;
+  }
+}
+
+async function delHost(i) {
+  const h = hostsCache[i];
+  if (!h || !confirm(`删除 ${h.name}（${h.host}）？`)) return;
+  if (!hostsLoaded) {
+    $("#hosts-err").textContent = "机器簿尚未成功读取，禁止删除——请重开窗口重试";
     $("#hosts-err").hidden = false;
     return;
   }
-  const hosts = [...document.querySelectorAll("#hosts-body tr")].map(tr => {
-    const [name, host, port, user, pw, px] = tr.querySelectorAll("input");
-    const rec = {name: name.value.trim(), host: host.value.trim(),
-                 port: parseInt(port.value, 10) || 22,
-                 user: user.value.trim(), password: pw.value};
-    if (px.value.trim()) rec.proxy = px.value.trim();
-    return rec;
-  });
+  hostsCache.splice(i, 1);
   try {
-    await api("/api/hosts", {method: "PUT", body: JSON.stringify({hosts})});
-    await loadScopes();            // 看板范围下拉框立即反映新清单
+    await api("/api/hosts", {method: "PUT", body: JSON.stringify({hosts: hostsCache})});
+    await loadScopes();
+    renderHostsTable();
     $("#hosts-err").hidden = true;
   } catch (e) {
     $("#hosts-err").textContent = String(e.message || e);
     $("#hosts-err").hidden = false;
+    await loadHostsTable();   // 回滚视图到盘面真实状态
   }
 }
 
 /* ── 看板范围：本机 / 远端机器 ───────────────────────── */
 let scope = "local";
-let hostsCache = [];
+let scopeHosts = [];
 
 async function loadScopes() {
   if (me?.role !== "admin") return;
-  try { hostsCache = (await api("/api/hosts")).hosts || []; }
-  catch (e) { hostsCache = []; }
+  try { scopeHosts = (await api("/api/hosts")).hosts || []; }
+  catch (e) { scopeHosts = []; }
   const sel = $("#sel-scope");
   sel.innerHTML = `<option value="local">本机</option>` +
-    hostsCache.map(h => `<option value="${esc(h.name)}">${esc(h.name)}</option>`).join("");
+    scopeHosts.map(h => `<option value="${esc(h.name)}">${esc(h.name)}</option>`).join("");
   if (![...sel.options].some(o => o.value === scope)) scope = "local";
   sel.value = scope;
-  sel.hidden = !hostsCache.length;
+  sel.hidden = !scopeHosts.length;
 }
 
 function setPoll() {
@@ -1131,7 +1306,7 @@ async function openDetail(id) {
       const r = await api(`/api/remote/agents/${id}/observe-token?host=${encodeURIComponent(scope)}`,
                           {method: "POST"});
       if (id !== cur) return;
-      const hrec = hostsCache.find(h => h.name === scope);
+      const hrec = scopeHosts.find(h => h.name === scope);
       const a = agentsCache.find(x => x.id === id);
       const rHost = hrec?.host || "";
       ui.href = `http://${rHost}:${a?.port}/ui/?token=${encodeURIComponent(r.token)}`;

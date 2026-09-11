@@ -31,6 +31,8 @@
 | `GET /api/ports/available?count=10` | admin | 可用端口（自动分配下拉用） |
 | `GET /api/hosts` | admin | 远端机器清单（etc/hosts.toml；WebUI「远端机器」页用；**密码先明文回显**） |
 | `PUT /api/hosts` | admin | 整表替换清单（原子写 600；条目字段白名单见 remote.HOST_FIELDS，name/host/user 缺一报 400）。保留键（key/dir/python/brains/via）未出现的从盘面旧条目带回——旧条目匹配先按 host+user+port、miss 再按 name；键**出现且为 null** = 显式清除（TOML 无 null，落盘即键不存在）。注意：不要回放「未设字段补 null」的模板/往返件，会把保留键静默清掉 |
+| `POST /api/hosts/probe` | admin | 单机连通体检（加入/编辑前 ssh 校验；永远 200，`{ok, hostname?, seconds?, error?}`） |
+| `GET /api/hosts/health` | admin | 全机连通体检（并发、15s/机超时、30s 缓存；WebUI 机器簿健康徽章用）：`{health:[{name,host,ok,hostname?,error?,at}]}` |
 
 ### 1.1 远端总控（`/api/remote/*`，WebUI 远程总控用）
 

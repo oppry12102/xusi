@@ -324,6 +324,22 @@ def run_remote(h: dict, cmd: str, *, timeout: int = 300) -> subprocess.Completed
     return cp
 
 
+def probe_host(h: dict, *, timeout: int = 20) -> dict:
+    """连通性体检（WebUI 机器簿的加入/编辑校验与健康指示用）：ssh 通 = 可用。
+    返回 {ok, hostname?, seconds?, error?}——失败不抛，带原因。不写任何状态。"""
+    t0 = time.time()
+    try:
+        cp = run_remote(h, "hostname && echo __XUSI_OK__", timeout=timeout)
+    except RemoteError as e:
+        return {"ok": False, "error": str(e)}
+    if cp.returncode == 0 and "__XUSI_OK__" in (cp.stdout or ""):
+        return {"ok": True,
+                "hostname": (cp.stdout or "").splitlines()[0].strip(),
+                "seconds": round(time.time() - t0, 1)}
+    err = (cp.stderr or cp.stdout or "").strip()[:200] or f"rc={cp.returncode}"
+    return {"ok": False, "error": err}
+
+
 def xusi_cmd(h: dict, argv: list[str], *, timeout: int = 300) -> subprocess.CompletedProcess:
     """远端执行 `cd <dir> && <python> -m xusi <argv>`——远端 xusi 的自洽目录
     就是它的 cwd（模块路径 + 注册表/instances 都锚定那里）。"""
@@ -518,7 +534,11 @@ def install_host(h: dict):
     # ③ docker（容器运行时环境——缺了就装、组没加就加、最终验证可用）
     cp = run_remote(h, "docker --version 2>/dev/null", timeout=30)
     if cp.returncode != 0:
-        yield from step(_sudo(h, "apt-get install -y -qq docker.io docker-compose-v2"),
+        # 新机 apt 列表常是出厂陈旧态：镜像上旧包版本已撤 → 404（2026-09-11
+        # tx-sv-2 实踩）——先 update 再装，一步到位（各段都要各自过 _sudo，
+        # && 会把 sudo 作用域截断）
+        yield from step(f"{_sudo(h, 'apt-get update -qq')} && "
+                        f"{_sudo(h, 'apt-get install -y -qq docker.io docker-compose-v2')}",
              "安装 docker.io + compose v2…", timeout=1200)
     else:
         yield "docker 已安装"

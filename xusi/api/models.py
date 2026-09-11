@@ -65,6 +65,17 @@ class HostsPutReq(BaseModel):
     hosts: list[dict] = Field(description="[[host]] 数组整表")
 
 
+class HostProbeReq(BaseModel):
+    """单机连通体检（加入/编辑前的 ssh 校验）。"""
+    host: str = Field(min_length=1, description="IP / 域名")
+    port: int = Field(default=22, ge=1, le=65535)
+    user: str = Field(min_length=1)
+    password: str | None = Field(default=None, description="密码认证")
+    key: str | None = Field(default=None, description="私钥路径")
+    proxy: str | None = Field(default=None, description="socks5h://…")
+    via: str | None = Field(default=None, description="跳板机（清单 name）")
+
+
 class RemoteRestoreReq(BaseModel):
     """远端恢复：from_path = 控制端本机备份包路径（通常来自 /api/remote/backups）。"""
     host: str = Field(min_length=1, description="目标机器（清单 name）")
