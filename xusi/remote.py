@@ -267,7 +267,8 @@ def _probe(h: dict, kind: str, opts: dict, timeout: int = 18) -> float | None:
     t0 = time.monotonic()
     try:
         cp = subprocess.run(_build_ssh(h, kind, opts, "echo ok"),
-                            capture_output=True, text=True, timeout=timeout)
+                            capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=timeout)
     except (subprocess.TimeoutExpired, FileNotFoundError, RemoteError):
         return None
     if cp.returncode != 0:
