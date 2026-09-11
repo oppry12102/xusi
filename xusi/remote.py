@@ -307,8 +307,11 @@ def run_remote(h: dict, cmd: str, *, timeout: int = 300) -> subprocess.Completed
     """在远端执行一条 shell 命令（非交互，输出捕获；链路自动竞速）。"""
     kind, opts = resolve_link(h)
     try:
+        # errors=replace：远端输出被 head -c 截断多字节字符（CJK 常见）时，
+        # 严格 utf-8 会把整个 fan-out 炸成 UnicodeDecodeError——替换符无损可读
         cp = subprocess.run(_build_ssh(h, kind, opts, cmd), capture_output=True,
-                            text=True, timeout=timeout)
+                            text=True, encoding="utf-8", errors="replace",
+                            timeout=timeout)
     except FileNotFoundError:
         raise RemoteError("本机缺少 ssh/sshpass（或 proxy 链路缺 nc）——控制端先 "
                           "sudo apt-get install sshpass netcat-openbsd")
