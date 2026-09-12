@@ -5,7 +5,7 @@
 > API 层「source_version 创建后不可改」约束的是**创建流程**；存量升级是目录级
 > 操作，本文是标准做法。前置：管理面代码 ≥ `ca56645`（分档语义与内核 v2.5.5
 > 对齐：未标注 tier 视同 power）。
-> **当前目标版本：v2.7.38（2026-09-10 投放，入口 shim）**。v2.5.x → v2.7.x 是
+> **当前目标版本：v2.7.41（2026-09-12 投放）**。v2.5.x → v2.7.x 是
 > 同一套目录级流程；运行时依赖零变化（pyproject 只差版本号行），坑④的 .venv
 > 平移结论不变。v2.7.38 起容器入口 shim 优先跑实例目录自己的 `xuseek.sh`，
 > `.venv` 随实例目录落**真目录**（两种运行时同一条路径，见 §8 与
@@ -150,6 +150,21 @@ agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier =
 - 管理面已同步（xusi ≥ 本提交）：创建渲染按所选内核版本分叉——≥2.7.5 写
   `[limits] max_rounds`（budgets 里的 max_seconds/max_context_tokens 渲染时
   忽略并在配置里留注释），更早版本仍写 `[agent]` 三段。
+
+### 内核 v2.7.39–v2.7.41（2026-09-12）
+
+- **`[[services]]` 段退役（v2.7.40）**：常驻服务的判活从 daemon 移到**启动壳看门狗**
+  （壳 `wait` 服务进程、死即按铃——壳不睡觉，见种子 `常驻服务.md`）；daemon 不再
+  读此段。升级后 config 残留 `[[services]]` 会 stderr **大声提醒**（不静默：静默
+  会让大脑误以为还有人看着）但**不再有人守护**——须投信让 agent 把常驻服务改经
+  ctl 壳启动并删除该段（2026-09-12 agent-f3c2 实测：config 无此段，零影响）。
+- **冻结/长假可见化**：休眠期 SIGSTOP 冻结或唤醒点已过 ≥60s 才醒，status 记
+  `last_freeze_gap_s` + stderr 一行——缺口可见，不是假安全感（parked 驻留无唤醒
+  点、冻结不可见，接受）。
+- **软链式 venv 修复**：环境 bin 探测锚 `sys.prefix` 而非 `resolve(sys.executable)`
+  ——`python3 -m venv` 软链式 venv 下 resolve 展开软链到 /usr/bin，venv 探测落空、
+  PATH 前置失效（VIRTUAL_ENV 恒空血训）；selftest 有回归线。
+- **种子第八主题**：`常驻服务.md`（ctl 壳启动协议 / 看门狗 / 静音停机）。
 
 ### 内核 v2.7.12（2026-09-02）：互联由内核自完成 + [[roots]] 出生交割
 
