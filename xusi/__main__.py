@@ -266,7 +266,8 @@ def _brains_cfg_audit() -> list[str]:
         except Exception as e:
             out.append(f"{aid} config.toml 解析失败：{e}")
             continue
-        default = (cfg.get("brain") or {}).get("default")
+        brain = cfg.get("brain")
+        default = brain.get("default") if isinstance(brain, dict) else None
         if not default:
             out.append(f"{aid} [brain].default 缺失")
             continue
@@ -288,6 +289,9 @@ def _brains_cfg_audit() -> list[str]:
             if ent.get("model") != pool[name].get("model"):
                 out.append(f"{aid} {name!r} model 与池不一致")
         reg = a.get("brains") or []
+        if not isinstance(reg, list):
+            out.append(f"{aid} 注册表快照 brains 形状异常：{type(reg)}")
+            reg = []
         if reg and reg[0] != default:
             out.append(f"{aid} 注册表快照首脑 {reg[0]!r} ≠ config default {default!r}")
         for b in reg:

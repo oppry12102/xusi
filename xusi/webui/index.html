@@ -525,8 +525,6 @@ let hostsLoaded = false; // GET 成功前禁写：PUT 是整表替换，失败�
 let hostsHealthTimer = null;
 
 const HOST_HIDDEN_FIELDS = ["key", "dir", "python", "brains", "via"];
-const hostIdentityChanged = (old, cur) =>
-  old.host !== cur.host || (old.port || 22) !== cur.port || old.user !== cur.user;
 
 async function loadHostsTable() {
   $("#hosts-err").hidden = true;
@@ -597,6 +595,15 @@ function hostFormValues() {
   };
 }
 
+function hostProbePayload() {
+  // 校验载荷：编辑态用「表单值 ⊕ 旧记录」——密码留空沿用盘面密码，key/via
+  // 表单没有、从旧记录带。用裸表单值验，留空密码与 key/via 认证的机器必验败
+  const v = hostFormValues();
+  if (hostEditIndex < 0) return v;
+  const old = hostsCache[hostEditIndex] || {};
+  return {...old, ...v, password: v.password || old.password || ""};
+}
+
 function openHostAdd() {
   hostEditIndex = -1;
   ["host-f-name", "host-f-ip", "host-f-user", "host-f-pw", "host-f-proxy"].forEach(id => $(`#${id}`).value = "");
@@ -633,7 +640,7 @@ function openHostEdit(i) {
 }
 
 async function testHostConn() {
-  const v = hostFormValues();
+  const v = hostProbePayload();
   if (!v.host || !v.user) {
     $("#host-f-err").textContent = "IP 与用户名必填"; $("#host-f-err").hidden = false;
     return false;
@@ -674,10 +681,8 @@ async function saveHostForm() {
     rec = {...old, ...v};
     if (!v.password) rec.password = old.password || "";   // password 不是保留键，留空 = 保留原值
     if (!v.proxy) rec.proxy = "";
-    // 改身份（IP/端口/用户）时，隐藏字段（key/dir/python/brains/via）按身份键匹配不会跟随——确认一次
-    if (HOST_HIDDEN_FIELDS.some(k => old[k]) && hostIdentityChanged(old, v)) {
-      if (!confirm(`该条目带隐藏配置（key/dir/python 等）。改 IP/端口/用户后这些配置不会跟随、将丢失。继续保存？`)) return;
-    }
+    // key/dir/python/brains/via 随 {...old} 显式回传（HOST_FIELDS 白名单内），
+    // 改身份也跟随；服务端 save_hosts 另有身份 miss 按 name 兜底带回——不会丢
     hostsCache[hostEditIndex] = rec;
   } else {
     rec = {...v};

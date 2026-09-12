@@ -332,6 +332,10 @@ def probe_host(h: dict, *, timeout: int = 20) -> dict:
         cp = run_remote(h, "hostname && echo __XUSI_OK__", timeout=timeout)
     except RemoteError as e:
         return {"ok": False, "error": str(e)}
+    except Exception as e:
+        # 畸形清单条目（手改缺 user 等）会让 _build_ssh 抛 KeyError 之类——
+        # 体检承诺「失败不抛」，单机兜住，health 并发里才不至于整接口 500
+        return {"ok": False, "error": f"体检异常：{e}"}
     if cp.returncode == 0 and "__XUSI_OK__" in (cp.stdout or ""):
         return {"ok": True,
                 "hostname": (cp.stdout or "").splitlines()[0].strip(),

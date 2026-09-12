@@ -77,7 +77,8 @@ def api_hosts_health(_rec: dict = Depends(require_admin)) -> dict:
             r.update(name=k, host=h.get("host"),
                      at=_time.strftime("%H:%M:%SZ", _time.gmtime()), _t=now)
             return k, r
-        with ThreadPoolExecutor(max_workers=len(stale)) as ex:
+        # 并发上限 16：机器簿大了不一股脑并发上百 ssh（15s/机超时已封顶时延）
+        with ThreadPoolExecutor(max_workers=min(len(stale), 16)) as ex:
             for k, r in ex.map(_probe, stale):
                 _HEALTH_CACHE[k] = r
     return {"health": [{k: v for k, v in _HEALTH_CACHE.get(k, {}).items()
