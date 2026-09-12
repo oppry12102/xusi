@@ -43,6 +43,11 @@ agent = registry.get_agent(AID)
 OLD = agent["source_version"]
 home = get_config().instance_home(AID)
 
+# 0) 载体操作前通知（管理面对 agent 的承诺——2026-09-11 d093 无声灭审计定案后补）：
+#    升级/重启对大脑就是「无声灭」（服务全灭、无预警）——投信让它事后归因
+#    「断窗是管理面操作，无需排查」，会话中收到还能在停的宽限期里优雅收尾。
+agentops.mail(AID, f"【管理面】内核升级 {OLD} → {NEW} 即将开始：载体会停止重建，"
+                   f"你的常驻服务将短暂断窗，重建后自行恢复——此断窗为管理面操作，无需排查。")
 agentops.stop(AID)                          # 1) 优雅停（agentops.stop：冻结进程先
                                             #    SIGCONT 解救再停，不裸调 systemdctl；
                                             #    desired_state 落 stopped，中途死不

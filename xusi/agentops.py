@@ -578,6 +578,23 @@ def start(agent_id: str) -> dict:
     return _finalize(agent_id, "running", "start")
 
 
+def _notify_carrier_op(agent_id: str, desc: str, rt, unit: str) -> None:
+    """载体操作前通知（管理面对 agent 的承诺——2026-09-11 d093「无声灭」审计
+    定案后补）：停止/重启/切换会杀载体 cgroup 内的全部常驻服务，对大脑就是
+    「无声灭」。投信让它事后归因（断窗=管理面操作，无需排查）、会话中优雅
+    收尾。单元已不在运行态则不发（无操作不发噪声）；通知失败不拦操作。"""
+    try:
+        if rt.unit_state(unit) != "active":
+            return
+    except Exception:
+        return
+    try:
+        mail(agent_id, f"【管理面】载体{desc}操作即将执行：你的常驻服务将中断，"
+                       f"完成后自行恢复——此中断为管理面操作，无需排查。")
+    except Exception:
+        pass
+
+
 def stop(agent_id: str) -> dict:
     """优雅停（SIGTERM → xuseek 轮边界落盘；TimeoutStopSec 兜底）。
     冻结进程收不到 SIGTERM——先探主进程实况（/proc T 态），SIGSTOP 中先
@@ -586,6 +603,7 @@ def stop(agent_id: str) -> dict:
     agent = get_agent_or_404(agent_id)
     unit = _unit(agent)
     rt = _rt(agent)
+    _notify_carrier_op(agent_id, "停止", rt, unit)
     if rt.main_stopped(unit):
         try:
             rt.kill_signal(unit, "SIGCONT")
@@ -637,6 +655,7 @@ def restart(agent_id: str) -> dict:
     unit = _unit(agent)
     rt = _rt(agent)
     if rt.unit_state(unit) == "active":
+        _notify_carrier_op(agent_id, "重启", rt, unit)
         if rt.main_stopped(unit):
             try:
                 rt.kill_signal(unit, "SIGCONT")
@@ -776,6 +795,7 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     if runtime_new is not None:
         unit = _unit(agent)
         rt = _rt(agent)
+        _notify_carrier_op(agent_id, "切换", rt, unit)
         try:
             rt.stop(unit)
         except (systemdctl.SystemdError, dockerctl.DockerError):
