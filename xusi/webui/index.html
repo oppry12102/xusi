@@ -1165,7 +1165,9 @@ async function createBlank() {
   if (roots.length) body.roots = roots;
   const p = $("#f-port").value; if (p) body.port = parseInt(p, 10);
   const sv = $("#f-version").value; if (sv) body.source_version = sv;
-  const rt = $("#f-runtime").value; if (rt && rt !== "systemd") body.runtime = rt;
+  // 显式选择必须原样上送（systemd 也发）——省略字段时后端回落
+  // [manager].default_runtime（本机现配 docker），选「系统」会静默建成容器
+  const rt = $("#f-runtime").value; if (rt) body.runtime = rt;
   $("#btn-create").disabled = true; $("#f-err").textContent = "";
   const target = scope;
   try {
