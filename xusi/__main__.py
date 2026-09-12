@@ -224,6 +224,78 @@ def cmd_status(args) -> int:
     return 0
 
 
+def _brains_cfg_audit() -> list[str]:
+    """doctor 检查项：brains.toml 格式/字段 + 每个 agent 的 config.toml 与池对账。
+
+    返回问题列表（空 = 全清）。口径与 2026-09-12 全队体检一致：池条目名是
+    用户别名（kimi/minimax），model 字段才是真模型串——名≠model 合法；点号
+    段名必须逐段引号（未引号会解析成嵌套表 = 缺 model）。"""
+    import tomllib
+    from . import registry
+    out: list[str] = []
+    try:
+        data = tomllib.loads((ROOT / "etc/brains.toml").read_text(encoding="utf-8"))
+    except Exception as e:
+        return [f"brains.toml 解析失败：{e}"]
+    entries = data.get("brains")
+    if not isinstance(entries, dict):
+        return [f"brains 段形状异常：{type(entries)}"]
+    pool: dict[str, dict] = {}
+    for name, ent in entries.items():
+        if not isinstance(ent, dict):
+            out.append(f"池条目 {name!r} 不是表")
+            continue
+        if "model" not in ent:
+            out.append(f"池条目 {name!r} 缺 model——疑似点号段名未逐段引号（解析成嵌套表）或字段残缺")
+            continue
+        if not ent.get("api_key"):
+            out.append(f"池条目 {name!r} 缺 api_key")
+        if not ent.get("base_url"):
+            out.append(f"池条目 {name!r} 缺 base_url")
+        if ent.get("tier") not in ("power", "economy"):
+            out.append(f"池条目 {name!r} tier={ent.get('tier')!r}（应 power/economy）")
+        pool[name] = ent
+    for a in registry.list_agents():
+        aid = a["id"]
+        cfg_path = ROOT / "instances" / aid / "config.toml"
+        if not cfg_path.is_file():
+            out.append(f"{aid} config.toml 不存在")
+            continue
+        try:
+            cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            out.append(f"{aid} config.toml 解析失败：{e}")
+            continue
+        default = (cfg.get("brain") or {}).get("default")
+        if not default:
+            out.append(f"{aid} [brain].default 缺失")
+            continue
+        sections = cfg.get("brains") or {}
+        for k, v in sections.items():
+            if not isinstance(v, dict) or "model" not in v:
+                out.append(f"{aid} brains 段 {k!r} 疑似未逐段引号/残缺")
+        good = {k: v for k, v in sections.items() if isinstance(v, dict) and "model" in v}
+        if default not in good:
+            out.append(f"{aid} default {default!r} 不在 [brains.*] 段里")
+        for name, ent in good.items():
+            if name not in pool:
+                out.append(f"{aid} 的 {name!r} 不在本机密钥池")
+                continue
+            if ent.get("api_key") != pool[name].get("api_key"):
+                out.append(f"{aid} {name!r} api_key 与池不一致（池已轮换？对 agent 做任意 PATCH 触发重渲染）")
+            if ent.get("base_url") != pool[name].get("base_url"):
+                out.append(f"{aid} {name!r} base_url 与池不一致")
+            if ent.get("model") != pool[name].get("model"):
+                out.append(f"{aid} {name!r} model 与池不一致")
+        reg = a.get("brains") or []
+        if reg and reg[0] != default:
+            out.append(f"{aid} 注册表快照首脑 {reg[0]!r} ≠ config default {default!r}")
+        for b in reg:
+            if b not in pool:
+                out.append(f"{aid} 注册表快照含池外大脑 {b!r}")
+    return out
+
+
 def cmd_doctor(args) -> int:
     from . import brains, ports, systemdctl, versions
     cfg = get_config()
@@ -249,6 +321,12 @@ def cmd_doctor(args) -> int:
     pool = brains.pool_summary()
     check("密钥池至少一家可用", any(b["has_key"] for b in pool),
           f"{len(pool)} 家：{', '.join(b['name'] + ('(有key)' if b['has_key'] else '(缺key)') for b in pool)}")
+    # 大脑池 × 出生配置对账：格式/点号引号坑/键漂移/孤儿大脑/快照漂移
+    issues = _brains_cfg_audit()
+    check("大脑池与出生配置对账", not issues,
+          f"{len(issues)} 处" if issues else f"{len(pool)} 家 × 出生配置全一致")
+    for line in issues:
+        print(f"         {line}")
     # port_free(cfg.port) 恒 False（管理面端口在分配层被保留），旧写法因此
     # 恒等 manager_running()——install 前跑 doctor 必误报。改用 ports 的
     # 主机级三态检验：空闲、或在跑本服务都算过，其余按状态给可行动的提示。
