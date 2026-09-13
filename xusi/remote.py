@@ -32,6 +32,12 @@ from .config import ROOT, get_config
 REMOTE_DIR = "~/work/xusi"   # 远端自洽目录（per-host 可覆盖 dir=）——全队统一在
                              # ~/work/xusi 下，与本地部署/控制端同构（决议 2026-09-05）
 REMOTE_PY = "python3.12"     # 远端 python（deadsnakes 3.12；per-host 可覆盖 python=）
+
+# 中国网络适配（2026-09-13 hdhz-nas 实踩固化）：docker.io 直连常超时，镜像加速
+# 列表是回退（任一失败自动走直连，恒安全）；ghcr 的 uv 基础镜像走南大镜像
+# 拉取后打本地 tag，构建即命中
+_DOCKER_REG_MIRRORS = ["https://docker.m.daocloud.io", "https://docker.1ms.run"]
+_GHCR_UV_MIRROR = "ghcr.nju.edu.cn/astral-sh/uv:latest"
 SSH_TIMEOUT = "15"
 
 
@@ -523,27 +529,46 @@ def install_host(h: dict):
         raise RemoteError("sudo 不可用（免密或密码同登录密码都试过）——"
                           "请先在远端配好 sudo，或把 sudo 密码写进清单 password 字段")
 
-    # ② python3.12（deadsnakes，与主流一致可升级）
+    # ② python：缺省要 3.12（deadsnakes，与主流一致可升级）；Debian 系没有
+    # deadsnakes PPA（Ubuntu 专属）——python3 ≥ 3.11 即满足 tomllib 门槛，
+    # 直接采用并把 python= 落进清单（2026-09-12 hdhz-nas/OMV7 实踩）
     py = h.get("python", REMOTE_PY)
     cp = run_remote(h, f"{py} --version 2>/dev/null", timeout=30)
-    if cp.returncode != 0:
-        yield from step(f"{_sudo(h, 'apt-get update -qq')} && "
-             f"{_sudo(h, 'apt-get install -y -qq software-properties-common')} && "
-             f"{_sudo(h, 'add-apt-repository -y ppa:deadsnakes/ppa')} && "
-             f"{_sudo(h, f'apt-get install -y {py} {py}-venv')}",
-             f"安装 {py} + venv（deadsnakes PPA）…", timeout=1200)
-    else:
+    if cp.returncode == 0:
         yield f"{py} 已就绪，跳过安装"
+    else:
+        cp311 = run_remote(h, "python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'", timeout=30)
+        if cp311.returncode == 0:
+            yield "python3 ≥ 3.11 已就绪（Debian 系，无 deadsnakes PPA）——采用 python3"
+            h["python"] = "python3"
+            try:   # python= 落进清单（按 name 回写；写失败不拦接入）
+                hosts = load_hosts()
+                for ent in hosts:
+                    if ent.get("name") == h.get("name"):
+                        ent["python"] = "python3"
+                        save_hosts(hosts)
+                        break
+            except RemoteError:
+                pass
+            py = "python3"
+        else:
+            yield from step(f"{_sudo(h, 'apt-get update -qq')} && "
+                 f"{_sudo(h, 'apt-get install -y -qq software-properties-common')} && "
+                 f"{_sudo(h, 'add-apt-repository -y ppa:deadsnakes/ppa')} && "
+                 f"{_sudo(h, f'apt-get install -y {py} {py}-venv')}",
+                 f"安装 {py} + venv（deadsnakes PPA）…", timeout=1200)
 
-    # ③ docker（容器运行时环境——缺了就装、组没加就加、最终验证可用）
+    # ③ docker（容器运行时环境——缺了就装、组没加就加、最终验证可用）。
+    # docker.io 包名两发行版同名；apparmor 一并装：Debian 精简宿主缺
+    # apparmor_parser 会让镜像构建的 RUN 步骤容器起不来（AppArmor 内核
+    # 特性已启用、docker-default 配置加载失败）——2026-09-13 hdhz-nas 实踩。
+    # compose 插件另查（见下）
     cp = run_remote(h, "docker --version 2>/dev/null", timeout=30)
-    if cp.returncode != 0:
-        # 新机 apt 列表常是出厂陈旧态：镜像上旧包版本已撤 → 404（2026-09-11
-        # tx-sv-2 实踩）——先 update 再装，一步到位（各段都要各自过 _sudo，
-        # && 会把 sudo 作用域截断）
+    docker_installed = cp.returncode != 0
+    if docker_installed:
         yield from step(f"{_sudo(h, 'apt-get update -qq')} && "
-                        f"{_sudo(h, 'apt-get install -y -qq docker.io docker-compose-v2')}",
-             "安装 docker.io + compose v2…", timeout=1200)
+                        f"{_sudo(h, 'DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io apparmor apparmor-utils')}",
+             "安装 docker.io + apparmor…", timeout=1200)
     else:
         yield "docker 已安装"
     cp = run_remote(h, "docker info >/dev/null 2>&1 && echo __OK__", timeout=60)
@@ -557,13 +582,58 @@ def install_host(h: dict):
             yield "  docker 可用 ✓"
     else:
         yield "  docker 可用 ✓"
+    # 中国网络适配（只在本次新装 docker 时做——不碰既有机器的 docker 配置）：
+    # a) registry 镜像加速：docker.io 直连常超时；镜像失败自动回退直连，恒安全
+    # b) uv 基础镜像本地化：Dockerfile COPY --from=ghcr.io/astral-sh/uv 在大陆
+    #    拉不动——经南大 ghcr 镜像拉取后打本地 tag，构建即命中（2026-09-13
+    #    hdhz-nas 实踩；尽力而为，直连可用的机器跳过）
+    if docker_installed:
+        yield "配置 registry 镜像加速 + uv 镜像本地化…"
+        cp = run_remote(h, "[ -f /etc/docker/daemon.json ] && echo EXISTS || echo NEW", timeout=30)
+        if "NEW" in (cp.stdout or ""):
+            cfg_json = json.dumps({"registry-mirrors": _DOCKER_REG_MIRRORS},
+                                  ensure_ascii=False, indent=2)
+            cp = run_remote(h, f"echo {shlex.quote(cfg_json)} > /tmp/daemon.json && "
+                               f"{_sudo(h, 'mv /tmp/daemon.json /etc/docker/daemon.json')} && "
+                               f"{_sudo(h, 'systemctl restart docker')}", timeout=120)
+            if cp.returncode != 0:
+                yield "  registry 镜像配置失败（不阻塞，可后补）"
+            else:
+                yield "  registry 镜像已配置（daocloud/1ms）"
+        if run_remote(h, "docker image inspect ghcr.io/astral-sh/uv:latest >/dev/null 2>&1", timeout=60).returncode != 0:
+            cp = run_remote(h, f"docker pull {_GHCR_UV_MIRROR} >/dev/null 2>&1 && "
+                               f"docker tag {_GHCR_UV_MIRROR} ghcr.io/astral-sh/uv:latest",
+                            timeout=600)
+            if cp.returncode != 0:
+                yield "  uv 镜像本地化失败（不阻塞；构建时直连 ghcr 再试）"
+            else:
+                yield "  uv 基础镜像已本地化（ghcr.io/astral-sh/uv）"
     # compose 插件独立检查：docker 本体装了不等于有 compose（docker.io 不带）——
-    # docker 运行时渲染 compose 靠它，缺了就单独装
+    # docker 运行时渲染 compose 靠它。包名随发行版而异：Ubuntu 24.04 =
+    # docker-compose-v2；Debian 系走清华 docker-ce 镜像装 docker-compose-plugin
+    # （docker.com 直连在中国网络握手失败，2026-09-12 hdhz-nas 实踩）
     cp = run_remote(h, "docker compose version >/dev/null 2>&1 && echo __OK__",
                     timeout=60)
     if "__OK__" not in (cp.stdout or ""):
-        yield from step(_sudo(h, "apt-get install -y -qq docker-compose-v2"),
-                        "安装 docker compose 插件…", timeout=1200)
+        cp_comp = run_remote(h, "apt-cache show docker-compose-v2 >/dev/null 2>&1 && echo HAS", timeout=60)
+        if "HAS" in (cp_comp.stdout or ""):
+            yield from step(_sudo(h, "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-v2"),
+                            "安装 docker compose 插件…", timeout=1200)
+        else:
+            # $VERSION_CODENAME 必须留给远端 shell 展开——不要 shlex.quote 整个
+            # 行（单引号会封死命令替换）；source 走 sh -c（. 是内建，sudo 直跑
+            # 报「找不到命令」）——2026-09-12 hdhz-nas 实踩两连
+            deb_cmd = ("sh -c 'V=$(. /etc/os-release; echo $VERSION_CODENAME); "
+                       "echo \"deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] "
+                       "https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/debian $V stable\" "
+                       "> /etc/apt/sources.list.d/docker-ce.list'")
+            yield from step(
+                f"{_sudo(h, 'install -m 0755 -d /etc/apt/keyrings')} && "
+                f"{_sudo(h, 'curl -fsSL https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/debian/gpg -o /etc/apt/keyrings/docker.asc')} && "
+                f"{_sudo(h, deb_cmd)} && "
+                f"{_sudo(h, 'apt-get update -qq')} && "
+                f"{_sudo(h, 'DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin')}",
+                "安装 docker compose 插件（清华 docker-ce 镜像）…", timeout=1800)
     else:
         yield "  docker compose 插件 ✓"
 
@@ -581,6 +651,24 @@ def install_host(h: dict):
         "写入 /etc/sysctl.d 持久化…", timeout=60)
     yield "推送代码包（xusi/ + docs/ + versions/）…"
     _push_code(h)
+    # 补建 etc/xusi.toml（零管理机原本没有——缺省运行时 + 构建期镜像源一并落，
+    # 大陆新机的镜像构建 apt/pip 都走清华源；已存在则不动）
+    d = h.get("dir", REMOTE_DIR)
+    cp = run_remote(h, f"[ -f {d}/etc/xusi.toml ] && echo EXISTS || echo NEW", timeout=30)
+    if "NEW" in (cp.stdout or ""):
+        cfg_toml = (
+            "# 接入时补建（零管理机缺省配置；构建期镜像源为大陆网络适配）\n"
+            "[manager]\n"
+            'default_runtime = "docker"\n'
+            'docker_apt_mirror = "mirrors.tuna.tsinghua.edu.cn"\n'
+            'docker_pip_index = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"\n')
+        cp = run_remote(h, f"echo {shlex.quote(cfg_toml)} > /tmp/xusi.toml && "
+                           f"mkdir -p {d}/etc && mv /tmp/xusi.toml {d}/etc/xusi.toml && "
+                           f"chmod 600 {d}/etc/xusi.toml", timeout=60)
+        if cp.returncode != 0:
+            yield "  xusi.toml 补建失败（不阻塞）"
+        else:
+            yield "  已补建 etc/xusi.toml（缺省 docker + 构建期清华镜像源）"
     # 播种密钥池：per-host brains 字段 > 控制端自己的 etc/brains.toml（决议② 全队同份）
     yield "播种密钥池（600）…"
     push_brains(h)
