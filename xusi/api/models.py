@@ -104,3 +104,22 @@ class RestoreReq(BaseModel):
 class PatchNodeReq(BaseModel):
     """改名（仅 name 可改；id/role 走 toml，API 改不了）。"""
     name: str = Field(min_length=1, max_length=64, description="新显示名")
+
+
+class FsPathReq(BaseModel):
+    """文件通道：目标路径（相对开放区根，首段须 upload/workspace——mkdir
+    只收 upload/）。"""
+    path: str = Field(min_length=1, max_length=4096,
+                      description="相对路径，如 upload/data.csv（写操作只收 upload/ 前缀）")
+
+
+class FsWriteReq(BaseModel):
+    """文件通道：新建/保存文本文件（只收 upload/ 路径）。"""
+    path: str = Field(min_length=1, max_length=4096)
+    text: str = Field("", max_length=2_100_000, description="全文覆盖写（≤2MB）")
+
+
+class FsMoveReq(BaseModel):
+    """文件通道：重命名/移动（只在 upload/ 内）。"""
+    path: str = Field(min_length=1, max_length=4096, description="源（相对路径）")
+    new_path: str = Field(min_length=1, max_length=4096, description="目标（相对路径，不得已存在）")

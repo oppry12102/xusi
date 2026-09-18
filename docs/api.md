@@ -50,6 +50,7 @@
 | `GET /api/remote/agents/{id}/sessions?limit=30&host=X` | admin | 会话索引（ssh 读远端磁盘，不反代） |
 | `GET /api/remote/agents/{id}/events?limit=80&host=X` | admin | 事件流一次性快照（ssh 观察通道，与本地同一条 observe 实现；内存环形缓冲） |
 | `GET /api/remote/agents/{id}/boot?host=X` | admin | BOOT.md 自述全文（磁盘文件，agent 停机也能看） |
+| `GET/POST/DELETE /api/remote/agents/{id}/fs*?host=X` | admin | 文件通道远端镜像（见 §5）：ssh 执行远端 `xusi fs-*`，校验在远端发生 |
 | `POST /api/remote/agents/{id}/observe-token?host=X` | admin | 观察台 token（卡片「观察台 ↗」直连用） |
 | `POST /api/remote/install?host=X` | admin | 一键接入（python3.12+linger+推代码+播种 brains+自检；2-5 分钟，幂等） |
 | `POST /api/remote/adopt?host=X` | admin | 一键收编存量部署（探测根→回写清单→升级→停 serve→验证；幂等） |
@@ -186,7 +187,39 @@ curl 'http://SERVER:8601/api/agents/{id}/mailbox?box=outbox&limit=50' \
 - 工具统计 = 前端聚合事件流（tool_exec / tool_error / tool_timeout），
   无独立端点；同样是进程内存计数，重启清零
 
-## 5. 日志（进程宿主职责）
+## 5. 文件通道（详情页「文件」tab：upload/ 可写 · workspace/ 只读）
+
+> 管理面不干预 LLM：实例目录只开放 `upload/`（投递区·可写）与 `workspace/`
+> （agent 领地·只读），其余（`data/`、`config.toml`、`xuseek-v2/` 源码副本）
+> 彻底不可见。`upload/` 是管理面 → agent 的单向文件投递区；agent 经 shell /
+> runpy 工具按 `../upload/<文件>` 取件（内核 file_read/file_write 以 workspace
+> 为界，够不到实例根）——上传后 WebUI 可一键投信告知取件路径。写一律原子
+> 落盘（tmp + replace）；删除一律软删进 `etc/.trash/fs/<agent-id>/`（可捞回）。
+> 实现与校验在 `xusi/files.py` 三层共用（HTTP / CLI `fs-*` / 远端中转）。
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/agents/{id}/fs?path=` | 列目录（目录优先名字序；`path` 空 = 根视图：upload + workspace 两行；单目录 2000 条封顶） |
+| `GET /api/agents/{id}/fs/file?path=&mode=text` | 文本预览（JSON）：256KB 截断打 `truncated`；`\x00`/非 UTF-8 → `binary:true`；upload/ 内小文本带 `editable:true`（≤2MB） |
+| `GET /api/agents/{id}/fs/file?path=&mode=raw[&download=1]` | 流式下载：位图（png/jpg/gif/webp/bmp/ico）可 inline，其余（svg/html/pdf 等可带脚本的）一律 `octet-stream + attachment`——防同源 XSS；`nosniff` + `no-store` |
+| `GET /api/agents/{id}/fs/zip?path=` | 目录打 zip 下载（打包前扫符号链接逃逸，与 backup 同防线） |
+| `POST /api/agents/{id}/fs/upload?path=<目录>&overwrite=0\|1` | multipart 多文件（字段名 `files`）：文件名只取 basename、原子落盘；重名不覆盖 → 进 `skipped` 回报 |
+| `POST /api/agents/{id}/fs/mkdir` | `{"path": "upload/a/b"}`（多级；只收 upload/ 前缀） |
+| `POST /api/agents/{id}/fs/write` | `{"path", "text"}` 新建/保存文本（≤2MB；父目录须已存在） |
+| `POST /api/agents/{id}/fs/move` | `{"path", "new_path"}` 重命名/移动（只在 upload/ 内；拒覆盖、拒自移进子树） |
+| `DELETE /api/agents/{id}/fs?path=` | 软删（挪 `etc/.trash/fs/`；拒删 upload/ 根） |
+
+- 路径安全三道闸：首段白名单（upload/workspace）→ 逐段名校验（拒 `..`/
+  控制字符/超长）→ resolve 后 containment（防符号链接逃逸）；违例一律 400。
+- 下载/图片直链走 `?mtoken=`（与登录流同机制——`<a download>` / `<img>` 加不了
+  Authorization 头）。
+- CLI 同构（本机直用 / 远端中转执行的就是它们）：`xusi fs-list|fs-read|fs-cat|
+  fs-zip|fs-put|fs-mkdir|fs-write|fs-move|fs-delete <agent-id> --path …`。
+- 远端镜像：`/api/remote/agents/{id}/fs*?host=X` 同一组语义——列表/文本/写
+  操作经 ssh 执行远端 `xusi fs-*`（校验在远端发生）；上传 = ssh stdin 推送；
+  下载/zip = ssh 流式拉回控制端临时文件再流出（大文件不驻内存）。
+
+## 6. 日志（进程宿主职责）
 
 ```bash
 curl 'http://SERVER:8601/api/agents/{id}/logs?limit=300' \
@@ -197,7 +230,7 @@ curl 'http://SERVER:8601/api/agents/{id}/logs?limit=300' \
 `journalctl --user -u <unit>`；docker = `docker logs --tail N <容器>`
 （compose 渲染时配了 json-file 10m×3 轮转）。
 
-## 6. 备份 / 恢复
+## 7. 备份 / 恢复
 
 | 端点 | 说明 |
 |---|---|
@@ -213,7 +246,7 @@ curl 'http://SERVER:8601/api/agents/{id}/logs?limit=300' \
 `runtime` 随包走：docker 备份恢复到无 docker 机器时**早失败**（BackupError，
 先修环境再恢复）；旧备份无该字段 → systemd。
 
-## 7. 错误与安全
+## 8. 错误与安全
 
 - 统一 JSON：`{"detail": "<人类可读信息>"}`；业务错误 400、系统错误 500
 - admin token 不出现在任何响应里；`/api/node` 只回公开身份字段

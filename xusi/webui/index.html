@@ -163,6 +163,25 @@
   .bubble .t{font-size:11px;font-family:var(--mono);opacity:.72;margin-bottom:3px}
   .chatrow.me .bubble{background:var(--acc);border-color:var(--acc);color:#fff}
   #login-tip{margin:60px auto;max-width:440px;text-align:center;color:var(--sub)}
+  /* 文件 tab（upload/ 可写 · workspace/ 只读） */
+  .fs-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+  .fs-bc{display:flex;align-items:center;flex-wrap:wrap;font-size:12.5px;min-width:0}
+  .fs-crumb{border:none;background:transparent;padding:2px 4px;color:var(--acc);font-size:12.5px}
+  .fs-crumb:hover{text-decoration:underline}
+  .fs-sep{color:var(--sub)}
+  .fs-name{cursor:pointer}
+  .fs-name:hover{color:var(--acc)}
+  a.mini{display:inline-block;padding:2px 8px;font-size:11.5px;border-radius:5px;
+         border:1px solid var(--line);background:#fff;color:var(--ink);
+         text-decoration:none;cursor:pointer}
+  a.mini:hover{border-color:var(--acc);color:var(--acc)}
+  #fs-drop{border:1px dashed transparent;border-radius:8px;padding:6px}
+  #fs-drop.drag{border-color:var(--acc);background:#f5f8ff}
+  .fs-img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
+  textarea.code{width:100%;min-height:340px;font-family:var(--mono);font-size:12.5px;
+                white-space:pre;border:1px solid var(--line);border-radius:8px;
+                padding:10px;resize:vertical}
+  .fs-status{font-size:12px;color:var(--sub)}
 </style>
 </head>
 <body>
@@ -368,6 +387,19 @@
   <div id="pane"></div>
 </div>
 
+<!-- 文件 tab：通用单字段对话框（新建文件夹/文件、改名）+ 多文件上传隐藏 input -->
+<dialog id="dlg-fs">
+  <div class="dlg-h"><span id="fsdlg-title"></span>
+    <button onclick="dlgFs.close()" style="margin-left:auto">✕</button></div>
+  <div class="dlg-b">
+    <div><label id="fsdlg-label"></label><input type="text" id="fsdlg-input"></div>
+    <div class="err" id="fsdlg-err" hidden></div>
+  </div>
+  <div class="dlg-f"><button onclick="dlgFs.close()">取消</button>
+    <button class="pri" id="fsdlg-go">确定</button></div>
+</dialog>
+<input type="file" id="fs-file-input" multiple hidden>
+
 <!-- 改参对话框 -->
 <dialog id="dlg-edit">
   <div class="dlg-h">改参 <button onclick="dlgEdit.close()">✕</button></div>
@@ -407,6 +439,7 @@ const dlgNew = document.getElementById("dlg-new");
 const dlgEdit = document.getElementById("dlg-edit");
 const dlgBackup = document.getElementById("dlg-backup");
 const dlgRestore = document.getElementById("dlg-restore");
+const dlgFs = document.getElementById("dlg-fs");
 const drawer = document.getElementById("drawer");
 const TOKKEY = "xusi_token";
 let tok = localStorage.getItem(TOKKEY) || "";
@@ -1295,12 +1328,13 @@ $("#btn-restore-go").onclick = async () => {
 };
 
 /* ── 详情抽屉 ─────────────────────────────────────── */
-const TABS = ["状态", "事件", "会话", "信箱", "工具", "Boot", "日志"];
-// 远端详情：事件（ssh 观察通道一次性快照）与 Boot（磁盘文件）可看；
-// 工具统计/日志暂不提供——「观测台 ↗」直连看全貌
-const REMOTE_TABS = ["状态", "事件", "信箱", "会话", "Boot"];
+const TABS = ["状态", "事件", "会话", "信箱", "工具", "Boot", "文件", "日志"];
+// 远端详情：事件（ssh 观察通道一次性快照）、Boot（磁盘文件）与文件（ssh
+// 中转 upload/workspace）可看；工具统计/日志暂不提供——「观测台 ↗」直连看全貌
+const REMOTE_TABS = ["状态", "事件", "信箱", "会话", "Boot", "文件"];
 async function openDetail(id) {
   cur = id; curTab = "状态";
+  fsPath = ""; fsViewing = null; fsEditing = false;
   drawer.classList.add("open");
   const isR = scope !== "local";
   const editBtn = $("#d-edit");
@@ -1516,6 +1550,8 @@ async function loadDetail() {
           ? `<div class="md">${mdRender(r.text)}</div>`      // mdRender 先转义后变换，XSS 安全
           : `<p class="hint">（还没有 BOOT.md——agent 首口呼吸后才会写自述）</p>`)
       );
+    } else if (curTab === "文件") {
+      await renderFsTab(id);
     } else if (curTab === "日志") {
       const r = await api(`/api/agents/${id}/logs?limit=300`);
       if (id !== cur) return;
@@ -1763,6 +1799,276 @@ async function saveEdit() {
     refresh(); loadDetail();
   } catch (e) { $("#e-err").textContent = e.message; }
   finally { $("#btn-edit-save").disabled = false; }
+}
+
+/* ── 文件 tab：upload/（投递区·可写）· workspace/（agent 领地·只读）────
+   实例目录只开放这两处（data/、config.toml、xuseek-v2/ 不可见）；写操作
+   只收 upload/ 前缀，删除软删进 etc/.trash。路径全走事件委托的 data-*
+   属性（含引号/中文安全），不用内联 onclick 拼字符串。 */
+let fsPath = "";        // 当前目录相对路径（"" = 根视图：upload + workspace）
+let fsViewing = null;   // 正在查看的文件 {path, name, size[, text, binary…]}
+let fsEditing = false;  // 查看态中的编辑子态
+let _fsDlgGo = null;
+
+function fsApi(id, suffix, params = {}) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== "" && v != null) q.set(k, v);
+  if (scope !== "local") q.set("host", scope);
+  return (scope === "local" ? `/api/agents/${id}/fs` : `/api/remote/agents/${id}/fs`)
+         + suffix + "?" + q.toString();
+}
+const fsInUpload = () => fsPath === "upload" || fsPath.startsWith("upload/");
+const fsJoin = name => (fsPath ? fsPath + "/" : "upload/") + name;
+const FS_IMG_RE = /\.(png|jpe?g|gif|webp|bmp|ico)$/i;   // svg 故意不在：可带脚本，只给下载
+const FS_MD_RE = /\.(md|markdown)$/i;
+const fmtBytes = n => n == null ? "-" :
+  n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" :
+  n < 1073741824 ? (n / 1048576).toFixed(1) + " MB" : (n / 1073741824).toFixed(2) + " GB";
+const fmtEpoch = t => t ? new Date(t * 1000).toLocaleString("zh-CN", {hour12: false}) : "-";
+
+function fsBreadcrumbHtml() {
+  const crumbs = [`<button class="fs-crumb" data-fs-act="nav" data-path="">🏠 实例目录</button>`];
+  let acc = "";
+  for (const pt of fsPath ? fsPath.split("/") : []) {
+    acc = acc ? acc + "/" + pt : pt;
+    crumbs.push(`<span class="fs-sep">/</span><button class="fs-crumb" data-fs-act="nav" data-path="${esc(acc)}">${esc(pt)}</button>`);
+  }
+  return `<div class="fs-bc">${crumbs.join("")}</div>`;
+}
+
+function fsRowHtml(e) {
+  const p = fsPath ? fsPath + "/" + e.name : e.name;
+  const acts = [];
+  if (fsPath) {   // 根视图两行只进不出（各自的说明进 note）
+    if (e.dir)
+      acts.push(`<a class="mini" href="${fsApi(cur, "/zip", {path: p, mtoken: tok})}" download title="整个目录打 zip 下载">🗜 zip</a>`);
+    else
+      acts.push(`<a class="mini" href="${fsApi(cur, "/file", {path: p, mode: "raw", download: 1, mtoken: tok})}" download>⬇ 下载</a>`);
+    if (fsInUpload()) {
+      acts.push(`<button class="mini" data-fs-act="ren" data-path="${esc(p)}" data-name="${esc(e.name)}">✎ 改名</button>`);
+      acts.push(`<button class="mini danger" data-fs-act="del" data-path="${esc(p)}" data-dir="${e.dir ? 1 : 0}" title="软删进 etc/.trash（可捞回）">🗑</button>`);
+    }
+  }
+  return `<tr>
+    <td><span class="fs-name" data-fs-act="${e.dir ? "nav" : "open"}" data-path="${esc(p)}" data-size="${e.size ?? 0}"
+        title="${esc(e.note || (e.dir ? "进入目录" : "点击查看"))}">${e.dir ? "📁" : "📄"} ${esc(e.name)}${e.symlink ? " 🔗" : ""}</span>
+      ${e.note ? `<div class="hint" style="font-size:11px;margin-left:2px">${esc(e.note)}</div>` : ""}</td>
+    <td>${fmtBytes(e.size)}</td>
+    <td>${fmtEpoch(e.mtime)}</td>
+    <td style="text-align:right;white-space:nowrap">${acts.join("")}</td>
+  </tr>`;
+}
+
+async function renderFsTab(id) {
+  if (fsViewing) return fsRenderView(id);
+  let r;
+  try { r = await api(fsApi(id, "", {path: fsPath})); }
+  catch (e) { if (id === cur) setPane(`<p class="err">${esc(e.message)}</p>`); return; }
+  if (id !== cur) return;
+  const running = ((agentsCache.find(a => a.id === id) || {}).process || {}).active === "active";
+  const writable = fsInUpload();
+  const rows = r.exists === false
+    ? `<tr><td colspan="4" class="hint" style="text-align:center;padding:18px">目录不存在——${fsPath.startsWith("workspace") ? "agent 首口呼吸后由内核自建" : "点「📁＋ 文件夹」即创建"}</td></tr>`
+    : (r.entries || []).map(e => fsRowHtml(e)).join("")
+      || `<tr><td colspan="4" class="hint" style="text-align:center;padding:14px">（空目录）</td></tr>`;
+  setPane(`
+    <div class="fs-bar">${fsBreadcrumbHtml()}
+      <button class="mini" data-fs-act="up" title="上级目录">↑ 上级</button>
+      <span style="margin-left:auto"></span>
+      <span id="fs-status" class="fs-status"></span>
+      <button class="mini" data-fs-act="pick">⬆ 上传${writable ? "" : "到 upload/"}</button>
+      ${writable ? `<button class="mini" data-fs-act="mkdir">📁＋ 文件夹</button>
+      <button class="mini" data-fs-act="newfile">📄＋ 文件</button>` : ""}
+      <button class="mini" onclick="loadDetail()" title="刷新">⟳</button>
+    </div>
+    <div class="hint" style="font-size:11.5px;margin:2px 0 8px">
+      upload/ = 投递区（可写；agent 经 shell 工具按 <code class="mono">../upload/</code> 取件，上传后可一键投信告知）·
+      workspace/ = agent 领地（只读）${running ? ` · <span style="color:var(--warn)">agent 运行中，workspace 文件可能正被并发修改</span>` : ""}
+    </div>
+    <div id="fs-drop">
+      <table class="jt" style="width:100%">
+        <thead><tr><th>名称</th><th style="width:86px">大小</th><th style="width:150px">修改时间</th><th style="width:200px;text-align:right">操作</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p class="hint" style="text-align:center;font-size:11.5px;margin:6px 0 2px">拖拽文件到此区域即上传到 ${esc(writable ? fsPath : "upload/")}</p>
+    </div>
+    ${r.truncated ? `<p class="hint">（目录条目超过 2000，仅显示前 2000 项）</p>` : ""}`);
+  fsBindDrop(id);
+}
+
+async function fsRenderView(id) {
+  const v = fsViewing;
+  const dlBtn = `<a class="mini" href="${fsApi(id, "/file", {path: v.path, mode: "raw", download: 1, mtoken: tok})}" download>⬇ 下载</a>`;
+  if (fsEditing) {
+    setPane(`
+      <div class="fs-bar"><button class="mini" data-fs-act="back">← 返回</button>
+        <span class="mono" style="font-size:12.5px">${esc(v.path)}</span>
+        <span style="margin-left:auto"></span>
+        <span id="fs-status" class="fs-status"></span>
+        <button class="mini pri" data-fs-act="save">💾 保存</button></div>
+      <textarea id="fs-edit" class="code" spellcheck="false">${esc(v.text || "")}</textarea>`);
+    return;
+  }
+  if (FS_IMG_RE.test(v.name)) {
+    setPane(`
+      <div class="fs-bar"><button class="mini" data-fs-act="back">← 返回</button>
+        <span class="mono" style="font-size:12.5px">${esc(v.path)}</span>
+        <span style="margin-left:auto"></span>${dlBtn}</div>
+      <div style="text-align:center;padding:10px 0">
+        <img class="fs-img" src="${fsApi(id, "/file", {path: v.path, mode: "raw", mtoken: tok})}" alt="${esc(v.name)}"></div>
+      <p class="hint">${esc(v.name)} · ${fmtBytes(v.size)}</p>`);
+    return;
+  }
+  let r;
+  try { r = await api(fsApi(id, "/file", {path: v.path})); }
+  catch (e) { if (id === cur) setPane(`<p class="err">${esc(e.message)}</p>`); return; }
+  if (id !== cur) return;
+  Object.assign(fsViewing, r);   // 缓存 text/binary/truncated/editable 供编辑态复用
+  let body;
+  if (r.binary) {
+    body = `<p class="hint">二进制文件（${fmtBytes(r.size)}）——不支持预览，请下载查看。</p>`;
+  } else if (r.truncated) {
+    body = `<p class="hint">文件 ${fmtBytes(r.size)} 超过预览上限（256KB），以下仅前段——完整内容请下载。</p><pre>${esc(r.text)}</pre>`;
+  } else if (FS_MD_RE.test(v.name)) {
+    body = `<div class="md">${mdRender(r.text)}</div>`;   // mdRender 先转义后变换，XSS 安全
+  } else {
+    body = `<pre>${esc(r.text)}</pre>`;
+  }
+  setPane(`
+    <div class="fs-bar"><button class="mini" data-fs-act="back">← 返回</button>
+      <span class="mono" style="font-size:12.5px">${esc(v.path)}</span>
+      <span style="margin-left:auto"></span>
+      ${r.editable ? `<button class="mini" data-fs-act="edit">✎ 编辑</button>` : ""}
+      ${r.binary ? "" : r.writable && !r.editable ? `<span class="hint" style="font-size:11.5px">（超过 2MB 或 workspace 只读，不提供在线编辑）</span>` : ""}
+      ${dlBtn}</div>
+    ${body}`);
+}
+
+/* 文件 tab 的事件委托：#pane 常驻（重渲染不丢监听），data-fs-act 分发 */
+$("#pane").addEventListener("click", e => {
+  const el = e.target.closest("[data-fs-act]");
+  if (!el || curTab !== "文件" || !cur) return;
+  const act = el.dataset.fsAct, path = el.dataset.path || "", id = cur;
+  if (act === "nav") { fsPath = path; fsViewing = null; fsEditing = false; renderFsTab(id); }
+  else if (act === "up") {
+    fsPath = fsPath.includes("/") ? fsPath.slice(0, fsPath.lastIndexOf("/")) : "";
+    fsViewing = null; renderFsTab(id);
+  }
+  else if (act === "open") {
+    fsViewing = {path, name: path.split("/").pop(), size: +el.dataset.size || 0};
+    fsEditing = false; renderFsTab(id);
+  }
+  else if (act === "back") {
+    if (fsEditing) fsEditing = false; else fsViewing = null;
+    renderFsTab(id);
+  }
+  else if (act === "edit") { fsEditing = true; renderFsTab(id); }
+  else if (act === "save") fsSave(id);
+  else if (act === "pick") fsPickUpload(id);
+  else if (act === "mkdir") fsDlg("新建文件夹", "文件夹名（upload/ 下，支持多级 a/b/c）", "新建文件夹", async name => {
+    await api(fsApi(id, "/mkdir"), {method: "POST", body: JSON.stringify({path: fsJoin(name)})});
+    renderFsTab(id);
+  });
+  else if (act === "newfile") fsDlg("新建文件", "文件名（空文本文件，创建后直接进编辑）", "新文件.md", async name => {
+    await api(fsApi(id, "/write"), {method: "POST", body: JSON.stringify({path: fsJoin(name), text: ""})});
+    fsViewing = {path: fsJoin(name), name, size: 0, text: ""};
+    fsEditing = true; renderFsTab(id);
+  });
+  else if (act === "ren") fsDlg("重命名", "新名称（只改名，不挪窝）", el.dataset.name || "", async name => {
+    await api(fsApi(id, "/move"), {method: "POST",
+      body: JSON.stringify({path, new_path: fsJoin(name)})});
+    renderFsTab(id);
+  });
+  else if (act === "del") {
+    const isDir = el.dataset.dir === "1";
+    if (!confirm(`删除 ${isDir ? "目录（整棵）" : "文件"}：${path}？\n\n软删进 etc/.trash/fs/（管理员可捞回）。`)) return;
+    api(fsApi(id, "", {path}), {method: "DELETE"})
+      .then(() => renderFsTab(id))
+      .catch(err => alert(err.message));
+  }
+});
+
+function fsDlg(title, label, value, go) {
+  $("#fsdlg-title").textContent = title;
+  $("#fsdlg-label").textContent = label;
+  $("#fsdlg-input").value = value;
+  $("#fsdlg-err").hidden = true;
+  _fsDlgGo = go;
+  dlgFs.showModal();
+  setTimeout(() => { $("#fsdlg-input").focus(); $("#fsdlg-input").select(); }, 30);
+}
+$("#fsdlg-go").onclick = async () => {
+  const v = $("#fsdlg-input").value.trim();
+  if (!v) { $("#fsdlg-err").textContent = "不能为空"; $("#fsdlg-err").hidden = false; return; }
+  try { await _fsDlgGo(v); dlgFs.close(); }
+  catch (e) { $("#fsdlg-err").textContent = String(e.message || e); $("#fsdlg-err").hidden = false; }
+};
+$("#fsdlg-input").addEventListener("keydown", e => { if (e.key === "Enter") $("#fsdlg-go").click(); });
+
+async function fsSave(id) {
+  const text = $("#fs-edit").value;
+  const st = $("#fs-status");
+  if (st) st.textContent = "保存中…";
+  try {
+    await api(fsApi(id, "/write"), {method: "POST", body: JSON.stringify({path: fsViewing.path, text})});
+    fsEditing = false;
+    renderFsTab(id);   // fsViewing 仍在 → 重新拉取显示新内容
+  } catch (e) { if (st) st.textContent = ""; alert(e.message); }
+}
+
+function fsPickUpload(id) {
+  const inp = $("#fs-file-input");
+  inp.onchange = async () => { await fsDoUpload(id, [...inp.files]); inp.value = ""; };
+  inp.click();
+}
+
+async function fsDoUpload(id, files, overwrite = false) {
+  if (!files.length) return;
+  const dir = fsInUpload() ? fsPath : "upload";
+  const st = $("#fs-status");
+  if (st) st.textContent = `上传中（${files.length} 个文件）…`;
+  const fd = new FormData();
+  files.forEach(f => fd.append("files", f, f.name));
+  let r;
+  try {
+    // 不走 api()：它会给 FormData 强加 Content-Type: application/json
+    const resp = await fetch(fsApi(id, "/upload", {path: dir, overwrite: overwrite ? 1 : ""}),
+      {method: "POST", headers: {"Authorization": "Bearer " + tok}, body: fd});
+    r = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(r.detail || ("HTTP " + resp.status));
+  } catch (e) { if (st) st.textContent = ""; alert(e.message); return; }
+  if ((r.skipped || []).length && !overwrite) {
+    if (confirm(`已跳过（同名已存在）：\n${r.skipped.join("\n")}\n\n覆盖上传？`))
+      return fsDoUpload(id, files, true);
+  }
+  if (st) st.textContent = "";
+  fsNotifyPrompt(id, dir, r.uploaded || []);
+  renderFsTab(id);
+}
+
+function fsNotifyPrompt(id, dir, uploaded) {
+  if (!uploaded.length) return;
+  const rel = dir === "upload" ? "" : dir.slice("upload".length);   // /子目录 前缀
+  const text = `【管理面】已上传 ${uploaded.length} 个文件到 ../upload${rel}：\n` +
+    uploaded.map(u => `- ../upload${rel}/${u.name}`).join("\n") +
+    `\n（file_read 工具以 workspace 为界读不到实例根，请用 shell 工具取用）`;
+  if (!confirm(`上传完成（${uploaded.length} 个）。\n\n投信告知 agent 取件？\n\n${text}`)) return;
+  const path = scope === "local" ? `/api/agents/${id}/mail`
+    : `/api/remote/agents/${id}/mail?host=${encodeURIComponent(scope)}`;
+  api(path, {method: "POST", body: JSON.stringify({text})})
+    .catch(e => alert("投信失败：" + e.message));
+}
+
+function fsBindDrop(id) {
+  const dz = $("#fs-drop");
+  if (!dz) return;
+  dz.addEventListener("dragover", e => { e.preventDefault(); dz.classList.add("drag"); });
+  dz.addEventListener("dragleave", () => dz.classList.remove("drag"));
+  dz.addEventListener("drop", e => {
+    e.preventDefault(); dz.classList.remove("drag");
+    const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+    if (files.length) fsDoUpload(id, files);
+  });
 }
 
 /* ── 启动：带 token（URL ?mtoken= / localStorage 记忆）立即拉数据并武装 15s

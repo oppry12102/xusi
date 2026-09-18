@@ -875,3 +875,133 @@ def read_remote_file(h: dict, agent_id: str, rel: str, *, limit: int = 50,
         except Exception:
             pass   # 半行等坏 JSON 跳过，与 agentops._tail_jsonl 同构
     return rows
+
+
+# ── 远端文件通道（fs-*：远端 `xusi fs-…` 同一份 files.py 实现）─────────
+
+
+def _fs_json(cp, what: str) -> dict:
+    """fs-* JSON 命令的统一收编：rc!=0 取 stderr 末行（CLI 的 `error: <文案>`
+    ——AgentError 的可读信息），成功解析 JSON。"""
+    if cp.returncode != 0:
+        err = (cp.stderr or cp.stdout or "").strip().splitlines()
+        msg = err[-1] if err else f"rc={cp.returncode}"
+        if msg.startswith("error: "):
+            msg = msg[len("error: "):]
+        raise RemoteError(f"{what}失败：{msg}")
+    try:
+        return json.loads(cp.stdout)
+    except Exception:
+        raise RemoteError(f"{what}输出不是 JSON（远端版本过旧？先 remote upgrade）") from None
+
+
+def fs_list(h: dict, agent_id: str, path: str = "", *, timeout: int = 120) -> dict:
+    """远端列目录（详情页「文件」tab）。"""
+    return _fs_json(xusi_cmd(h, ["fs-list", agent_id, "--path", path],
+                             timeout=timeout), "远端列目录")
+
+
+def fs_read(h: dict, agent_id: str, path: str, *, timeout: int = 120) -> dict:
+    """远端文本预览（截断/二进制探测都在远端 files.read_text 完成）。"""
+    return _fs_json(xusi_cmd(h, ["fs-read", agent_id, "--path", path],
+                             timeout=timeout), "远端读文件")
+
+
+def fs_cat_to_file(h: dict, agent_id: str, path: str, local: Path,
+                   *, timeout: int = 600) -> None:
+    """远端 raw 下载：`xusi fs-cat` 字节流经 ssh stdout 直落本地文件句柄
+    （流式，大文件不吃内存——run_remote 是 text 模式不能用这里）。"""
+    d = h.get("dir", REMOTE_DIR)
+    py = h.get("python", REMOTE_PY)
+    inner = " ".join(shlex.quote(a) for a in ["fs-cat", agent_id, "--path", path])
+    kind, opts = resolve_link(h)
+    local.parent.mkdir(parents=True, exist_ok=True)
+    with local.open("wb") as f:
+        try:
+            cp = subprocess.run(_build_ssh(h, kind, opts, f"cd {d} && {py} -m xusi {inner}"),
+                                stdout=f, stderr=subprocess.PIPE, timeout=timeout)
+        except FileNotFoundError:
+            raise RemoteError("本机缺少 ssh/sshpass——控制端先 sudo apt-get install sshpass")
+        except subprocess.TimeoutExpired:
+            invalid_link(h)
+            raise RemoteError(f"远端下载超时（{timeout}s）") from None
+    if cp.returncode != 0:
+        local.unlink(missing_ok=True)   # 半截文件不留
+        err = (cp.stderr or b"").decode(errors="replace").strip()[:200]
+        raise RemoteError(f"远端下载失败：{err or f'rc={cp.returncode}'}")
+
+
+def fs_zip_to_file(h: dict, agent_id: str, path: str, local: Path,
+                   *, timeout: int = 600) -> None:
+    """远端目录 zip：`xusi fs-zip` 字节流直落本地临时文件（同 fs_cat_to_file）。"""
+    d = h.get("dir", REMOTE_DIR)
+    py = h.get("python", REMOTE_PY)
+    inner = " ".join(shlex.quote(a) for a in ["fs-zip", agent_id, "--path", path])
+    kind, opts = resolve_link(h)
+    local.parent.mkdir(parents=True, exist_ok=True)
+    with local.open("wb") as f:
+        try:
+            cp = subprocess.run(_build_ssh(h, kind, opts, f"cd {d} && {py} -m xusi {inner}"),
+                                stdout=f, stderr=subprocess.PIPE, timeout=timeout)
+        except FileNotFoundError:
+            raise RemoteError("本机缺少 ssh/sshpass——控制端先 sudo apt-get install sshpass")
+        except subprocess.TimeoutExpired:
+            invalid_link(h)
+            raise RemoteError(f"远端打包超时（{timeout}s）") from None
+    if cp.returncode != 0:
+        local.unlink(missing_ok=True)
+        err = (cp.stderr or b"").decode(errors="replace").strip()[:200]
+        raise RemoteError(f"远端打包失败：{err or f'rc={cp.returncode}'}")
+
+
+def fs_put(h: dict, agent_id: str, rel: str, data: bytes, *, overwrite: bool = False,
+           timeout: int = 600) -> dict:
+    """远端上传：bytes 经 ssh stdin → `xusi fs-put`（远端 files.put_bytes
+    落盘——校验/原子写/审计都在远端发生，控制端只搬运）。"""
+    d = h.get("dir", REMOTE_DIR)
+    py = h.get("python", REMOTE_PY)
+    argv = ["fs-put", agent_id, "--path", rel] + (["--overwrite"] if overwrite else [])
+    inner = " ".join(shlex.quote(a) for a in argv)
+    kind, opts = resolve_link(h)
+    try:
+        cp = subprocess.run(_build_ssh(h, kind, opts, f"cd {d} && {py} -m xusi {inner}"),
+                            input=data, capture_output=True, timeout=timeout)
+    except FileNotFoundError:
+        raise RemoteError("本机缺少 ssh/sshpass——控制端先 sudo apt-get install sshpass")
+    except subprocess.TimeoutExpired:
+        invalid_link(h)
+        raise RemoteError(f"远端上传超时（{timeout}s）") from None
+    return _fs_json(cp, "远端上传")
+
+
+def fs_write(h: dict, agent_id: str, rel: str, text: str, *, timeout: int = 120) -> dict:
+    """远端文本保存：utf-8 经 ssh stdin → `xusi fs-write`（在线编辑的保存腿）。"""
+    d = h.get("dir", REMOTE_DIR)
+    py = h.get("python", REMOTE_PY)
+    inner = " ".join(shlex.quote(a) for a in ["fs-write", agent_id, "--path", rel])
+    kind, opts = resolve_link(h)
+    try:
+        cp = subprocess.run(_build_ssh(h, kind, opts, f"cd {d} && {py} -m xusi {inner}"),
+                            input=text.encode("utf-8"), capture_output=True,
+                            timeout=timeout)
+    except FileNotFoundError:
+        raise RemoteError("本机缺少 ssh/sshpass——控制端先 sudo apt-get install sshpass")
+    except subprocess.TimeoutExpired:
+        invalid_link(h)
+        raise RemoteError(f"远端保存超时（{timeout}s）") from None
+    return _fs_json(cp, "远端保存")
+
+
+def fs_mkdir(h: dict, agent_id: str, rel: str, *, timeout: int = 120) -> dict:
+    return _fs_json(xusi_cmd(h, ["fs-mkdir", agent_id, "--path", rel],
+                             timeout=timeout), "远端建目录")
+
+
+def fs_move(h: dict, agent_id: str, src: str, dst: str, *, timeout: int = 120) -> dict:
+    return _fs_json(xusi_cmd(h, ["fs-move", agent_id, "--from", src, "--to", dst],
+                             timeout=timeout), "远端移动")
+
+
+def fs_delete(h: dict, agent_id: str, rel: str, *, timeout: int = 300) -> dict:
+    return _fs_json(xusi_cmd(h, ["fs-delete", agent_id, "--path", rel],
+                             timeout=timeout), "远端删除")

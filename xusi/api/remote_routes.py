@@ -12,16 +12,20 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
-from .. import agentops, remote
+from .. import agentops, files, remote
 from ..config import get_config
 from .auth import require_admin
-from .models import CreateAgentReq, MailReq, PatchAgentReq, RemoteRestoreReq
+from .models import (CreateAgentReq, FsMoveReq, FsPathReq, FsWriteReq, MailReq,
+                     PatchAgentReq, RemoteRestoreReq)
 
 router = APIRouter()
 
@@ -294,6 +298,157 @@ async def api_remote_restore(req: RemoteRestoreReq,
     agentops.audit("remote.restore", host=h.get("name", req.host),
                    from_file=path.name)
     return {"ok": True, "out": cp.stdout}
+
+
+# ── 远端文件通道（upload/ 可写 · workspace/ 只读；远端 `xusi fs-*` 同一份
+#    files.py 实现，校验/原子写/审计都在远端发生，控制端只做 ssh 搬运）─────
+
+
+@router.get("/api/remote/agents/{agent_id}/fs")
+async def api_remote_fs_list(agent_id: str, host: str = Query(...), path: str = "",
+                             _rec: dict = Depends(require_admin)) -> dict:
+    """远端列目录（「文件」tab；path 为空 = 根视图）。"""
+    h = _host(host)
+    try:
+        return await asyncio.to_thread(remote.fs_list, h, agent_id, path)
+    except remote.RemoteError as e:
+        raise HTTPException(400, str(e)) from None
+
+
+@router.get("/api/remote/agents/{agent_id}/fs/file")
+async def api_remote_fs_file(agent_id: str, host: str = Query(...), path: str = "",
+                             mode: str = "text", download: bool = False,
+                             _rec: dict = Depends(require_admin)):
+    """远端读文件：mode=text → JSON 预览；mode=raw → ssh 流式拉到控制端临时
+    文件再 FileResponse 流出（大文件不在内存里整体缓冲）。"""
+    h = _host(host)
+    if mode == "text":
+        try:
+            return await asyncio.to_thread(remote.fs_read, h, agent_id, path)
+        except remote.RemoteError as e:
+            raise HTTPException(400, str(e)) from None
+    # 临时文件必须活到流式响应送完——mkdtemp + BackgroundTask 清理
+    # （TemporaryDirectory 的 with 块在 return 时就拆，FileResponse 还没读）
+    d = tempfile.mkdtemp(prefix="xusi-fs-dl-")
+    local = Path(d) / "blob"
+    try:
+        await asyncio.to_thread(remote.fs_cat_to_file, h, agent_id, path, local)
+    except remote.RemoteError as e:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(400, str(e)) from None
+    suffix = Path(path.strip("/")).suffix.lower()
+    ctype = files.INLINE_TYPES.get(suffix, "application/octet-stream")
+    inline = suffix in files.INLINE_TYPES and not download
+    fname = Path(path.strip("/")).name or "blob"
+    resp = FileResponse(local, media_type=ctype, filename=fname,
+                        content_disposition_type="inline" if inline else "attachment",
+                        background=BackgroundTask(shutil.rmtree, d, True))
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@router.get("/api/remote/agents/{agent_id}/fs/zip")
+async def api_remote_fs_zip(agent_id: str, host: str = Query(...), path: str = "",
+                            _rec: dict = Depends(require_admin)) -> FileResponse:
+    """远端目录 zip：远端出包 → ssh 流式拉回控制端临时文件 → FileResponse。"""
+    h = _host(host)
+    d = tempfile.mkdtemp(prefix="xusi-fs-zip-")
+    local = Path(d) / "bundle.zip"
+    try:
+        await asyncio.to_thread(remote.fs_zip_to_file, h, agent_id, path, local)
+    except remote.RemoteError as e:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(400, str(e)) from None
+    fname = (Path(path.strip("/")).name or "bundle") + ".zip"
+    resp = FileResponse(local, media_type="application/zip", filename=fname,
+                        background=BackgroundTask(shutil.rmtree, d, True))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@router.post("/api/remote/agents/{agent_id}/fs/upload")
+async def api_remote_fs_upload(agent_id: str, host: str = Query(...), path: str = "",
+                               overwrite: bool = False,
+                               files_in: list[UploadFile] = File(..., alias="files"),
+                               _rec: dict = Depends(require_admin)) -> dict:
+    """远端上传：multipart 在控制端收齐 → 逐文件 ssh stdin → `xusi fs-put`。
+    重名不覆盖时跳过并回报（与本地同语义；前端确认后 overwrite=1 重传）。"""
+    import posixpath
+    h = _host(host)
+    if not files_in:
+        raise HTTPException(400, "没有收到文件")
+    dir_rel = path or files.WRITE_ROOT
+    saved, skipped = [], []
+    for f in files_in:
+        name = posixpath.basename(f.filename or "").strip()
+        if not name or name in (".", ".."):
+            skipped.append(f.filename or "(空名)")
+            continue
+        data = await f.read()
+        try:
+            await asyncio.to_thread(remote.fs_put, h, agent_id,
+                                    posixpath.join(dir_rel, name), data,
+                                    overwrite=overwrite)
+            saved.append({"name": name, "size": len(data)})
+        except remote.RemoteError as e:
+            skipped.append(f"{name}（{e}）")
+    agentops.audit("remote.fs.upload", host=h.get("name", host), agent=agent_id,
+                   dir=dir_rel, files=[s["name"] for s in saved])
+    return {"id": agent_id, "path": dir_rel, "uploaded": saved, "skipped": skipped}
+
+
+@router.post("/api/remote/agents/{agent_id}/fs/mkdir")
+async def api_remote_fs_mkdir(agent_id: str, req: FsPathReq, host: str = Query(...),
+                              _rec: dict = Depends(require_admin)) -> dict:
+    h = _host(host)
+    try:
+        r = await asyncio.to_thread(remote.fs_mkdir, h, agent_id, req.path)
+    except remote.RemoteError as e:
+        raise HTTPException(400, str(e)) from None
+    agentops.audit("remote.fs.mkdir", host=h.get("name", host), agent=agent_id,
+                   path=req.path)
+    return r
+
+
+@router.post("/api/remote/agents/{agent_id}/fs/write")
+async def api_remote_fs_write(agent_id: str, req: FsWriteReq, host: str = Query(...),
+                              _rec: dict = Depends(require_admin)) -> dict:
+    h = _host(host)
+    try:
+        r = await asyncio.to_thread(remote.fs_write, h, agent_id, req.path, req.text)
+    except remote.RemoteError as e:
+        raise HTTPException(400, str(e)) from None
+    agentops.audit("remote.fs.write", host=h.get("name", host), agent=agent_id,
+                   path=req.path, chars=len(req.text))
+    return r
+
+
+@router.post("/api/remote/agents/{agent_id}/fs/move")
+async def api_remote_fs_move(agent_id: str, req: FsMoveReq, host: str = Query(...),
+                             _rec: dict = Depends(require_admin)) -> dict:
+    h = _host(host)
+    try:
+        r = await asyncio.to_thread(remote.fs_move, h, agent_id, req.path, req.new_path)
+    except remote.RemoteError as e:
+        raise HTTPException(400, str(e)) from None
+    agentops.audit("remote.fs.move", host=h.get("name", host), agent=agent_id,
+                   frm=req.path, to=req.new_path)
+    return r
+
+
+@router.delete("/api/remote/agents/{agent_id}/fs")
+async def api_remote_fs_delete(agent_id: str, host: str = Query(...), path: str = "",
+                               _rec: dict = Depends(require_admin)) -> dict:
+    """远端软删（远端 etc/.trash/fs/ 里可捞回；拒删 upload/ 根）。"""
+    h = _host(host)
+    try:
+        r = await asyncio.to_thread(remote.fs_delete, h, agent_id, path)
+    except remote.RemoteError as e:
+        raise HTTPException(400, str(e)) from None
+    agentops.audit("remote.fs.delete", host=h.get("name", host), agent=agent_id,
+                   path=path)
+    return r
 
 
 # 注意：泛化的 {action} 路由必须注册在全部具体路由（mail/mailbox/sessions/

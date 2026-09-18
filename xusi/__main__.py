@@ -12,6 +12,8 @@
     python -m xusi mail|mailbox          # 投信/收信（与 agent 的唯一写通道）
     python -m xusi observe-token         # 签发观察台 token（CLI-only 机器用）
     python -m xusi check-brains          # 实测密钥池各大脑连通性（/models + 最小 chat）
+    python -m xusi fs-list|fs-read|fs-cat|fs-zip|fs-put|fs-mkdir|fs-write|fs-move|fs-delete
+                                          # 文件通道：upload/ 可写 · workspace/ 只读
 
 CRUD 直调 agentops 是为了「远端零管理」：CLI-only 机器没有 serve 进程，
 CLI 与 serve 同一条实现（跨进程并发由 registry.file_lock 互斥）。
@@ -29,7 +31,8 @@ from pathlib import Path
 from . import __version__
 from .config import ROOT, get_config
 
-DEPS = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "httpx[socks]>=0.27"]
+DEPS = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "httpx[socks]>=0.27",
+        "python-multipart>=0.0.9"]
 
 
 def _ensure_venv() -> Path:
@@ -665,6 +668,97 @@ def cmd_boot(args) -> int:
     return 0
 
 
+# ── fs 文件通道（upload/ 可写 · workspace/ 只读；实现与校验在 files.py，
+#    serve 的 /api/agents/{id}/fs* 与本 CLI 同一份——远端零管理机经 ssh
+#    执行这里，校验发生在远端本机）────────────────────────────────────
+
+
+def _fs_call(fn, *argv, **kw):
+    """fs-* 共用骨架：AgentError → 可读 stderr + rc2，成功固定 JSON。"""
+    from . import agentops
+    try:
+        r = fn(*argv, **kw)
+    except agentops.AgentError as e:
+        return _cli_agent_error(e)
+    print(json.dumps(r, ensure_ascii=False))
+    return 0
+
+
+def cmd_fs_list(args) -> int:
+    from . import files
+    return _fs_call(files.list_dir, args.agent_id, args.path)
+
+
+def cmd_fs_read(args) -> int:
+    from . import files
+    return _fs_call(files.read_text, args.agent_id, args.path)
+
+
+def cmd_fs_cat(args) -> int:
+    """raw 字节流到 stdout（二进制安全——控制端用 stdout=文件句柄接收）。"""
+    import shutil as _sh
+    from . import agentops, files
+    try:
+        info = files.open_raw(args.agent_id, args.path)
+        with info["path"].open("rb") as f:
+            _sh.copyfileobj(f, sys.stdout.buffer)
+        sys.stdout.buffer.flush()
+    except agentops.AgentError as e:
+        return _cli_agent_error(e)
+    return 0
+
+
+def cmd_fs_zip(args) -> int:
+    """目录 zip 字节流到 stdout（临时目录用毕即删）。"""
+    import shutil as _sh
+    from . import agentops, files
+    try:
+        arc, tmpdir = files.zip_dir(args.agent_id, args.path)
+        try:
+            with arc.open("rb") as f:
+                _sh.copyfileobj(f, sys.stdout.buffer)
+            sys.stdout.buffer.flush()
+        finally:
+            _sh.rmtree(tmpdir, ignore_errors=True)
+    except agentops.AgentError as e:
+        return _cli_agent_error(e)
+    return 0
+
+
+def cmd_fs_put(args) -> int:
+    """stdin（二进制安全）→ 上传到 upload/ 下指定路径（含文件名）。"""
+    from . import files
+    data = sys.stdin.buffer.read()
+    return _fs_call(files.put_bytes, args.agent_id, args.path, data,
+                    overwrite=args.overwrite)
+
+
+def cmd_fs_mkdir(args) -> int:
+    from . import files
+    return _fs_call(files.mkdir, args.agent_id, args.path)
+
+
+def cmd_fs_write(args) -> int:
+    """stdin（utf-8 文本）→ 新建/保存 upload/ 下的文本文件。"""
+    from . import files
+    try:
+        text = sys.stdin.buffer.read().decode("utf-8")
+    except UnicodeDecodeError as e:
+        print(f"error: stdin 不是合法 utf-8：{e}", file=sys.stderr)
+        return 2
+    return _fs_call(files.write_text, args.agent_id, args.path, text)
+
+
+def cmd_fs_move(args) -> int:
+    from . import files
+    return _fs_call(files.move, args.agent_id, args.from_path, args.to)
+
+
+def cmd_fs_delete(args) -> int:
+    from . import files
+    return _fs_call(files.delete, args.agent_id, args.path)
+
+
 # ── remote（控制端 fan-out：远端 xusi 批量管理，纯 ssh/scp）─────────────
 
 
@@ -1012,6 +1106,54 @@ def main() -> int:
     bt_ = sub.add_parser("boot", help="读磁盘 workspace/BOOT.md 自述全文")
     bt_.add_argument("agent_id")
     bt_.set_defaults(fn=cmd_boot)
+
+    # fs 文件通道（upload/ 可写 · workspace/ 只读；远端中转用，本机亦可直用）
+    fsl_ = sub.add_parser("fs-list", help="列目录（实例开放区：upload/workspace）")
+    fsl_.add_argument("agent_id")
+    fsl_.add_argument("--path", default="", help="相对路径（空 = 根视图）")
+    fsl_.set_defaults(fn=cmd_fs_list)
+
+    fsr_ = sub.add_parser("fs-read", help="读文件文本预览（JSON：截断/二进制探测）")
+    fsr_.add_argument("agent_id")
+    fsr_.add_argument("--path", required=True)
+    fsr_.set_defaults(fn=cmd_fs_read)
+
+    fsc_ = sub.add_parser("fs-cat", help="读文件 raw 字节到 stdout（二进制安全）")
+    fsc_.add_argument("agent_id")
+    fsc_.add_argument("--path", required=True)
+    fsc_.set_defaults(fn=cmd_fs_cat)
+
+    fsz_ = sub.add_parser("fs-zip", help="目录打 zip 字节到 stdout")
+    fsz_.add_argument("agent_id")
+    fsz_.add_argument("--path", required=True)
+    fsz_.set_defaults(fn=cmd_fs_zip)
+
+    fsp_ = sub.add_parser("fs-put", help="stdin 内容上传到 upload/ 下（二进制安全）")
+    fsp_.add_argument("agent_id")
+    fsp_.add_argument("--path", required=True, help="目标完整相对路径（upload/…/文件名）")
+    fsp_.add_argument("--overwrite", action="store_true")
+    fsp_.set_defaults(fn=cmd_fs_put)
+
+    fsmk_ = sub.add_parser("fs-mkdir", help="新建目录（只收 upload/ 路径）")
+    fsmk_.add_argument("agent_id")
+    fsmk_.add_argument("--path", required=True)
+    fsmk_.set_defaults(fn=cmd_fs_mkdir)
+
+    fsmw_ = sub.add_parser("fs-write", help="stdin utf-8 文本 → 新建/保存 upload/ 文件")
+    fsmw_.add_argument("agent_id")
+    fsmw_.add_argument("--path", required=True)
+    fsmw_.set_defaults(fn=cmd_fs_write)
+
+    fsmv_ = sub.add_parser("fs-move", help="重命名/移动（只在 upload/ 内）")
+    fsmv_.add_argument("agent_id")
+    fsmv_.add_argument("--from", dest="from_path", required=True)
+    fsmv_.add_argument("--to", dest="to", required=True)
+    fsmv_.set_defaults(fn=cmd_fs_move)
+
+    fsd_ = sub.add_parser("fs-delete", help="软删（挪 etc/.trash/fs/，误删可捞回）")
+    fsd_.add_argument("agent_id")
+    fsd_.add_argument("--path", required=True)
+    fsd_.set_defaults(fn=cmd_fs_delete)
 
     # remote 只在此登记 help 条目；实际解析在 main() 入口拦截 → _remote_main
     # 手工分发（argparse 的 REMAINDER 与嵌套 subparsers 是死结，见 _remote_main）
