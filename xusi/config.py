@@ -134,13 +134,13 @@ def load_config() -> XusiConfig:
         cfg.versions_dir = Path(os.path.expanduser(str(mgr["versions_dir"]))).resolve()
     if "display_timezone" in mgr:
         cfg.display_timezone = str(mgr["display_timezone"])
-    # 双运行时：缺省运行时 + docker 镜像构建参数（详见 dockerctl.py）
+    # 三运行时：缺省运行时 + docker 镜像构建参数（详见 dockerctl.py/barectl.py）
     if "default_runtime" in mgr:
         rt = str(mgr["default_runtime"]).strip()
-        if rt in ("systemd", "docker"):
+        if rt in ("systemd", "docker", "bare"):
             cfg.default_runtime = rt
         else:
-            print(f"警告：default_runtime 非法值 {rt!r}（只能是 systemd/docker），回退 systemd")
+            print(f"警告：default_runtime 非法值 {rt!r}（只能是 systemd/docker/bare），回退 systemd")
     if "docker_pip_index" in mgr:
         # 三态：键缺失 → None（dockerctl 用内置清华默认）；空串 → ""（显式关闭
         # 镜像走 pypi.org）；非空 → 指定镜像。TOML 裸写 None/null 是解析错误

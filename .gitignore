@@ -46,3 +46,5 @@ etc/backups/
 .claude/
 # 旧 token 轮换时被改名留底的废弃文件（含明文凭证，永不入库）
 etc/*.deprecated.*
+# brains.toml 的带密钥备份——永不入库（brains.toml 本身已忽略）
+etc/brains.toml.bak-*

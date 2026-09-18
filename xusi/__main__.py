@@ -218,7 +218,7 @@ def cmd_status(args) -> int:
         return 0
     for r in rows:
         proc = r.get("process", {})
-        rt = "容器" if r.get("runtime") == "docker" else "系统"
+        rt = {"docker": "容器", "bare": "直跑"}.get(r.get("runtime"), "系统")
         print(f"{r['id']:28} 端口{r['port']:5} {rt}:{proc.get('active', '?'):9} "
               f"期望:{r['desired_state']:8} {r['name']}")
     return 0
@@ -331,6 +331,12 @@ def cmd_doctor(args) -> int:
           f"{len(issues)} 处" if issues else f"{len(pool)} 家 × 出生配置全一致")
     for line in issues:
         print(f"         {line}")
+    # 池条目未标价提醒（不 FAIL）：内核成本观测会对无价条目按缺省价计「假账」
+    # ——2026-09-13 全队补价后加的口径守卫（自托管脑显式标 0 不在此列）
+    for name, spec in brains.pool_specs().items():
+        if "price_prompt" not in spec or "price_completion" not in spec:
+            print(f"  [WARN] 池条目 {name} 未标价（成本观测将按内核缺省价计——"
+                  f"请补 price_prompt/price_completion）")
     # port_free(cfg.port) 恒 False（管理面端口在分配层被保留），旧写法因此
     # 恒等 manager_running()——install 前跑 doctor 必误报。改用 ports 的
     # 主机级三态检验：空闲、或在跑本服务都算过，其余按状态给可行动的提示。
@@ -516,7 +522,7 @@ def cmd_create(args) -> int:
         r = agentops.create_agent(**body)
     except (agentops.AgentError, ValueError, TypeError, OSError) as e:
         return _cli_agent_error(e)
-    except (systemdctl.SystemdError, dockerctl.DockerError) as e:
+    except (systemdctl.SystemdError, dockerctl.DockerError, barectl.BareError) as e:
         # 创建含首启拉起：docker/systemd 载体故障打印诊断而非 traceback
         return _cli_agent_error(e)
     if getattr(args, "json", False):
@@ -704,7 +710,7 @@ def _remote_status(hosts: list[dict], json_out: bool) -> int:
             continue
         for r in rows:
             proc = r.get("process", {})
-            rt = "容器" if r.get("runtime") == "docker" else "系统"
+            rt = {"docker": "容器", "bare": "直跑"}.get(r.get("runtime"), "系统")
             print(f"  {res['host']:<{w}} {r['id']:22} 端口{r['port']:5} "
                   f"{rt}:{proc.get('active', '?'):9} 期望:{r['desired_state']:8} {r['name']}")
     return rc
@@ -822,7 +828,7 @@ usage: xusi remote <cmd> [--on NAME] [参数...]
   brains    --on NAME                   推送控制端密钥池到远端（轮换 key / 池变更后）
   create    --on NAME <本地 create 参数>  在指定机器创建 agent（@file/--spec 自动上传）
   patch     --on NAME <agent-id> [--brains a,b] [--name X] [--note Y] [--expose on|off]
-            [--runtime systemd|docker]    改参（brains 切换 / 簿记 / 运行时，同本地 patch）
+            [--runtime systemd|docker|bare] 改参（brains 切换 / 簿记 / 运行时，同本地 patch）
   start|stop|pause|resume|restart|delete --on NAME <agent-id>
   mail      --on NAME <agent-id> <text>  投信（与 agent 的唯一写通道）
   mailbox   --on NAME <agent-id> [--limit N] [--box outbox|inbox]
@@ -949,7 +955,7 @@ def main() -> int:
     c_.add_argument("--name", default="")
     c_.add_argument("--mission", default="", help="mission 文本；@file 读文件")
     c_.add_argument("--brains", default="", help="逗号分隔，首个为默认大脑")
-    c_.add_argument("--runtime", default="", help="systemd / docker（缺省取配置默认）")
+    c_.add_argument("--runtime", default="", help="systemd / docker / bare（缺省取配置默认）")
     c_.add_argument("--expose", action="store_true")
     c_.add_argument("--port", type=int, default=None)
     c_.add_argument("--budgets", default=None, help="JSON 字符串")
@@ -976,7 +982,7 @@ def main() -> int:
     pt_.add_argument("--note", default=None)
     pt_.add_argument("--brains", default=None, help="逗号分隔（池条目名；老名自动升级）")
     pt_.add_argument("--expose", default=None, help="on/off")
-    pt_.add_argument("--runtime", default=None, choices=("systemd", "docker"))
+    pt_.add_argument("--runtime", default=None, choices=("systemd", "docker", "bare"))
     pt_.set_defaults(fn=cmd_patch)
 
     ml_ = sub.add_parser("mail", help="给 agent 投信（与 agent 的唯一写通道）")

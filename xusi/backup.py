@@ -37,9 +37,11 @@ from .config import get_config
 # tar 内排除的路径/后缀（运行时产物或凭证）。.venv = 实例环境的持久化缓存
 # （内核 v2.7.38 起随实例目录，丢了首启自愈重装一次，docs/agent-lifecycle.md
 # §2）；.cache/.local = pip/HF 缓存，可重装且 torch 量级 500MB+（任意层级
-# 匹配，09b6 旧布局 workspace/.local 同样排除）
+# 匹配，09b6 旧布局 workspace/.local 同样排除）；.pylib = PIP_TARGET 时代
+# 遗留（venv 即世界后成死重，agent-abef 实测 5.9G）；.hf_cache = HF 下载
+# 缓存，可重新下载重建
 _EXCLUDE_DIRS = {".venv", "xuseek-v2", "__pycache__", ".pytest_cache",
-                 ".cache", ".local"}
+                 ".cache", ".local", ".pylib", ".hf_cache"}
 _EXCLUDE_SUFFIXES = {".pyc", ".egg-info"}
 _EXCLUDE_FILES = {"webui_tokens.json"}
 

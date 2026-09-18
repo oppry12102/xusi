@@ -48,7 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import brains, dockerctl, ports, registry, systemdctl, versions
+from . import barectl, brains, dockerctl, ports, registry, systemdctl, versions
 from .config import get_config
 
 
@@ -96,9 +96,14 @@ def _unit(agent: dict) -> str:
 
 
 def _rt(agent: dict):
-    """按注册表 runtime 分派运行时模块（Runtime 协议：systemdctl/dockerctl
-    函数形状对齐）。旧记录无该字段 → systemd（零迁移，行为与从前一致）。"""
-    return dockerctl if agent.get("runtime") == "docker" else systemdctl
+    """按注册表 runtime 分派运行时模块（Runtime 协议：systemdctl/dockerctl/
+    barectl 函数形状对齐）。旧记录无该字段 → systemd（零迁移，行为与从前一致）。"""
+    rt = agent.get("runtime")
+    if rt == "docker":
+        return dockerctl
+    if rt == "bare":
+        return barectl
+    return systemdctl
 
 
 def _listen_host(agent: dict) -> str:
@@ -365,8 +370,8 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     if not mission:
         raise AgentError("mission 不能为空")
     runtime = (runtime or "").strip() or cfg.default_runtime
-    if runtime not in ("systemd", "docker"):
-        raise AgentError(f"runtime 只能是 systemd 或 docker：{runtime!r}")
+    if runtime not in ("systemd", "docker", "bare"):
+        raise AgentError(f"runtime 只能是 systemd / docker / bare：{runtime!r}")
     brain_list = _validate_brains(brain_list)
     src_ver = _resolve_source_choice((source_version or "").strip())
     # docker 前置早校验（在持锁/解压之前失败——零副作用）：
@@ -607,11 +612,11 @@ def stop(agent_id: str) -> dict:
     if rt.main_stopped(unit):
         try:
             rt.kill_signal(unit, "SIGCONT")
-        except (systemdctl.SystemdError, dockerctl.DockerError):
+        except (systemdctl.SystemdError, dockerctl.DockerError, barectl.BareError):
             pass  # 载体已不在也无妨，交给下面的幂等停止
     try:
         rt.stop(unit)
-    except (systemdctl.SystemdError, dockerctl.DockerError) as e:
+    except (systemdctl.SystemdError, dockerctl.DockerError, barectl.BareError) as e:
         # 载体已消失（曾经 stop 过）视为成功
         if rt.unit_state(unit) != "not-found":
             raise AgentError(str(e))
@@ -659,7 +664,7 @@ def restart(agent_id: str) -> dict:
         if rt.main_stopped(unit):
             try:
                 rt.kill_signal(unit, "SIGCONT")
-            except (systemdctl.SystemdError, dockerctl.DockerError):
+            except (systemdctl.SystemdError, dockerctl.DockerError, barectl.BareError):
                 pass
         rt.restart(unit)
     else:
@@ -798,7 +803,7 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
         _notify_carrier_op(agent_id, "切换", rt, unit)
         try:
             rt.stop(unit)
-        except (systemdctl.SystemdError, dockerctl.DockerError):
+        except (systemdctl.SystemdError, dockerctl.DockerError, barectl.BareError):
             pass
         if rt is dockerctl or runtime_new == "docker":
             try:
@@ -849,7 +854,7 @@ def _respawn(agent: dict) -> None:
         if rt.main_stopped(unit):
             try:
                 rt.kill_signal(unit, "SIGCONT")
-            except (systemdctl.SystemdError, dockerctl.DockerError):
+            except (systemdctl.SystemdError, dockerctl.DockerError, barectl.BareError):
                 pass
         rt.stop(unit)
     _spawn_unit(agent)

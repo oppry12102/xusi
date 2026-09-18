@@ -204,7 +204,7 @@
         <thead><tr><th>名字</th><th>地址</th><th>用户</th><th>健康</th><th style="text-align:right">操作</th></tr></thead>
         <tbody id="hosts-body"></tbody>
       </table>
-      <div class="hint" style="color:var(--sub);font-size:12px;margin-top:6px">密码不在列表显示（编辑时可见）；🔑=密钥登录 ⛓=走代理。健康 = ssh 连通体检，打开窗口自动测、每 60s 复测。</div>
+      <div class="hint" style="color:var(--sub);font-size:12px;margin-top:6px">密码不在列表显示（编辑时可见）；🔑=密钥登录 ⛓=走代理 ⚙=有隐藏字段（悬停看明细）。健康 = ssh 连通体检，打开窗口自动测、每 60s 复测。</div>
       <div class="err" id="hosts-err" hidden></div>
     </div>
   </div>
@@ -293,6 +293,7 @@
           <select id="f-runtime">
             <option value="systemd">系统进程（systemd）</option>
             <option value="docker">Docker 容器（host 网络；需内核 ≥ v2.7.38 与 docker 环境）</option>
+            <option value="bare">容器直跑（裸进程——AutoDL 等无 systemd/不可嵌套 docker 的容器机）</option>
           </select></div>
       </div>
       <div style="display:flex;gap:12px">
@@ -383,6 +384,7 @@
       <select id="e-runtime" disabled>
         <option value="systemd">系统进程（systemd）</option>
         <option value="docker">Docker 容器（host 网络）</option>
+        <option value="bare">容器直跑（裸进程）</option>
       </select></div>
     <div><label>备注（可选）</label><input id="e-note" type="text"></div>
     <div><label>大脑（首个勾选为默认；与默认同档之间按此顺序故障转移）<span class="hint" style="font-weight:400">——下次呼吸生效，不重启</span></label>
@@ -559,11 +561,15 @@ function renderHostsTable() {
   }
   hostsCache.forEach((h, i) => {
     const tr = document.createElement("tr");
-    const extras = [];
-    if (h.key) extras.push("🔑 密钥登录");
-    if (h.proxy) extras.push("⛓ 代理");
-    if (HOST_HIDDEN_FIELDS.some(k => h[k])) extras.push("⚙ 隐藏配置");
-    const tip = extras.length ? `<span class="hint" title="${esc(extras.join(" / "))}">${esc(extras[0])}</span>` : "";
+    const chips = [];
+    if (h.key) chips.push(["🔑 密钥登录", "key 已配置（机器簿内，编辑框不显示）"]);
+    if (h.proxy) chips.push(["⛓ 代理", "proxy 已配置"]);
+    const hidden = HOST_HIDDEN_FIELDS.filter(k => h[k]);
+    if (hidden.length)
+      chips.push(["⚙", `隐藏配置: ${hidden.join(", ")}（仅 hosts.toml，编辑框不显示）`]);
+    const tip = chips.length
+      ? `<span class="hint" title="${esc(chips.map(c => c[1]).join(" / "))}">${esc(chips[0][0])}</span>`
+      : "";
     tr.innerHTML = `<td>${esc(h.name)}</td>
       <td class="mono">${esc(h.host)}:${h.port || 22}</td>
       <td>${esc(h.user)}</td>
@@ -1146,7 +1152,7 @@ async function openNew() {
       ps.ports.map(p => `<option value="${p}">${p}</option>`).join("");
     // 缺省运行时预选（[manager].default_runtime；非法值由后端同样兜底 systemd）
     const drt = (vs.default_runtime || "").trim();
-    $("#f-runtime").value = drt === "docker" ? "docker" : "systemd";
+    $("#f-runtime").value = (drt === "docker" || drt === "bare") ? drt : "systemd";
   } catch (e) { $("#f-err").textContent = e.message; }
   dlgNew.showModal();
 }

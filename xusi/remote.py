@@ -474,8 +474,11 @@ def remote_agent_op(h: dict, op: str, argv: list[str], *, timeout: int = 300
 
 
 def _sudo(h: dict, cmd: str) -> str:
-    """sudo 包装：免密用 -n；有密码（清单里那份，ubuntu 默认同 sudo 密码）则
-    echo | sudo -S（先明文阶段；进程列表短暂可见，接受）。"""
+    """sudo 包装：root 直登免 sudo（AutoDL 等容器镜像无 sudo 包）；免密用 -n；
+    有密码（清单里那份，ubuntu 默认同 sudo 密码）则 echo | sudo -S（先明文
+    阶段；进程列表短暂可见，接受）。"""
+    if h.get("user") == "root":
+        return cmd
     if h.get("password"):
         return f"echo {shlex.quote(h['password'])} | sudo -S {cmd}"
     return f"sudo -n {cmd}"
@@ -522,12 +525,16 @@ def install_host(h: dict):
             out = (cp.stderr or cp.stdout).strip()[-400:]
             raise RemoteError(f"{desc} 失败：{out}")
 
-    # ① 环境检查：sudo 可用性（免密或密码同登录密码——装 python/docker 全靠它）
-    yield "环境检查：sudo…"
-    cp = run_remote(h, f"{_sudo(h, 'true')}", timeout=60)
-    if cp.returncode != 0:
-        raise RemoteError("sudo 不可用（免密或密码同登录密码都试过）——"
-                          "请先在远端配好 sudo，或把 sudo 密码写进清单 password 字段")
+    # ① 环境检查：提权可用性（root 直登免 sudo；否则免密或密码同登录密码——
+    # 装 python/docker 全靠它）
+    if h.get("user") == "root":
+        yield "环境检查：root 直登，免 sudo…"
+    else:
+        yield "环境检查：sudo…"
+        cp = run_remote(h, f"{_sudo(h, 'true')}", timeout=60)
+        if cp.returncode != 0:
+            raise RemoteError("sudo 不可用（免密或密码同登录密码都试过）——"
+                              "请先在远端配好 sudo，或把 sudo 密码写进清单 password 字段")
 
     # ② python：缺省要 3.12（deadsnakes，与主流一致可升级）；Debian 系没有
     # deadsnakes PPA（Ubuntu 专属）——python3 ≥ 3.11 即满足 tomllib 门槛，
@@ -637,18 +644,30 @@ def install_host(h: dict):
     else:
         yield "  docker compose 插件 ✓"
 
-    # ④ linger（ssh 断开会话死 → agent 单元死）
-    yield from step(_sudo(h, "loginctl enable-linger $(id -un)"), "开启用户会话常驻（linger）…",
-                     timeout=60)
+    # ④ linger（ssh 断开会话死 → agent 单元死）。无 systemd 容器机（AutoDL
+    # 等，PID1 非 systemd）跳过——systemd 运行时本来不可用；docker 运行时
+    # 不需要 linger。
+    no_sysd = run_remote(h, "ps -p 1 -o comm= | grep -q systemd",
+                         timeout=30).returncode != 0
+    if no_sysd:
+        yield "无 systemd（容器机）——跳过 linger（systemd 运行时不可用，docker 运行时不受影响）"
+    else:
+        yield from step(_sudo(h, "loginctl enable-linger $(id -un)"),
+                        "开启用户会话常驻（linger）…", timeout=60)
     # ⑤ 低端口对非 root 放开（80/443 直听，host 网络下全队生效；sysctl.d
     # 持久化重启不丢）。不靠 cap_add：--cap-add 只扩大 bounding set，非 root
-    # 进程 CapEff 仍为 0（实测无效）——特权端口直接取消（ip_unprivileged_port_start=0）
-    yield from step(_sudo(h, "sysctl -w net.ipv4.ip_unprivileged_port_start=0"),
-                    "放开非 root 低端口绑定（ip_unprivileged_port_start=0）…", timeout=60)
-    yield from step(
-        _sudo(h, "sh -c \"echo net.ipv4.ip_unprivileged_port_start=0 > "
-                 "/etc/sysctl.d/99-unprivileged-ports.conf\""),
-        "写入 /etc/sysctl.d 持久化…", timeout=60)
+    # 进程 CapEff 仍为 0（实测无效）——特权端口直接取消（ip_unprivileged_port_start=0）。
+    # 容器机无 NET_ADMIN 时 sysctl 必失败——跳过不阻塞（全队端口均 ≥1024 不受影响）。
+    cp = run_remote(h, _sudo(h, "sysctl -w net.ipv4.ip_unprivileged_port_start=0"),
+                    timeout=60)
+    if cp.returncode == 0:
+        yield "放开非 root 低端口绑定（ip_unprivileged_port_start=0）✓"
+        yield from step(
+            _sudo(h, "sh -c \"echo net.ipv4.ip_unprivileged_port_start=0 > "
+                     "/etc/sysctl.d/99-unprivileged-ports.conf\""),
+            "写入 /etc/sysctl.d 持久化…", timeout=60)
+    else:
+        yield "低端口放开失败（容器无 NET_ADMIN）——跳过；全队端口均 ≥1024 不受影响"
     yield "推送代码包（xusi/ + docs/ + versions/）…"
     _push_code(h)
     # 补建 etc/xusi.toml（零管理机原本没有——缺省运行时 + 构建期镜像源一并落，
