@@ -7,10 +7,10 @@
 
 ## 前置
 
-1. 内核版本：**xuseek-v2 ≥ v2.7.79**（管理面单一内核地板——facts.db 事实账
-   时代；入口 shim `docker-entrypoint.sh` 优先跑实例目录自己的 `xuseek.sh`，
-   是现行 compose 模板的硬前提）。旧内核创建 agent 直接 400；存量 agent
-   先走 `docs/kernel-upgrade.md` 升级。
+1. 内核版本：**xuseek-v2 ≥ v2.7.80**（管理面单一内核地板——facts.db 事实账
+   时代，上游修复版；入口 shim `docker-entrypoint.sh` 优先跑实例目录自己的
+   `xuseek.sh`，是现行 compose 模板的硬前提）。旧内核创建 agent 直接 400；
+   存量 agent 先走 `docs/kernel-upgrade.md` 升级。
 2. 本机 docker 环境：daemon + compose 插件；**管理面用户要能访问
    `/var/run/docker.sock`**（`sudo usermod -aG docker <管理面用户>` 后**重新
    登录**——组权限在会话启动时固定，只重启 xusi 服务不够）。

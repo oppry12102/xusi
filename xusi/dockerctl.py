@@ -233,7 +233,7 @@ def spawn_agent(unit: str, source_dir: str, home: str, host: str, port: int, *,
     if not (src / "docker-entrypoint.sh").is_file():
         raise DockerError(
             f"实例内核副本不含入口 shim docker-entrypoint.sh（{src}——实例目录"
-            f"被改动？）：容器运行时要求内核 ≥ v2.7.79，请从版本仓库重新解压"
+            f"被改动？）：容器运行时要求内核 ≥ v2.7.80，请从版本仓库重新解压"
             f"或重建实例")
     state = unit_state(unit)
     if state in ("active", "activating"):

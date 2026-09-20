@@ -92,8 +92,8 @@ curl -X POST http://SERVER:8601/api/agents \
   每模型一个平级条目，如 deepseek-v4-pro / glm-5.3-flash；不分级）
 - `source_version`：缺省 = 仓库最新版（解压成实例私有副本）；versions/ 是源码唯一
   事实源，仓库为空时创建报错。**内核地板**：任何版本都过单一闸门
-  ≥ 2.7.79（facts.db 事实账时代）——更低版本创建即 400（旧 jsonl 邮箱/
-  会话索引通道已退役）
+  ≥ 2.7.80（facts.db 事实账时代，上游修复版）——更低版本创建即 400（旧 jsonl
+  邮箱/会话索引通道已退役）
 - `budgets`：{max_rounds}——只认 `[limits] max_rounds`（max_seconds 已删除、
   max_context_tokens 由内核按大脑窗口自动派生）
 - `roots`（可选，≤8 条）：根智能体 `[{address, token}]`——渲染进出生 config 的
