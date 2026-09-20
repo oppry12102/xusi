@@ -28,7 +28,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import __version__
+from . import __version__, barectl
 from .config import ROOT, get_config
 
 DEPS = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "httpx[socks]>=0.27",
