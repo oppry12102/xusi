@@ -1587,30 +1587,49 @@ function mailChatHtml(o, m) {
 /* ── 呼吸总结（会话列表）与工具统计 ─────────────────── */
 
 function sessRowHtml(s) {
-  const fs = s.final_summary || "";
-  const dur = Math.round(s.elapsed_s ?? 0);
-  const durTxt = dur >= 3600 ? `${Math.floor(dur / 3600)}时${Math.round(dur % 3600 / 60)}分` :
-                 dur >= 60 ? `${Math.floor(dur / 60)}分${dur % 60}秒` : `${dur}秒`;
-  const kv = [
-    s.context_tokens != null ? `上下文 ${s.context_tokens} tok` : "",
-    s.total_tokens != null ? `累计 ${s.total_tokens} tok` : "",
-    s.requested_sleep_seconds != null ? `请求休眠 ${s.requested_sleep_seconds}s` : "",
-    s.carry_context ? "携带上下文" : "",
-  ].filter(Boolean).map(x => `<span class="chip">${esc(x)}</span>`).join("");
-  return `<details class="sessrow" data-key="${esc(s.session_id || s.id || "")}">
+  // 摘要行只画事实行字段（session_end 已瘦身：final_summary/tokens/成本/时长
+  // 全归 data/sessions/<id>.json 存档）——展开时 sessToggle 懒加载完整总结
+  const sid = s.session_id || s.id || "";
+  return `<details class="sessrow" data-key="${esc(sid)}" ontoggle="sessToggle(this)">
     <summary>
-      <span class="t" style="color:var(--sub);font-size:11.5px;font-family:var(--mono)">${fmtT(s.started_at || s.at)}</span>
+      <span class="t" style="color:var(--sub);font-size:11.5px;font-family:var(--mono)">${fmtT(s.at)}</span>
       <b>${esc(String(s.rounds ?? "?"))} 轮</b>
-      <span style="color:var(--sub)">${durTxt}</span>
-      <span>¥${(+s.total_cost_cny || 0).toFixed(2)}</span>
       <span class="chip" style="color:var(--sub)">${esc(String(s.stop_reason || "").slice(0, 24))}</span>
       <span style="margin-left:auto;color:var(--sub)">▾</span>
     </summary>
-    <div class="sessbody">
-      <div class="sesskv"><span class="chip mono">${esc(s.session_id || s.id || "")}</span>${kv}</div>
-      ${fs ? `<div class="md">${mdRender(fs)}</div>` : '<p style="color:var(--sub)">（本口呼吸没有留下总结）</p>'}
-    </div>
+    <div class="sessbody"><p class="hint" style="margin:8px 10px">展开中：读取会话存档…</p></div>
   </details>`;
+}
+
+async function sessToggle(el) {
+  // 点行展开 → 读该口呼吸的存档 result（本地/远端同构；磁盘事实，停机也能看）
+  if (!el.open || el.dataset.loaded) return;
+  el.dataset.loaded = "1";
+  const sid = el.dataset.key, body = el.querySelector(".sessbody");
+  const url = scope !== "local"
+    ? `/api/remote/agents/${cur}/sessions/${encodeURIComponent(sid)}?host=${encodeURIComponent(scope)}`
+    : `/api/agents/${cur}/sessions/${encodeURIComponent(sid)}`;
+  try {
+    const x = (await api(url)).result || {};
+    const dur = Math.round(x.elapsed_s ?? 0);
+    const durTxt = dur >= 3600 ? `${Math.floor(dur / 3600)}时${Math.round(dur % 3600 / 60)}分` :
+                   dur >= 60 ? `${Math.floor(dur / 60)}分${dur % 60}秒` : `${dur}秒`;
+    const kv = [
+      x.context_tokens != null ? `上下文 ${x.context_tokens} tok` : "",
+      x.total_tokens != null ? `累计 ${x.total_tokens} tok` : "",
+      x.requested_sleep_seconds != null ? `请求休眠 ${x.requested_sleep_seconds}s` : "",
+      x.carry_context ? "携带上下文" : "",
+      `时长 ${durTxt}`,
+      `成本 ¥${(+x.total_cost_cny || 0).toFixed(2)}`,
+    ].filter(Boolean).map(v => `<span class="chip">${esc(v)}</span>`).join("");
+    const span = (x.started_at && x.ended_at)
+      ? `<span class="chip mono">${fmtT(x.started_at)} → ${fmtT(x.ended_at)}</span>` : "";
+    const fs = x.final_summary || "";
+    body.innerHTML = `<div class="sesskv"><span class="chip mono">${esc(sid)}</span>${span}${kv}</div>` +
+      (fs ? `<div class="md">${mdRender(fs)}</div>` : '<p style="color:var(--sub)">（本口呼吸没有留下总结）</p>');
+  } catch (e) {
+    body.innerHTML = `<p style="color:var(--sub)">会话存档读取失败：${esc(e.message || e)}</p>`;
+  }
 }
 
 async function renderToolsTab(id) {

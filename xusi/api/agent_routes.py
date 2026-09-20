@@ -153,6 +153,15 @@ async def api_agent_sessions(limit: int = 30, pair: tuple = Depends(require_agen
         agentops.sessions, agent["id"], limit))
 
 
+@router.get("/api/agents/{agent_id}/sessions/{session_id}")
+async def api_agent_session_detail(session_id: str, pair: tuple = Depends(require_agent)) -> JSONResponse:
+    """单口呼吸完整总结：读 data/sessions/<id>.json 存档的 result 段（session_end
+    索引已瘦身——final_summary/tokens/成本/时长全归存档）。磁盘事实，停机也能看。"""
+    agent, _rec = pair
+    return JSONResponse(await asyncio.to_thread(
+        agentops.session_detail, agent["id"], session_id))
+
+
 @router.get("/api/agents/{agent_id}/boot")
 async def api_agent_boot(pair: tuple = Depends(require_agent)) -> JSONResponse:
     """Boot 自述：读磁盘 workspace/BOOT.md 全文（内核 /v1/status 只回

@@ -177,6 +177,7 @@ curl 'http://SERVER:8601/api/agents/{id}/mailbox?box=outbox&limit=50' \
 | `GET /api/agents/{id}/events?limit=80` | admin | 只读转发内核 `/v1/events`：`{"id","events":[...]}`。事件仅存于 agent 进程内存（环形缓冲，进程重启即清零）；limit 钳 1..500 |
 | `GET /api/agents/{id}/status` | admin | 只读转发内核 `/v1/status`（原样透传：daemon 状态 / 下次呼吸 / 工具统计） |
 | `GET /api/agents/{id}/sessions?limit=30` | admin | 会话索引：读事实账 `session_end` 行尾部（最新在前）：`{"id","sessions":[...]}`。limit 钳 1..200 |
+| `GET /api/agents/{id}/sessions/{session_id}` | admin | 单口呼吸完整总结：读存档 `data/sessions/<id>.json` 的 result 段（session_end 索引已瘦身——final_summary/tokens/成本/时长全归存档）：`{"id","session_id","result":{...}}`。磁盘事实，停机也能看；存档缺失 400 |
 | `GET /api/agents/{id}/boot` | admin | Boot 自述：读磁盘 `workspace/BOOT.md` 全文（超 64000 字符截断打 `truncated`；缺失 → `exists:false`）。agent 停机也能看 |
 | `GET /api/agents/{id}/ui-url` | admin | 观测台直连入口 `{port, token, expose, active}`——浏览器直连 agent 端口 `/ui/?token=`（不走管理面反代）；token 缺失自动签发进 `data/webui_tokens.json` |
 

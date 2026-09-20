@@ -159,6 +159,22 @@ async def api_remote_sessions(agent_id: str, host: str = Query(...),
         raise HTTPException(502, "远端输出不是 JSON（远端版本过旧？先 remote upgrade）")
 
 
+@router.get("/api/remote/agents/{agent_id}/sessions/{session_id}")
+async def api_remote_session_detail(agent_id: str, session_id: str,
+                                    host: str = Query(...),
+                                    _rec: dict = Depends(require_admin)) -> dict:
+    """单口呼吸完整总结：远端 CLI sessions <sid>（读存档 result 段——文件通道，
+    不反代；与本地 /api/agents/{id}/sessions/{sid} 同构）。"""
+    h = _host(host)
+    cp = await asyncio.to_thread(remote.remote_agent_op, h, "sessions",
+                                 [agent_id, session_id])
+    _check(cp, "会话详情")
+    try:
+        return json.loads(cp.stdout)
+    except Exception:
+        raise HTTPException(502, "远端输出不是 JSON（远端版本过旧？先 remote upgrade）")
+
+
 @router.get("/api/remote/agents/{agent_id}/events")
 async def api_remote_events(agent_id: str, host: str = Query(...),
                             limit: int = 80,

@@ -1079,6 +1079,33 @@ def sessions(agent_id: str, limit: int = 30) -> dict:
     return {"id": agent_id, "sessions": rows}
 
 
+# 会话存档文件名（内核生成 session_id）的字符级白名单：防路径注入——
+# 内核 id 形如 20260920T143126Z（[A-Za-z0-9._-] 已覆盖），坏串直接拒绝
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def session_detail(agent_id: str, session_id: str) -> dict:
+    """单口呼吸的完整总结：读 data/sessions/<id>.json 存档的 result 段
+    （session_end 索引已瘦身——final_summary/tokens/成本/时长全归存档）。
+    纯磁盘读取，agent 停机也能看；不返回 messages（体积大且详情页只画总结）。
+
+    存档缺失（大脑清理过/会话中途崩溃未及落盘）→ AgentError 可读文案。"""
+    agent = get_agent_or_404(agent_id)
+    sid = str(session_id or "").strip()
+    if not _SESSION_ID_RE.match(sid):
+        raise AgentError(f"非法 session_id：{session_id!r}")
+    p = _home(agent) / "data" / "sessions" / f"{sid}.json"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise AgentError(f"会话存档不存在：{sid}（可能已被大脑清理）")
+    except (ValueError, UnicodeDecodeError):
+        raise AgentError(f"会话存档损坏（不是合法 JSON）：{sid}")
+    if not isinstance(data, dict) or not isinstance(data.get("result"), dict):
+        raise AgentError(f"会话存档结构异常（缺 result 段）：{sid}")
+    return {"id": agent_id, "session_id": sid, "result": data["result"]}
+
+
 _BOOT_CAP = 64_000   # Boot tab 展示封顶（超出截断打标；内核注入硬截 32k，展示墙放宽一档）
 
 

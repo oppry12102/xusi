@@ -633,10 +633,14 @@ def cmd_mailbox(args) -> int:
 
 def cmd_sessions(args) -> int:
     """会话索引：读事实账 session_end 行尾部 N 条（agent 停机也能看）。
+    带 session_id 位置参数 = 单口呼吸完整总结（读存档 result 段）。
     JSON 输出固定（remote 透传解析用）。"""
     from . import agentops
     try:
-        r = agentops.sessions(args.agent_id, limit=args.limit)
+        if getattr(args, "session_id", None):
+            r = agentops.session_detail(args.agent_id, args.session_id)
+        else:
+            r = agentops.sessions(args.agent_id, limit=args.limit)
     except agentops.AgentError as e:
         return _cli_agent_error(e)
     print(json.dumps(r, ensure_ascii=False, indent=2))
@@ -1104,8 +1108,9 @@ def main() -> int:
                      help="outbox=来信 / inbox=投信历史")
     mb_.set_defaults(fn=cmd_mailbox)
 
-    ss_ = sub.add_parser("sessions", help="读 agent 会话索引（事实账 session_end 行）")
+    ss_ = sub.add_parser("sessions", help="读 agent 会话索引（事实账 session_end 行；带 session_id = 单口完整总结）")
     ss_.add_argument("agent_id")
+    ss_.add_argument("session_id", nargs="?", default="", help="可选：单口呼吸 id → 读存档 result 段")
     ss_.add_argument("--limit", type=int, default=30)
     ss_.set_defaults(fn=cmd_sessions)
 
