@@ -1,9 +1,10 @@
 # xusi 管理面 API（v2）
 
-> 与 agent 的唯一**写**通道是**管理邮箱**：投信（追加 `mailbox.jsonl`）与收信
-> （读 `outbox.jsonl`）。只读观察收窄为两条（详情页用）：HTTP GET
+> 与 agent 的唯一**写**通道是**管理邮箱**（内核 v2.7.79 起信箱即事实账）：
+> 投信（向 `data/facts.db` 追加 mail 行）与收信（读同账本的 outbox 行）。
+> 只读观察收窄为两条（详情页用）：HTTP GET
 > `/v1/events`、`/v1/status`（观察 token 缺失时 xusi 自动签发一枚写进
-> `data/webui_tokens.json`），会话索引读磁盘 `sessions.jsonl`。
+> `data/webui_tokens.json`），会话索引读事实账 session_end 行。
 > 本 API 只做管理面自己的事：agent 簿记、进程生命周期、邮箱、
 > 备份、只读观察。**彻底本地化管理**——互联由 xuseek 内核自己完成
 > （根智能体 + `[[roots]]` 出生交割，见内核 docs/interconnect.md），xusi 不参与。
@@ -90,24 +91,24 @@ curl -X POST http://SERVER:8601/api/agents \
   必须都在密钥池且已配 key。池条目 = 模型名（厂商段 `models = [...]` 展开为
   每模型一个平级条目，如 deepseek-v4-pro / glm-5.3-flash；不分级）
 - `source_version`：缺省 = 仓库最新版（解压成实例私有副本）；versions/ 是源码唯一
-  事实源，仓库为空时创建报错
-- `budgets`：{max_rounds}——v2.7.5+ 内核只认 `[limits] max_rounds`（max_seconds
-  已删除、max_context_tokens 由内核按大脑窗口自动派生）；更早内核认 `[agent]`
-  三段。渲染格式随 `source_version` 自动分叉
+  事实源，仓库为空时创建报错。**内核地板**：任何版本都过单一闸门
+  ≥ 2.7.79（facts.db 事实账时代）——更低版本创建即 400（旧 jsonl 邮箱/
+  会话索引通道已退役）
+- `budgets`：{max_rounds}——只认 `[limits] max_rounds`（max_seconds 已删除、
+  max_context_tokens 由内核按大脑窗口自动派生）
 - `roots`（可选，≤8 条）：根智能体 `[{address, token}]`——渲染进出生 config 的
   `[[roots]]` 段（每个条目一个数组表），内核首次启动一次性交割到
   `workspace/playbook/根智能体.json`（此后死键）。address/token 须齐备；
-  token 可写 `env:变量名`。**仅 v2.7.12+ 内核支持**——选了旧版内核时创建报错
-  （400）；创建后接入走投信（见内核 docs/interconnect.md）。WebUI 创建对话框
-  默认预填 `etc/xusi.toml` 的 `[[default_roots]]`（`GET /api/default-roots`，
-  可删改）
+  token 可写 `env:变量名`。创建后接入走投信（见内核 docs/interconnect.md）。
+  WebUI 创建对话框默认预填 `etc/xusi.toml` 的 `[[default_roots]]`
+  （`GET /api/default-roots`，可删改）
 - `extra_config`（可选，≤8000 字符）：管理员自由 TOML **原样追加**到出生 config
-  末尾（`[capabilities]` 等内核可选段或未来新段）。落盘前整体 tomllib 校验，
+  末尾（`[amem]` 等内核可选段或未来新段）。落盘前整体 tomllib 校验，
   写坏直接拒绝创建（400）——xusi 不必追踪内核每个新配置段
 - `runtime`（可选）：`systemd`（默认，系统进程）或 `docker`（容器，host 网络）。
-  缺省取 `[manager].default_runtime`。docker 要求内核 ≥ v2.7.38（入口 shim）与
-  本机 docker 环境（daemon + compose 插件、管理面用户入 docker 组），不满足
-  创建即 400。创建后可切换（见改参）
+  缺省取 `[manager].default_runtime`。docker 要求本机 docker 环境
+  （daemon + compose 插件、管理面用户入 docker 组），不满足创建即 400。
+  创建后可切换（见改参）
 - 创建时 xusi 渲染一次 `config.toml`（出生配置：mission/brains/api_key/budgets/
   instance_id/roots/extra_config，chmod 600），**此后 xusi 不再改写该文件**
   （唯一例外：改参按密钥池手术式重渲染 [brain] + [brains.*] 段，见下）。
@@ -153,7 +154,8 @@ curl -X POST http://SERVER:8601/api/agents/{id}/mail \
      -d '{"text":"汇报一下现在的进展"}'
 ```
 
-- 追加 `<home>/data/mailbox.jsonl`（sender=admin，双写 mailbox_log.jsonl 保历史）
+- 向事实账（`data/facts.db`）追加 mail 行（sender=admin，与内核 post() 同语义）；
+  账本只增不减，投信历史即 mail 行本身（旧的 mailbox_log 双写随 jsonl 邮箱退役）
 - daemon 每 5s 轮询，休眠中有信立即唤醒；会话中下一口呼吸收信
 - 改 mission / 调预算 / 让它接入互联（给根地址与 token）——都走这里（换大脑用改参 PATCH，直路且立即反馈）
 
@@ -164,9 +166,9 @@ curl 'http://SERVER:8601/api/agents/{id}/mailbox?box=outbox&limit=50' \
      -H "Authorization: Bearer <admin token>"
 ```
 
-- `box=outbox`：来信（agent 的 `send_mail` 写，sender=brain）
-- `box=inbox`：投信历史（mailbox_log.jsonl）
-- 返回 `{"id", "box", "messages": [{"id","sender","text","at"}, ...]}`
+- `box=outbox`：来信（agent 的 `send_mail` 写 outbox 行，sender=brain）
+- `box=inbox`：投信历史（事实账 mail 行）
+- 返回 `{"id", "box", "messages": [{"n","at","type","sender","text"}, ...]}`
 
 ## 4. 只读观察与会话（详情页事件流 / 工具统计 / 会话）
 
@@ -174,7 +176,7 @@ curl 'http://SERVER:8601/api/agents/{id}/mailbox?box=outbox&limit=50' \
 |---|---|---|
 | `GET /api/agents/{id}/events?limit=80` | admin | 只读转发内核 `/v1/events`：`{"id","events":[...]}`。事件仅存于 agent 进程内存（环形缓冲，进程重启即清零）；limit 钳 1..500 |
 | `GET /api/agents/{id}/status` | admin | 只读转发内核 `/v1/status`（原样透传：daemon 状态 / 下次呼吸 / 工具统计） |
-| `GET /api/agents/{id}/sessions?limit=30` | admin | 会话索引：读磁盘 `data/sessions.jsonl` 尾部（最新在前）：`{"id","sessions":[...]}`。limit 钳 1..200 |
+| `GET /api/agents/{id}/sessions?limit=30` | admin | 会话索引：读事实账 `session_end` 行尾部（最新在前）：`{"id","sessions":[...]}`。limit 钳 1..200 |
 | `GET /api/agents/{id}/boot` | admin | Boot 自述：读磁盘 `workspace/BOOT.md` 全文（超 64000 字符截断打 `truncated`；缺失 → `exists:false`）。agent 停机也能看 |
 | `GET /api/agents/{id}/ui-url` | admin | 观测台直连入口 `{port, token, expose, active}`——浏览器直连 agent 端口 `/ui/?token=`（不走管理面反代）；token 缺失自动签发进 `data/webui_tokens.json` |
 

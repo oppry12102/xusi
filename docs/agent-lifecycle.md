@@ -76,9 +76,10 @@ v2.7.38 启动器已带指引报错（`sudo rm -rf … 或在容器内删除后�
 | amem 引擎工件坏 | 带指引 RuntimeError（不裸炸不静默回落） | v2.7.37 ⑧ |
 | 安装失败（断网） | exit 1 → 容器崩溃循环自愈重试（restart: unless-stopped） | 幂等，来网即愈 |
 
-**监控证据面**：容器 healthcheck（/v1/health）判活性；`data/doorbell_log.jsonl`（全史）
-与 `data/sessions.jsonl` 判行为。坑：**会话文件只在会话结束时落盘**——判断「醒没醒/在不在
-干活」别只看 sessions 文件，配合 daemon 日志（`docker compose logs`）。
+**监控证据面**：容器 healthcheck（/v1/health）判活性；事实账 `data/facts.db`
+（bell/session_end 行，v2.7.79 起 jsonl 通道退役）判行为。坑：**会话行只在会话
+结束时落账**——判断「醒没醒/在不在干活」别只看会话索引，配合 daemon 日志
+（`docker compose logs`）与 breath.json 脉搏（呼吸面看门狗的判据）。
 
 ## 5. 组网（可选，实测全通）
 

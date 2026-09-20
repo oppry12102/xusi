@@ -311,7 +311,7 @@
         <div style="flex:1"><label>运行时（创建后可切换：停止 → 改参 → 启动）</label>
           <select id="f-runtime">
             <option value="systemd">系统进程（systemd）</option>
-            <option value="docker">Docker 容器（host 网络；需内核 ≥ v2.7.38 与 docker 环境）</option>
+            <option value="docker">Docker 容器（host 网络；需本机 docker 环境）</option>
             <option value="bare">容器直跑（裸进程——AutoDL 等无 systemd/不可嵌套 docker 的容器机）</option>
           </select></div>
       </div>
@@ -331,8 +331,7 @@
         <button type="button" id="f-root-add" class="mini">＋ 加一个根</button>
         <div class="hint" style="color:var(--sub);font-size:12px;margin-top:4px">
           首次启动一次性交割进 workspace/playbook/根智能体.json（此后死键）；address 与 token 都填才生效，
-          token 可写 env:变量名。缺省根（etc/xusi.toml 的 [[default_roots]]）自动预填、可删改；
-          仅 v2.7.12+ 内核支持——选了旧版内核时创建会报错。
+          token 可写 env:变量名。缺省根（etc/xusi.toml 的 [[default_roots]]）自动预填、可删改。
         </div>
       </div>
       <div><label>备注（可选）</label><input id="f-note" type="text"></div>
@@ -1480,12 +1479,12 @@ async function loadDetail() {
       setPane(eventsHtml(r.events || []));
     } else if (curTab === "会话") {
       if (scope !== "local") {
-        // 远端会话 = ssh tail 读磁盘 sessions.jsonl（文件通道，不反代）；
-        // tail 是时间正序，倒过来最新在前（与本地一致）
+        // 远端会话 = 远端 CLI sessions（事实账 session_end 行——文件通道，不反代）；
+        // API 已返回最新在前（与本地同构），无需再倒序
         const r = await api(`/api/remote/agents/${id}/sessions?limit=30&host=${encodeURIComponent(scope)}`);
         if (id !== cur) return;
         const ss = r.sessions || [];
-        setPane(ss.slice().reverse().map(s => sessRowHtml(s)).join("") || "<p>（还没有完成的呼吸）</p>");
+        setPane(ss.map(s => sessRowHtml(s)).join("") || "<p>（还没有完成的呼吸）</p>");
         return;
       }
       // 每口呼吸一条：点行展开完整总结（final_summary，markdown 渲染）

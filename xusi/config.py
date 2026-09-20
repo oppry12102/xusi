@@ -62,8 +62,8 @@ class XusiConfig:
 
     # —— 双运行时 ——
     default_runtime: str = "systemd"  # 新建 agent 的缺省运行时：systemd（系统进程）
-                                 # 或 docker（容器，host 网络；需内核 ≥ v2.7.38 与
-                                 # docker 环境）。创建对话框预选此值，可逐次覆盖。
+                                 # 或 docker（容器，host 网络；需本机 docker 环境）。
+                                 # 创建对话框预选此值，可逐次覆盖。
                                  # 缺省 systemd 与全量文档一致；要整机缺省容器，
                                  # 在 etc/xusi.toml 显式写 default_runtime = "docker"。
     docker_pip_index: str | None = None  # docker 镜像构建/运行时的 PyPI 镜像：
@@ -72,12 +72,19 @@ class XusiConfig:
                                  # 不影响镜像可移植）。三态：键缺失 = 国内腾讯默认
                                  # （大陆机器开箱即用）；"" = 显式关闭走
                                  # deb.debian.org（海外机器）；非空 = 指定镜像主机。
-    docker_extras: str = ""        # 可选：能力包名（如 amem），构建期烘培其重依赖进镜像。
+    docker_extras: str = ""        # 可选：非空 = 构建期把 amem 重依赖烘培进镜像兜底 venv
+                                 # （内核 v2.7.79 起 XUSEEK_EXTRAS 语义：正常路径仍由
+                                 # 大脑/管理员按 playbook/依赖安装.md 自装进实例 .venv）。
     docker_user: str = ""          # 容器运行用户 "<uid>:<gid>"。缺省 = 管理面进程的
                                  # uid:gid（容器内大脑与管理面同用户，能力与 systemd
                                  # 模式对齐，/data 落盘属主一致）。显式设 "0:0" =
                                  # 容器内 root（大脑近似宿主 root——对应隔离讨论的
                                  # root 档，谨慎使用）。
+    stall_s: int = 1800            # 呼吸面看门狗阈值（秒；0 = 关）：docker = 入口 shim
+                                 # 起 stall_watch 常驻眼睛（XUSEEK_STALL_S env）；
+                                 # systemd = 每 5 分钟瞬态 timer 跑内核 stall_check.py，
+                                 # 停滞即重启单元（借 Restart=always 起死回生）。
+                                 # 阈值须 ≥ 最慢脑 read 上限 + 600（内核口径，默认 1800）。
 
     # —— 派生路径 ——
     @property
@@ -158,6 +165,14 @@ def load_config() -> XusiConfig:
         cfg.docker_extras = str(mgr["docker_extras"]).strip()
     if "docker_user" in mgr:
         cfg.docker_user = str(mgr["docker_user"]).strip()
+    if "stall_s" in mgr:
+        try:
+            v = int(mgr["stall_s"])
+            cfg.stall_s = v if v >= 0 else cfg.stall_s
+            if v < 0:
+                print(f"警告：stall_s 非法值 {mgr['stall_s']!r}（应为 ≥0 的秒数，0=关），回退 {cfg.stall_s}")
+        except (TypeError, ValueError):
+            print(f"警告：stall_s 非法值 {mgr['stall_s']!r}（应为 ≥0 的秒数，0=关），回退 {cfg.stall_s}")
     if not cfg.docker_user:
         # 缺省 = 管理面用户的 uid + 主组 gid（容器内大脑与管理面同用户——
         # /data 落盘属主一致，投信/观察台 token 签发等管理面写入不受 root

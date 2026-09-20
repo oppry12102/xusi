@@ -147,14 +147,16 @@ async def api_remote_mailbox(agent_id: str, host: str = Query(...),
 async def api_remote_sessions(agent_id: str, host: str = Query(...),
                               limit: int = 30,
                               _rec: dict = Depends(require_admin)) -> dict:
-    """会话索引：ssh tail 读远端磁盘 sessions.jsonl——文件通道，不反代。"""
+    """会话索引：远端 CLI sessions --json（事实账 session_end 行——文件通道，
+    不反代）。"""
     h = _host(host)
+    cp = await asyncio.to_thread(remote.remote_agent_op, h, "sessions",
+                                 [agent_id, "--limit", str(limit)])
+    _check(cp, "会话索引")
     try:
-        rows = await asyncio.to_thread(remote.read_remote_file, h, agent_id,
-                                       "data/sessions.jsonl", limit=limit)
-    except remote.RemoteError as e:
-        raise HTTPException(400, str(e))
-    return {"id": agent_id, "sessions": rows}
+        return json.loads(cp.stdout)
+    except Exception:
+        raise HTTPException(502, "远端输出不是 JSON（远端版本过旧？先 remote upgrade）")
 
 
 @router.get("/api/remote/agents/{agent_id}/events")

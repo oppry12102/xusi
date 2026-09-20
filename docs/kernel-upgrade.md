@@ -3,17 +3,12 @@
 > 沉淀自 2026-08-28 三连升级实验（v2.5.2 → v2.5.3 → v2.5.4 → v2.5.5：
 > agent-0e50 两轮升级 + 4 个一次性验证 agent 建删全流程）。
 > API 层「source_version 创建后不可改」约束的是**创建流程**；存量升级是目录级
-> 操作，本文是标准做法。前置：管理面代码 ≥ `ca56645`（分档语义与内核 v2.5.5
-> 对齐：未标注 tier 视同 power）。
-> **当前目标版本：v2.7.41（2026-09-12 投放）**。v2.5.x → v2.7.x 是
-> 同一套目录级流程；运行时依赖零变化（pyproject 只差版本号行），坑④的 .venv
-> 平移结论不变。v2.7.38 起容器入口 shim 优先跑实例目录自己的 `xuseek.sh`，
-> `.venv` 随实例目录落**真目录**（两种运行时同一条路径，见 §8 与
-> `docs/agent-lifecycle.md`）。
-> v2.7.5 清理了 `[agent]` 预算段（见 §5）——升级后存量 config.toml 里的该段是
-> 死配置，投信让 agent 清掉即可。v2.7.12 起**互联由内核自己完成**（根智能体 +
-> `[[roots]]` 出生交割，见 §5）；存量 agent 升级后 config 里没有 `[[roots]]`
-> 也照常启动，只是暂不接入互联。
+> 操作，本文是标准做法。
+> **当前目标版本：v2.7.79（2026-09-20 投放，facts.db 事实账时代）**。
+> 升级流程同 §1；v2.7.79 的语义变化见 §5 末节——**注意：管理面（xusi）与
+> 内核须同批升级**（xusi v2.6.0 起投信/收信/会话索引全部走 facts.db，
+> 旧 jsonl 通道已退役：旧内核 + 新 xusi 或新内核 + 旧 xusi 的邮箱会静默
+> 断开）。升级顺序：先升管理面（本仓代码），再按 §7 批量升 agent。
 
 ## 0. 前置条件（顺序重要）
 
@@ -150,6 +145,31 @@ agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier =
 - 管理面已同步（xusi ≥ 本提交）：创建渲染按所选内核版本分叉——≥2.7.5 写
   `[limits] max_rounds`（budgets 里的 max_seconds/max_context_tokens 渲染时
   忽略并在配置里留注释），更早版本仍写 `[agent]` 三段。
+
+### 内核 v2.7.79（2026-09-20）：facts.db 事实账时代（管理面 v2.6.0 同步收敛）
+
+- **事实账取代 jsonl**：mail/outbox/会话索引全部落 `data/facts.db`（SQLite
+  WAL，行号=rowid，只增不减）——`mailbox.jsonl`/`outbox.jsonl`/
+  `sessions.jsonl`/`offsets.json` 全部退役。管理面投信/收信/会话列表走同一
+  账本；升级后旧 jsonl 文件留在 data/ 里是死数据，可让 agent 清掉。
+- **呼吸面看门狗**：`[limits] session_stall_s` 键退役——判活的眼睛长在壳里
+  （docker：入口 shim 的 stall_watch，`XUSEEK_STALL_S` env；systemd：管理面
+  每 5 分钟瞬态 timer 跑内核 stall_check.py，停滞即重启单元）。升级后 config
+  残留该键会 stderr 大声提醒，投信让 agent 删掉。
+- **`[capabilities]` 段退役**：amem 资产（packs/amem）无条件播种、重依赖
+  归大脑/管理员自装（配方 playbook/依赖安装.md）；`[retention]` 段退役
+  （会话存档不代删，超软阈值只记 sessions_over_cap 事实）。
+- **升级后投信模板**（让 agent 自己清理死配置）：
+
+```python
+from xusi import agentops
+agentops.mail(AID, "内核已升级至 v2.7.79：① 请删除 config.toml 里的 "
+                   "[limits] session_stall_s、[retention]、[capabilities] 段"
+                   "（均已退役，留着只会收到启动提醒）；② data/ 下旧的 "
+                   "mailbox.jsonl / mailbox_log.jsonl / outbox.jsonl / "
+                   "sessions.jsonl 是退役通道的死数据，信箱与会话索引现在都在 "
+                   "data/facts.db 里，确认无误后可自行清理。")
+```
 
 ### 内核 v2.7.39–v2.7.41（2026-09-12）
 

@@ -7,16 +7,23 @@
 
 ## 前置
 
-1. 内核版本：**xuseek-v2 ≥ v2.7.38**（入口 shim `docker-entrypoint.sh` 自该
-   版本起才有——shim 优先跑实例目录自己的 `xuseek.sh`，是现行 compose 模板的
-   硬前提；旧内核镜像直跑 `/app` 副本会静默跑旧代码）。旧内核创建 docker
-   agent 直接 400；存量 agent 先走 `docs/kernel-upgrade.md` 升级。
+1. 内核版本：**xuseek-v2 ≥ v2.7.79**（管理面单一内核地板——facts.db 事实账
+   时代；入口 shim `docker-entrypoint.sh` 优先跑实例目录自己的 `xuseek.sh`，
+   是现行 compose 模板的硬前提）。旧内核创建 agent 直接 400；存量 agent
+   先走 `docs/kernel-upgrade.md` 升级。
 2. 本机 docker 环境：daemon + compose 插件；**管理面用户要能访问
    `/var/run/docker.sock`**（`sudo usermod -aG docker <管理面用户>` 后**重新
    登录**——组权限在会话启动时固定，只重启 xusi 服务不够）。
    `xusi doctor` 有对应检查；创建/切换时同样前置校验，失败给可行动提示。
 3. 网络：仅 **host 网络**（Linux 服务器主路径）——容器直接绑宿主机真实端口，
    与端口段 1:1 分配零差异；大脑自起的服务直连局域网。bridge 备选不在首版。
+
+**呼吸面看门狗**（两层眼睛各管各的死法）：进程面由 healthcheck 管
+（`/v1/health` 探活）；呼吸面由入口 shim 起的 stall_watch 常驻眼睛管——
+stat `data/breath.json` mtime 超阈（`XUSEEK_STALL_S`，缺省渲染
+`[manager] stall_s` = 1800；设 0 不渲染 = 关闭）kill 1 借
+`restart: unless-stopped` 重启，线程级挂死也看得见（睡眠/驻留无脉搏，
+不会被误杀）。阈值须 ≥ 最慢脑 read 上限 + 600（内核口径，配慢脑记得抬）。
 
 ## 目录布局
 
@@ -37,7 +44,7 @@ instances/
 - **容器运行用户 = 管理面用户**（compose 的 `user:` 行，缺省取管理面进程的
   uid + 主组 gid；`[manager].docker_user` 可改）。内核模板默认 root，但 root
   写进 `/data` 的文件宿主属主是 root——管理面（普通用户）就写不了
-  mailbox.jsonl / webui_tokens.json（投信与观察台 token 签发直接断）。
+  facts.db / webui_tokens.json（投信与观察台 token 签发直接断）。
   钉成管理面用户后：容器内大脑的能力与 systemd 模式**完全对齐**（同 uid，
   含可改自己那份内核代码），落盘文件属主一致。显式设 `"0:0"` 即恢复
   容器内 root（大脑近似宿主 root——对应隔离讨论的 root 档，谨慎使用）。
@@ -109,11 +116,16 @@ rename → 改注册表 `source_version` → spawn。**镜像不动**（launcher
 - **构建失败**：输出尾部在错误信息里（含 selftest 失败点）；create 会全量
   回滚，start/reconcile 可重试。构建参数镜像源在 `etc/xusi.toml` 的
   `[manager]` 段（`docker_pip_index` / `docker_apt_mirror` / `docker_extras`）。
-- **大陆机器新装 docker 的两个源坑**：① `docker pull` 基础镜像走 Docker Hub
+- **大陆机器新装 docker 的源坑**：① `docker pull` 基础镜像走 Docker Hub
   慢/不通——这是 daemon 级配置，xusi 代码管不到：`/etc/docker/daemon.json`
   配 `registry-mirrors` 后 `sudo systemctl restart docker`；② apt/pip 源由
   xusi 渲染进构建，缺省即国内镜像（apt 腾讯 / pip 清华），无需任何配置——
-  海外机器显式设空串 `docker_apt_mirror = ""`、`docker_pip_index = ""` 关闭。
+  海外机器显式设空串 `docker_apt_mirror = ""`、`docker_pip_index = ""` 关闭；
+  ③ **uv 镜像预拉**（ghcr.io 在大陆网络极慢/不通，Dockerfile 的
+  `COPY --from=ghcr.io/astral-sh/uv:latest` 会卡死在拉取层——2026-09-20
+  实测 45 分钟未完成）：
+  `docker pull ghcr.nju.edu.cn/astral-sh/uv:latest && docker tag ghcr.nju.edu.cn/astral-sh/uv:latest ghcr.io/astral-sh/uv:latest`
+  ——本地有这个 tag 后构建直接跳过拉取。每台 docker 机器首次构建前预拉一次即可。
 - **healthcheck unhealthy ≠ 停止**：host 网络下 healthcheck 打的是宿主机
   回环 `/v1/health`；暂停（SIGSTOP）期间它会失败但只标记 unhealthy，
   不会触发重启。

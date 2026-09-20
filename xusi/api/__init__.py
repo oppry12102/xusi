@@ -4,7 +4,8 @@
   /api/*        管理 API（管理面 token：Bearer 或 ?mtoken=）
   /             WebUI；/docs Swagger；/api/docs.md 中文文档
 
-与 agent 的唯一写接口是管理邮箱（投信 mailbox.jsonl / 读 outbox.jsonl）；
+与 agent 的唯一写接口是管理邮箱（内核 v2.7.79 起信箱即事实账：投信 =
+向 data/facts.db 追加 mail 行，收信 = 读同账本 outbox 行）；
 观察收窄为只读两条 HTTP GET
 （/v1/events、/v1/status，详情页事件流/工具统计/会话 banner；观察 token
 缺失时自动签发一枚写 data/webui_tokens.json）。本应用不反代、不调 xuseek CLI。
@@ -15,7 +16,7 @@
 - auth.py        鉴权依赖（require_auth / require_admin / require_agent）
 - models.py      Pydantic 请求/响应模型
 - meta_routes.py    /api/health, /api/whoami, /api/node, /api/brains, /api/versions, /api/ports, /, /api/docs.md
-- agent_routes.py   /api/agents/* CRUD + 生命周期 + 投信 + 收信 + 日志 + 只读观察（events/status）+ 会话（sessions，磁盘）
+- agent_routes.py   /api/agents/* CRUD + 生命周期 + 投信 + 收信 + 日志 + 只读观察（events/status）+ 会话（sessions，事实账）
 - files_routes.py   /api/agents/{id}/fs*（实例目录文件通道：upload/ 可写 ·
   workspace/ 只读——详情页「文件」tab；实现与校验在 files.py 三层共用）
 - backup_routes.py  /api/agents/{id}/backup, /api/agents/{id}/backups, /api/backups/*, /api/restore

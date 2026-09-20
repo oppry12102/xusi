@@ -19,11 +19,10 @@ from pathlib import Path
 from typing import Any
 
 from .config import get_config
-from .versions import at_least
 
 # 渲染进 agent config.toml 时允许透传的可选字段（v2 config 认识的）
 _OPTIONAL_FIELDS = ("temperature", "timeout", "tier", "price_prompt", "price_completion",
-                    "context_window")
+                    "context_window", "no_think_dialect")
 
 # 老名 → 新名（池条目改名的一次性别名）：厂商段展开为多模型平级条目后，
 # 老段名（deepseek/glm）在池里查无此人——校验时自动升级并落快照，
@@ -32,12 +31,6 @@ _LEGACY_ALIASES = {
     "deepseek": "deepseek-v4-flash",   # 原 [brains.deepseek] model = deepseek-v4-flash
     "glm": "glm-5.3",                  # 原 [brains.glm] model = glm-5.2 → 平级新大脑
 }
-
-# 内核 v2.7.5 起清理了 [agent] 预算段：max_seconds 删除、max_context_tokens
-# 改为自动派生（同档可用脑最小窗口 − 8k，现场活算）；可配置限额只剩
-# [limits] max_rounds。更早内核仍认 [agent] 三段——出生配置按所选内核
-# 版本渲染，写错段 = 限额静默失效（旧核不认 [limits]，新核不认 [agent]）。
-_LIMITS_STYLE_SINCE = "2.7.5"
 
 
 def _load_pool() -> dict[str, dict]:
@@ -219,7 +212,6 @@ def render_brain_section(chosen: list[str]) -> list[str]:
 
 def render_agent_config(mission: str, brains: list[str], budgets: dict | None = None,
                         display_timezone: str | None = None,
-                        source_version: str = "",
                         instance_id: str = "",
                         roots: list | None = None,
                         extra_config: str = "") -> str:
@@ -229,20 +221,15 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     首选脑与故障转移分档的锚点。
 
     预算只透传管理员的显式 budgets（0 = 不限）；不做推导——会话预算的
-    缺省推导（同档最小窗口 − 8k）是内核自己的事务（xuseek 现场活算、显式
+    缺省推导（同档可用脑最小窗口 − 8k）是内核自己的事务（xuseek 现场活算、显式
     值优先、热重载即时生效），管理面不替它做决策，也不烙过期快照。
+    限额段恒为 [limits] max_rounds（内核地板起 [agent] 三段已删除，
+    max_seconds/max_context_tokens 收到也渲染不进配置）。
 
-    预算段的格式随 source_version（创建时选定的内核版本）走：
-    - ≥2.7.5：[limits] 段只写 max_rounds——内核已删 max_seconds、
-      max_context_tokens 改自动派生，这两个键收到也渲染不进配置；
-    - 更早版本：[agent] 段写 max_rounds / max_seconds / max_context_tokens。
-    出生配置必须匹配内核认识的 schema（写错段 = 限额静默失效）。
+    roots（可选）：渲染 [[roots]] 数组表——根智能体出生交割键，首次启动
+    预检时一次性交割到 workspace/playbook/根智能体.json，交割后即死键。
 
-    roots（可选，v2.7.12+ 内核）：渲染 [[roots]] 数组表——根智能体出生
-    交割键，首次启动预检时一次性交割到 workspace/playbook/根智能体.json，
-    交割后即死键（版本门槛校验在 agentops._validate_roots）。
-
-    extra_config（可选）：管理员手写的自由 TOML（[capabilities] 等内核可选段
+    extra_config（可选）：管理员手写的自由 TOML（[amem] 等内核可选段
     或未来新段）原样追加到文件末尾——xusi 不必追踪内核每个新配置段。
     落盘前整体 tomllib 校验：渲染产物必须是合法 TOML（坏段直接拒绝创建）。"""
     pool = _load_pool()
@@ -277,30 +264,22 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
             "",
         ]
     lines.extend(render_brain_section(chosen))
-    # 预算段：格式随内核版本（schema 不匹配 = 限额静默失效，见模块头常量）。
-    # 两个分支都只写管理员显式给的键（0 = 不限），不做推导；缺省不写段，
-    # 由内核按自身默认（v2.7.5 按大脑窗口自动派生）处理。
+    # 预算段：只写管理员显式给的键（0 = 不限），不做推导；缺省不写段，
+    # 由内核按自身默认（按大脑窗口自动派生）处理。
     if b:
-        if at_least(source_version, _LIMITS_STYLE_SINCE):
-            lines.append("# 探索回路安全网（v2.7.5+：可配置限额只剩 max_rounds，0 = 不限；")
-            lines.append("# max_context_tokens 由内核按大脑窗口自动派生，max_seconds 已移除；")
-            lines.append("# 热重载即时生效）")
-            lines.append("[limits]")
-            for k in ("max_rounds",):
-                if k in b:
-                    lines.append(f"{k} = {int(b[k])}")
-            dropped = [k for k in ("max_seconds", "max_context_tokens") if k in b]
-            if dropped:
-                lines.append(f"# 这些键已由内核接管/移除，渲染时忽略：{', '.join(dropped)}")
-        else:
-            lines.append("# 探索回路安全网（旧内核 [agent] 段：显式键优先，0 = 不限；热重载即时生效）")
-            lines.append("[agent]")
-            for k in ("max_rounds", "max_seconds", "max_context_tokens"):
-                if k in b:
-                    lines.append(f"{k} = {int(b[k])}")
+        lines.append("# 探索回路安全网：可配置限额只剩 max_rounds（0 = 不限）；")
+        lines.append("# max_context_tokens 由内核按大脑窗口自动派生，max_seconds 已移除；")
+        lines.append("# 热重载即时生效）")
+        lines.append("[limits]")
+        for k in ("max_rounds",):
+            if k in b:
+                lines.append(f"{k} = {int(b[k])}")
+        dropped = [k for k in ("max_seconds", "max_context_tokens") if k in b]
+        if dropped:
+            lines.append(f"# 这些键已由内核接管/移除，渲染时忽略：{', '.join(dropped)}")
         lines.append("")
-    # [[roots]]（可选）：根智能体出生交割段（v2.7.12+ 内核认识；版本门槛
-    # 由 agentops._validate_roots 把关，此处只负责渲染）
+    # [[roots]]（可选）：根智能体出生交割段（内核地板起恒支持；
+    # 条目形状由 agentops._validate_roots 把关，此处只负责渲染）
     lines.extend(_render_roots(roots))
     # 附加配置（可选）：管理员自由 TOML 原样追加（逃生舱，见模块 docstring）
     extra = (extra_config or "").strip()
@@ -337,19 +316,17 @@ def _render_roots(roots: list | None) -> list[str]:
 
 def write_agent_config(home: Path, mission: str, brains: list[str],
                        budgets: dict | None = None,
-                       source_version: str = "",
                        instance_id: str = "",
                        roots: list | None = None,
                        extra_config: str = "") -> Path:
     """渲染并写入 <home>/config.toml（chmod 600，含 api_key）。
 
     只在创建时调用——出生配置，首写即终写；此后该文件归 agent 自治，
-    xusi 不再读回、不再重渲染。source_version = 内核版本（预算段格式
-    随它走，见 render_agent_config）；instance_id = 终身 id（出生时
-    交割给实例，此后它自带身份迁移，注册表只是缓存）。
+    xusi 不再读回、不再重渲染。instance_id = 终身 id（出生时交割给实例，
+    此后它自带身份迁移，注册表只是缓存——内核无 id 机制，此键是管理面
+    自己的认亲凭据，内核忽略）。
     """
     text = render_agent_config(mission, brains, budgets,
-                               source_version=source_version,
                                instance_id=instance_id,
                                roots=roots, extra_config=extra_config)
     p = home / "config.toml"

@@ -7,8 +7,8 @@ main_stopped / kill_signal / reset_failed / journal_tail。
 容器名 = systemd 单元名（xusi-a-<id>，复用 cfg.unit_name）；compose.yaml 由
 管理面渲染在 instances/.compose/<unit>/compose.yaml —— 实例根（/data 挂载）
 之外的兄弟目录，容器内大脑看不到也改不到；spawn 每次重渲染，路径/端口/
-镜像 tag 恒与注册表一致。镜像与实例内容解耦（内核 v2.7.38 入口 shim：跑的
-是实例目录自己的 xuseek.sh，launcher/源码/.venv 全随实例目录）：fleet 同版本
+镜像 tag 恒与注册表一致。镜像与实例内容解耦（内核入口 shim：跑的是实例
+目录自己的 xuseek.sh，launcher/源码/.venv 全随实例目录）：fleet 同版本
 共享一个 tag（xuseek:<version>），同版本第二个实例起免构建；升级内核不
 重建镜像，「忘重建镜像」这一整类事故从结构上消失（重建只在换基础镜像/
 系统依赖时）。容器是可弃的一次性运行时，实例状态全在 bind mount（见内核
@@ -124,7 +124,7 @@ def _render_compose(unit: str, source_dir: Path, home: Path, host: str,
     xuseek-v2、镜像 tag 含版本、logging 补 json-file 轮转（docker 默认无上限，
     长跑 agent 会写穿磁盘）、**user 钉为管理面用户**（cfg.docker_user）——
     内核模板默认 root，但 root 写进 /data 的文件宿主属主是 root，管理面
-    （普通用户）就写不了 mailbox.jsonl / webui_tokens.json（投信与观察台
+    （普通用户）就写不了 facts.db / webui_tokens.json（投信与观察台
     token 签发会 PermissionError）。钉成管理面用户后容器内大脑的能力与
     systemd 模式完全对齐（同 uid），落盘文件属主一致，管理面读写照常。
     低端口直听（80/443）不靠 cap_add——Linux 语义上 --cap-add 只扩大
@@ -153,6 +153,12 @@ def _render_compose(unit: str, source_dir: Path, home: Path, host: str,
             "      UV_DEFAULT_INDEX: {j}\n"
         ).format(j=_yq(pip_index))
         pip_arg = f"        PIP_INDEX: {_yq(pip_index)}\n"
+    # 呼吸面看门狗（内核 v2.7.79+）：入口 shim 起 stall_watch 常驻眼睛——
+    # stat data/breath.json mtime 超阈 kill 1 借 restart 重启（线程级挂死也
+    # 看得见）。stall_s = 0 时不设（眼睛不上岗，只留进程面 healthcheck）。
+    stall_env = ""
+    if cfg.stall_s > 0:
+        stall_env = f"      XUSEEK_STALL_S: {_yq(str(cfg.stall_s))}\n"
     health = f"curl -fsS http://127.0.0.1:{port}/v1/health || exit 1"
     return f"""# 由 xusi 管理面渲染（runtime=docker）——不要手改：spawn 每次都会重渲染，
 # 路径/端口/镜像 tag 恒与注册表一致。镜像 fleet 共享（xuseek:<version>）：
@@ -173,7 +179,7 @@ services:
     environment:
       TZ: {_yq(cfg.display_timezone)}
       HOME: "/data"
-{index_env}    restart: unless-stopped
+{index_env}{stall_env}    restart: unless-stopped
     stop_grace_period: 30s
     command: ["serve", "--host", {_yq(host)}, "--port", {_yq(str(port))}]
     healthcheck:
@@ -226,9 +232,9 @@ def spawn_agent(unit: str, source_dir: str, home: str, host: str, port: int, *,
     src = Path(source_dir)
     if not (src / "docker-entrypoint.sh").is_file():
         raise DockerError(
-            f"该内核版本不含入口 shim docker-entrypoint.sh（{src}）：容器运行时"
-            f"需 xuseek-v2 ≥ v2.7.38（模板已撤活挂载与 PIP_TARGET，旧内核镜像"
-            f"直跑 /app 副本会静默跑旧代码），升级内核走 docs/kernel-upgrade.md")
+            f"实例内核副本不含入口 shim docker-entrypoint.sh（{src}——实例目录"
+            f"被改动？）：容器运行时要求内核 ≥ v2.7.79，请从版本仓库重新解压"
+            f"或重建实例")
     state = unit_state(unit)
     if state in ("active", "activating"):
         raise DockerError(f"容器 {unit} 已在运行（{state}）")

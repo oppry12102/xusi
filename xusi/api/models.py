@@ -20,19 +20,20 @@ class CreateAgentReq(BaseModel):
                                                    " llm_call 按档调用，不参与主循环轮换）")
     expose: bool = Field(False, description="true=监听 0.0.0.0 直接对外；默认 127.0.0.1 仅本机")
     port: int | None = Field(None, description="指定端口（缺省自动分配，自 8602 起）")
-    budgets: dict | None = Field(None, description="预算 {max_rounds}（v2.7.5+ 内核只认 [limits] max_rounds；"
-                                                "更早内核另认 max_seconds/max_context_tokens，随 source_version 渲染）")
+    budgets: dict | None = Field(None, description="预算 {max_rounds}（只认 [limits] max_rounds；"
+                                                "max_context_tokens 由内核按大脑窗口自动派生）")
     roots: list[RootEntry] | None = Field(None, max_length=8,
-                                          description="根智能体（可选，v2.7.12+ 内核：首次启动一次性交割到 "
+                                          description="根智能体（可选：首次启动一次性交割到 "
                                                       "workspace/playbook/根智能体.json，此后死键）")
     extra_config: str = Field("", max_length=8000,
                               description="附加配置（可选·高级）：自由 TOML 原样追加进出生 config.toml 末尾"
-                                          "（[capabilities] 等内核可选段）；落盘前整体校验，坏 TOML 拒绝创建")
+                                          "（[amem] 等内核可选段）；落盘前整体校验，坏 TOML 拒绝创建")
     note: str = Field("", description="备注")
     source_version: str = Field("", description="xuseek-v2 版本号（GET /api/versions）。缺省 = 仓库最新版"
-                                                "（每 agent 自带私有副本，可单独迁移）。私有副本创建后不可改")
+                                                "（每 agent 自带私有副本，可单独迁移）。私有副本创建后不可改；"
+                                                "任何路径都过内核地板闸（≥ 2.7.79）")
     runtime: str | None = Field(None, description="运行时：systemd（默认，系统进程）/ docker（容器）/ bare（容器直跑裸进程），"
-                                                  "host 网络；需内核 ≥ v2.7.38 与本机 docker 环境）。"
+                                                  "docker 需本机 docker 环境（host 网络）。"
                                                   "缺省取 [manager].default_runtime；创建后可切换（停止 → 改参 → 启动）")
 
 

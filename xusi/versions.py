@@ -26,6 +26,12 @@ from .config import get_config
 # 实例内私有源码副本的目录名（agentops 也引用）
 SRC_DIR_NAME = "xuseek-v2"
 
+# 内核地板（2026-09-20 收敛）：管理面只支持 ≥ 此版本的内核——v2.7.79 是
+# facts.db 事实账时代（mail/outbox/session_end 全部落账本，jsonl 邮箱/会话
+# 索引退役）+ 呼吸面看门狗（XUSEEK_STALL_S/stall_check.py）。创建时单一闸门
+# 校验，旧版本门（roots 2.7.12 / docker 入口 shim 2.7.38）随向后兼容一起移除。
+KERNEL_FLOOR = "2.7.79"
+
 _ZIP_RE = re.compile(r"^xuseek-v2-(?P<v>[A-Za-z0-9][A-Za-z0-9._-]*)\.zip$")
 _VER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 

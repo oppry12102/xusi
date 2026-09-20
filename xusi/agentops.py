@@ -1,15 +1,16 @@
 """agent 生命周期操作：创建/启停/暂停/续跑/重启/改参/删除/观察/投信/收信。
 
-manager 与 agent 之间只有**一条写**通道——管理邮箱：
-- 投信：追加 `<home>/data/mailbox.jsonl`（sender=admin，与内核 post() 同语义，
-  双写 mailbox_log.jsonl 保历史）；
-- 收信：读 `<home>/data/outbox.jsonl`（内核 send_mail 工具写，sender=brain）。
+manager 与 agent 之间只有**一条写**通道——管理邮箱（内核 v2.7.79 起
+信箱即事实账）：
+- 投信：向 `<home>/data/facts.db` 追加 mail 事实（sender=admin，与内核
+  post() 同语义；账本只增不减，投信历史即账本行，无需双写保历史）；
+- 收信：读同一账本的 outbox 行（内核 send_mail 工具写，sender=brain）。
 
 只读观察收窄为两条（详情页事件流/工具统计/会话 banner 用）：
 - HTTP GET /v1/events、/v1/status（observe，见下）；观察台 token 缺失时
   xusi 自动签发一枚写进 data/webui_tokens.json（内核每次校验都重读该文件，
   免重启生效）；
-- 会话索引读磁盘 data/sessions.jsonl（sessions，不依赖 HTTP/token，
+- 会话索引读磁盘 facts.db 的 session_end 行（sessions，不依赖 HTTP/token，
   agent 停机也能看历史呼吸）。
 
 其余界面全部取消：不调 xuseek CLI（init/token/capabilities）、
@@ -48,7 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import barectl, brains, dockerctl, ports, registry, systemdctl, versions
+from . import barectl, brains, dockerctl, factsdb, ports, registry, systemdctl, versions
 from .config import get_config
 
 
@@ -162,18 +163,14 @@ _ROOTS_CAP = 8            # [[roots]] 条目封顶（互为备份，8 个足够�
 _ROOTS_FIELD_MAX = 512    # address / token 单字段长度上限
 
 
-def _validate_roots(roots: list | None, src_ver: str) -> list[dict]:
+def _validate_roots(roots: list | None) -> list[dict]:
     """校验创建时的根智能体列表，返回规范化条目（非空 address/token、去重保序）。
 
-    非空时要求内核 ≥ 2.7.12——[[roots]] 出生交割自该版起；旧核不识此段，
-    渲染了也不会交割（静默失效），直接拒绝。创建后接入的路径是投信
-    （内核 docs/interconnect.md：大脑 send_mail 向管理员索取地址与 token）。"""
+    内核地板（KERNEL_FLOOR）起 [[roots]] 出生交割恒可用，不再做版本门。
+    创建后接入的路径是投信（内核 docs/interconnect.md：大脑 send_mail
+    向管理员索取地址与 token）。"""
     if not roots:
         return []
-    if not versions.at_least(src_ver, "2.7.12"):
-        raise AgentError(
-            f"所选内核版本 {src_ver} 不支持 [[roots]]（v2.7.12 起才有根智能体出生交割）。"
-            f"换新版本，或去掉根智能体——创建后接入走投信，见内核 docs/interconnect.md")
     if len(roots) > _ROOTS_CAP:
         raise AgentError(f"根智能体最多 {_ROOTS_CAP} 个（当前 {len(roots)}）")
     out: list[dict] = []
@@ -348,18 +345,18 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     （systemd 直跑 / docker 容器）→ 端口验收。
 
     runtime：systemd（默认，系统进程）或 docker（容器，host 网络）——
-    缺省取 [manager].default_runtime。docker 要求内核 ≥ v2.7.38（入口 shim
-    docker-entrypoint.sh 自该版本起才有）与本机 docker 环境，创建前早校验
-    （失败零副作用，不拖到验收超时）。创建后仍可切换（停止 → 改参 → 启动，
-    见 patch_agent）。
+    缺省取 [manager].default_runtime。docker 要求本机 docker 环境
+    （daemon + compose 插件），创建前早校验（失败零副作用，不拖到验收超时）。
+    创建后仍可切换（停止 → 改参 → 启动，见 patch_agent）。
 
     source_version：版本号 → 该版本源码解压成实例私有副本（instances/<id>/xuseek-v2/，
     删除时随 home 进 .trash）；缺省 → 版本仓库最新包（每 agent 自带私有副本，
-    实例自洽可单独迁移；仓库为空报错，见 _resolve_source_choice）。
+    实例自洽可单独迁移；仓库为空报错，见 _resolve_source_choice）。任何路径
+    都过内核地板闸（≥ versions.KERNEL_FLOOR）。
 
     roots（可选）：根智能体列表 [{address, token}]——渲染进出生 config 的
     [[roots]] 段，内核首次启动交割到 workspace/playbook/根智能体.json
-    （v2.7.12+，见 _validate_roots）。extra_config（可选）：管理员自由 TOML
+    （见 _validate_roots）。extra_config（可选）：管理员自由 TOML
     原样追加（落盘前整体校验，见 brains.render_agent_config）。
 
     创建后 xusi 与该 agent 只剩邮箱通道：不再签发任何 agent 侧凭证
@@ -374,21 +371,21 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
         raise AgentError(f"runtime 只能是 systemd / docker / bare：{runtime!r}")
     brain_list = _validate_brains(brain_list)
     src_ver = _resolve_source_choice((source_version or "").strip())
-    # docker 前置早校验（在持锁/解压之前失败——零副作用）：
-    # ① 内核版本门槛：入口 shim 自 v2.7.38 起才有——compose 模板已撤
-    #    /app/xuseek 活挂载与 PIP_TARGET，旧内核镜像 ENTRYPOINT 直跑
-    #    /app 副本 = 静默跑旧代码 + pip 撞只读 /app/.venv
+    # 前置早校验（在持锁/解压之前失败——零副作用）：
+    # ① 内核地板：单一闸门——低于 KERNEL_FLOOR 的内核（jsonl 邮箱/会话索引
+    #    时代、无入口 shim/stall_watch）一律拒绝，旧版本门不再逐条摊开
     # ② 本机 docker 环境可用（daemon + compose 插件；权限不足给可行动提示）
-    if runtime == "docker" and not versions.at_least(src_ver, "2.7.38"):
+    if not versions.at_least(src_ver, versions.KERNEL_FLOOR):
         raise AgentError(
-            f"容器运行时需要 xuseek-v2 ≥ v2.7.38（当前 {src_ver}）——"
-            f"升级内核版本或改用 systemd 运行时")
+            f"所选内核版本 {src_ver} 过旧——管理面已收敛到内核 ≥ {versions.KERNEL_FLOOR}"
+            f"（facts.db 事实账时代：邮箱/会话索引全部落账本，旧 jsonl 通道已退役）。"
+            f"请向版本仓库投放新版本包（versions/，见 docs/versions.md）")
     if runtime == "docker":
         ok, hint = dockerctl.docker_available()
         if not ok:
             raise AgentError(f"docker 不可用：{hint}")
-    # roots 校验在持端口锁之前——失败零副作用（版本门槛/条目形状，见 _validate_roots）
-    roots_norm = _validate_roots(roots, src_ver)
+    # roots 校验在持端口锁之前——失败零副作用（条目形状，见 _validate_roots）
+    roots_norm = _validate_roots(roots)
 
     # 端口分配 → 注册表落盘必须整体持锁（ports.ALLOC_LOCK 进程内 + registry
     # 跨进程 flock——CLI 进程与 serve 进程并发 create 时不撞端口）：窗口内含
@@ -468,7 +465,7 @@ def _init_workspace(rec: dict, src_ver: str, roots: list | None = None,
     home.mkdir(parents=True, exist_ok=True)
     versions.extract(src_ver, home / versions.SRC_DIR_NAME)
     brains.write_agent_config(home, rec["mission"], rec["brains"], rec["budgets"],
-                              source_version=src_ver, instance_id=rec["id"],
+                              instance_id=rec["id"],
                               roots=roots, extra_config=extra_config)
 
 
@@ -544,12 +541,18 @@ def _rollback_create(agent: dict) -> None:
     注销是硬要求——失败必须冒泡（注册表留 desired=running 的僵尸会被
     reconcile 反复拉起一个起不来的载体）；挪 home 是尽力而为，挪不动就
     原地留着（注销之后 reconcile 看不见它，孤儿目录交管理员清）。
-    docker 载体追加清理 compose 渲染目录（镜像保留，prune 交管理员）。"""
+    docker 载体追加清理 compose 渲染目录（镜像保留，prune 交管理员）；
+    systemd 载体追加清理呼吸看门狗 timer。"""
     unit = _unit(agent)
     rt = _rt(agent)
     for fn in (rt.stop, rt.reset_failed):
         try:
             fn(unit)
+        except Exception:
+            pass
+    if rt is systemdctl:
+        try:
+            systemdctl.stall_timer_remove(unit)
         except Exception:
             pass
     if rt is dockerctl:
@@ -697,6 +700,11 @@ def delete(agent_id: str) -> dict:
         rt.reset_failed(unit)
     except Exception:
         pass
+    if rt is systemdctl:
+        try:
+            systemdctl.stall_timer_remove(unit)   # 呼吸看门狗 timer 随除名清掉
+        except Exception:
+            pass
     home = _home(agent)
     dest = None
     if home.exists():
@@ -725,7 +733,7 @@ _PATCHABLE = {"name", "note", "expose", "brains", "runtime"}
 
 _AGENT_OWNED = {
     "mission": "使命已由 agent 自治：请投信让它自己修改 config.toml（内核每轮热重载）",
-    "budgets": "预算已由 agent 自治：请投信让它自己修改 config.toml 的 [limits] 段（v2.7.5+；旧内核为 [agent] 段）",
+    "budgets": "预算已由 agent 自治：请投信让它自己修改 config.toml 的 [limits] 段",
 }
 
 _IMMUTABLE = {
@@ -773,11 +781,13 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
                 ok, hint = dockerctl.docker_available()
                 if not ok:
                     raise AgentError(f"docker 不可用：{hint}")
+                # 入口 shim 是内核地板（≥ KERNEL_FLOOR）的必有件——文件缺失
+                # 只可能是实例目录被改动，仍做防御性检查（消息不再谈版本）
                 if not (Path(_home(agent)) / versions.SRC_DIR_NAME
                         / "docker-entrypoint.sh").is_file():
                     raise AgentError(
-                        "该内核版本不含入口 shim docker-entrypoint.sh：容器运行时需"
-                        " xuseek-v2 ≥ v2.7.38，升级内核走 docs/kernel-upgrade.md")
+                        "实例内核副本不含入口 shim docker-entrypoint.sh（实例目录被改动？）"
+                        "——请从版本仓库重新解压或重建实例")
             runtime_new = rt_new
 
     # 大脑段手术（最易失败）——此刻入参校验已全部通过，失败时其余字段一律
@@ -915,7 +925,6 @@ _OBSERVE_TIMEOUT = 6.0
 _TOKEN_LABEL = "xusi-observe"
 _TOKEN_CAP = 3          # 补签时 xusi-observe token 封顶——401 持续时文件不随请求增长
 _TOKEN_LOCK = threading.Lock()
-_TAIL_WINDOW = 256 * 1024   # _tail_jsonl 首读窗口；凑不足 limit 行再放大到整文件
 
 
 def _read_tokens(agent: dict) -> dict[str, dict]:
@@ -1020,41 +1029,6 @@ def _get(agent: dict, path: str, token: str) -> tuple[int, dict | None]:
     return status, data
 
 
-def _tail_jsonl(path: Path, limit: int) -> list[dict]:
-    """追加型 jsonl 取尾部 limit 行（坏行/非 dict 跳过，文件序返回）。
-
-    mailbox() 与 sessions() 共用。只回读尾部窗口（默认 256KB）——长跑 agent
-    的 jsonl 随呼吸无界增长，整读是 O(文件大小)/请求；窗口内凑不足 limit 行
-    再放大到整文件兜底。"""
-    try:
-        with path.open("rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-    except OSError:
-        return []
-    window = _TAIL_WINDOW
-    while True:
-        start = max(0, size - window)
-        with path.open("rb") as f:
-            f.seek(start)
-            chunk = f.read()
-        lines = chunk.decode("utf-8", errors="replace").splitlines()
-        if start > 0:
-            lines = lines[1:]   # 窗口切在行中间：首行是残行，丢弃
-        if len(lines) >= limit or start == 0:
-            break
-        window = size
-    rows: list[dict] = []
-    for line in lines[-limit:]:
-        try:
-            obj = json.loads(line)
-            if isinstance(obj, dict):
-                rows.append(obj)
-        except ValueError:
-            continue
-    return rows
-
-
 def observe(agent_id: str, what: str, limit: int = 80) -> Any:
     """只读观察：events / status 两条窄通道（详情页事件流/工具统计/会话 banner）。
 
@@ -1095,12 +1069,12 @@ def observe(agent_id: str, what: str, limit: int = 80) -> Any:
 
 
 def sessions(agent_id: str, limit: int = 30) -> dict:
-    """会话索引：读 data/sessions.jsonl 尾部 N 行，最新在前。纯磁盘读取——
-    索引是每口呼吸追加的落盘事实，agent 停机也能看历史呼吸。坏行跳过
-    （追加型文件尾部可能有半行）。实现与 mailbox() 同构。"""
+    """会话索引：读 facts.db 的 session_end 行尾部 N 条，最新在前。纯磁盘读取——
+    索引是每口呼吸追加的落盘事实（全文归 data/sessions/<id>.json），agent
+    停机也能看历史呼吸。事实行坏 body 单点兜底（raw 可见、可跳）。"""
     agent = get_agent_or_404(agent_id)
     limit = max(1, min(int(limit), 200))   # 与内核 /v1/sessions 上限一致
-    rows = _tail_jsonl(_home(agent) / "data" / "sessions.jsonl", limit)
+    rows = factsdb.tail(_home(agent), "session_end", limit)
     rows.reverse()
     return {"id": agent_id, "sessions": rows}
 
@@ -1125,18 +1099,10 @@ def boot(agent_id: str) -> dict:
 
 # ── 投信 / 收信（唯一的写通道）──────────────────────────────────────
 
-_MAIL_FIELDS = ("id", "sender", "text", "at")
-
-
-def _append_mail_line(path: Path, line: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(line)
-
-
 def mail(agent_id: str, text: str) -> dict:
-    """给大脑投信：追加 data/mailbox.jsonl（与内核 post() 完全同语义——双写
-    mailbox_log.jsonl 保历史）。休眠中 5s 内被轮询唤醒。"""
+    """给大脑投信：向事实账（data/facts.db）追加 mail 行——与内核 post() 完全
+    同语义（sender=admin）。账本只增不减，投信历史即 mail 行本身（旧的
+    mailbox_log 双写随 jsonl 邮箱一起退役）。休眠中数秒内被轮询唤醒。"""
     agent = get_agent_or_404(agent_id)
     text = (text or "").strip()
     if not text:
@@ -1144,30 +1110,24 @@ def mail(agent_id: str, text: str) -> dict:
     home = _home(agent)
     if not home.exists():
         raise AgentError("实例目录不存在")
-    msg = {"id": uuid.uuid4().hex[:12], "sender": "admin", "text": text, "at": _iso()}
-    line = json.dumps(msg, ensure_ascii=False) + "\n"
-    # 与内核 mailbox.post() 同语义：mailbox.jsonl 给 daemon 收信；
-    # mailbox_log.jsonl 是观测历史（agent drain 后 pending 清空，历史保留，
-    # 详情页"来信历史"就走它读——漏写会被 agent 拿走再清掉，看起来"丢了"）
-    for name in ("mailbox.jsonl", "mailbox_log.jsonl"):
-        _append_mail_line(home / "data" / name, line)
+    fact = factsdb.append(home, "mail", sender="admin", text=text)
     audit("agent.mail", agent=agent_id, chars=len(text))
-    return {"posted": True, "id": msg["id"], "at": msg["at"]}
+    return {"posted": True, "id": fact["n"], "at": fact["at"]}
 
 
 def mailbox(agent_id: str, limit: int = 50, *, box: str = "outbox") -> dict:
-    """读邮箱文件尾部 N 行（只读展示，无后台处理）。
+    """读事实账尾部 N 行（只读展示，无后台处理）。
 
-    box="outbox"：来信（内核 send_mail 写，sender=brain）；
-    box="inbox"： 投信历史（mailbox_log.jsonl，sender=admin 为主——管理邮箱
-    的观测日志，投信时双写，语义与内核 post() 一致）。
+    box="outbox"：来信（内核 send_mail 写 outbox 行，sender=brain）；
+    box="inbox"： 投信历史（mail 行，sender=admin 为主——管理邮箱的账本
+    形态，与内核 post() 同语义）。
     """
     agent = get_agent_or_404(agent_id)
     limit = max(1, min(int(limit), 500))
-    name = {"outbox": "outbox.jsonl", "inbox": "mailbox_log.jsonl"}.get(box)
-    if not name:
-        raise AgentError(f"未知邮箱文件：{box}（可选 outbox/inbox）")
-    rows = _tail_jsonl(_home(agent) / "data" / name, limit)
+    ftype = {"outbox": "outbox", "inbox": "mail"}.get(box)
+    if not ftype:
+        raise AgentError(f"未知邮箱类型：{box}（可选 outbox/inbox）")
+    rows = factsdb.tail(_home(agent), ftype, limit)
     return {"id": agent_id, "box": box, "messages": rows}
 
 

@@ -386,14 +386,14 @@ def restore(backup_path: Path, *, new_id: str | None = None,
             raise BackupError(
                 f"备份的运行时是 docker，但本机 docker 不可用：{hint}——"
                 f"恢复到有 docker 环境的机器，或先装好 docker")
-        # 入口 shim 门槛同 create（agentops）：旧内核镜像直跑 /app 副本会
-        # 静默跑旧代码。空 source_version 的老包留给后面 versions 重建步
-        # 骤按既有路径报错。
+        # 内核地板闸同 create（agentops）：低于 KERNEL_FLOOR 的备份包不带
+        # 新世界通道（facts.db 邮箱/入口 shim）。空 source_version 的老包
+        # 留给后面 versions 重建步骤按既有路径报错。
         sv = str(meta.get("source_version") or "").strip()
-        if sv and not versions.at_least(sv, "2.7.38"):
+        if sv and not versions.at_least(sv, versions.KERNEL_FLOOR):
             raise BackupError(
-                f"备份包内核 {sv} 早于 v2.7.38，无入口 shim——不支持恢复为 docker"
-                f"运行时。恢复为 systemd，或先在原机升级内核（≥ v2.7.38）再备份")
+                f"备份包内核 {sv} 早于 v{versions.KERNEL_FLOOR}——管理面已收敛到"
+                f"facts.db 事实账时代。先在原机升级内核再备份，或恢复为 systemd")
 
     # 1. 冲突检查
     existing = registry.get_agent(agent_id)

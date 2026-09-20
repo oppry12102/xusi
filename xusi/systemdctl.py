@@ -6,6 +6,7 @@ Restart=always，掉电/崩溃/误杀自动拉起，manager 重启后按期望�
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import Any
 
 MANAGER_UNIT = "xusi.service"
@@ -41,6 +42,8 @@ def spawn_agent(unit: str, source_dir: str, home: str, host: str, port: int, *,
     镜像，忽略之。
     TimeoutStopSec=20 > xuseek daemon 的 10s 优雅停窗，保证轮边界落盘后再退。
     PyPI 镜像经 --setenv 注入（xuseek.sh 首启自愈装依赖走它，见 DEFAULT_UV_INDEX_URL）。
+    呼吸面看门狗：ensure_stall_timer 建立瞬态 timer（内核 stall_check.py 判
+    breath.json 停滞 → 重启单元；与 docker 的 stall_watch kill 1 同语义）。
     """
     import os
     if unit_state(unit) == "active":
@@ -58,6 +61,67 @@ def spawn_agent(unit: str, source_dir: str, home: str, host: str, port: int, *,
     cmd += [f"{source_dir}/xuseek.sh", "--home", home,
             "serve", "--host", host, "--port", str(port)]
     _run(cmd)
+    ensure_stall_timer(unit, source_dir, home)
+
+
+# 呼吸面看门狗 timer 的巡检间隔（秒）：阈值 stall_s 内的停滞最迟该间隔后被
+# 发现并重启。5 分钟是权衡——太密浪费、太疏停滞窗口拉长。
+_STALL_POLL_S = 300
+
+
+def ensure_stall_timer(unit: str, source_dir: str, home: str) -> None:
+    """呼吸面看门狗（systemd 形态）：瞬态 timer 每 5 分钟跑一次内核
+    stall_check.py——判据 = data/breath.json 的 mtime 超阈且 serve 进程在跑，
+    退出 1（停滞）时重启 agent 单元（借 Restart=always 起死回生，与 docker
+    的 stall_watch kill 1 同语义）；退出 0 放行、退出 2（阈值坏）不动作。
+
+    条件：[manager] stall_s > 0 且实例内核副本带 stall_check.py（内核地板
+    ≥ 2.7.79 必有）。timer PartOf=agent 单元——停 agent 自动停 timer，
+    start 时 spawn 幂等重建（load-state 判存）。建立失败不阻塞 spawn：
+    看门狗是增强不是硬依赖（stderr 提示）。
+    """
+    import sys
+    import shlex
+    from .config import get_config
+    thr = get_config().stall_s
+    if thr <= 0:
+        return
+    script = Path(source_dir) / "xuseek" / "stall_check.py"
+    if not script.is_file():
+        return
+    tunit = f"{unit}-stall"
+    if unit_load_state(f"{tunit}.timer") == "loaded":
+        return
+    py = sys.executable
+    # 只有退出 1（真停滞）才重启；0（无脉搏/无 serve）与 2（阈值坏）都不动
+    inner = (f'rc=$({shlex.quote(py)} {shlex.quote(str(script))} '
+             f'{shlex.quote(str(home))} {thr} 2>/dev/null); '
+             f'[ "$rc" = 1 ] && systemctl --user restart {shlex.quote(unit)}')
+    # PartOf 值须带 .service 后缀——systemd-run 对裸名（无类型后缀）报
+    # 「Invalid unit name」并拒绝创建 timer（实测 systemd 255）
+    cmd = ["systemd-run", "--user", "--collect",
+           "--timer-property", f"PartOf={unit}.service",
+           "--on-unit-active", str(_STALL_POLL_S),
+           "--unit", tunit, "/bin/sh", "-c", inner]
+    try:
+        _run(cmd)
+    except SystemdError as e:
+        print(f"[xusi] 呼吸看门狗 timer 未建立（{unit}）：{e}")
+
+
+def stall_timer_remove(unit: str) -> None:
+    """删除呼吸看门狗 timer（delete/回滚收尾；stop 不清——timer 对停止态
+    agent 恒放行（serve 不在 → stall_check 退出 0），且 PartOf 已随停联动）。"""
+    for suffix in (".timer", ".service"):
+        try:
+            _run(["systemctl", "--user", "stop", unit + "-stall" + suffix], timeout=15)
+        except SystemdError:
+            pass
+    try:
+        _run(["systemctl", "--user", "reset-failed",
+              unit + "-stall.timer", unit + "-stall.service"], timeout=15)
+    except SystemdError:
+        pass
 
 
 def unit_state(unit: str) -> str:

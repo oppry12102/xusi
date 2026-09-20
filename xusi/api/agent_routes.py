@@ -100,7 +100,7 @@ for _action in _LIFECYCLE_ACTIONS:
 
 @router.post("/api/agents/{agent_id}/mail")
 async def api_agent_mail(req: MailReq, pair: tuple = Depends(require_agent)) -> JSONResponse:
-    """投信：admin 把一条文字塞进 agent 的 mailbox（唯一的 agent 通信通道）。"""
+    """投信：admin 向事实账追加 mail 行（唯一的 agent 通信通道）。"""
     agent, _rec = pair
     return JSONResponse(agentops.mail(agent["id"], req.text))
 
@@ -108,10 +108,10 @@ async def api_agent_mail(req: MailReq, pair: tuple = Depends(require_agent)) -> 
 @router.get("/api/agents/{agent_id}/mailbox")
 async def api_agent_mailbox(limit: int = 50, box: str = "outbox",
                             pair: tuple = Depends(require_agent)) -> JSONResponse:
-    """读邮箱文件尾部：box=outbox 来信（agent→admin，send_mail）；box=inbox
-    投信历史（admin→agent，mailbox_log）。只读展示。"""
+    """读事实账尾部：box=outbox 来信（agent→admin，send_mail）；box=inbox
+    投信历史（admin→agent，mail 行）。只读展示。"""
     agent, _rec = pair
-    # 邮箱文件只增不删、取尾部要先整读——走线程池，别冻事件循环
+    # 账本只增不删——读查询走线程池，别冻事件循环
     return JSONResponse(await asyncio.to_thread(
         agentops.mailbox, agent["id"], limit, box=box))
 
@@ -145,10 +145,10 @@ async def api_agent_status(pair: tuple = Depends(require_agent)) -> JSONResponse
 
 @router.get("/api/agents/{agent_id}/sessions")
 async def api_agent_sessions(limit: int = 30, pair: tuple = Depends(require_agent)) -> JSONResponse:
-    """会话索引：读 data/sessions.jsonl 尾部（最新在前）。不走 HTTP——索引本就是
+    """会话索引：读事实账 session_end 行尾部（最新在前）。不走 HTTP——索引本就是
     磁盘事实，agent 停机也能看历史呼吸。"""
     agent, _rec = pair
-    # 追加型文件取尾部要先整读——走线程池，别冻事件循环
+    # 账本查询走线程池，别冻事件循环
     return JSONResponse(await asyncio.to_thread(
         agentops.sessions, agent["id"], limit))
 

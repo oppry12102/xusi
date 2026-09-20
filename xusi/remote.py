@@ -847,36 +847,6 @@ def remote_patch(h: dict, agent_id: str, body: dict, *, apply_restart: bool = Fa
         raise RemoteError("远端改参输出不是 JSON（远端版本过旧？先 remote upgrade）")
 
 
-# agent 家目录下允许 ssh tail 读取的只读数据文件（白名单，防路径注入）
-_READABLE_FILES = ("data/sessions.jsonl", "data/outbox.jsonl", "data/mailbox_log.jsonl")
-# agent id 字符级白名单：本机新生成是 agent-<4hex>，但存量老机还有 llm-N-xxxx
-# 等老命名（id 前缀不统一、不可枚举）——id 只用于拼实例目录名与 ssh 参数
-# （ssh 侧已 shlex.quote），字符级白名单即可防路径注入/越权；按前缀枚举反而漏掉老命名。
-_AGENT_ID_RE = r"[a-z0-9][a-z0-9-]{0,63}"
-
-
-def read_remote_file(h: dict, agent_id: str, rel: str, *, limit: int = 50,
-                     timeout: int = 60) -> list[dict]:
-    """ssh tail 读远端 agent 磁盘 JSONL（会话索引/邮箱等只读数据）——文件通道，
-    与「不反代」原则一致。agent_id 与路径都走白名单，防注入。"""
-    import re
-    if not re.fullmatch(_AGENT_ID_RE, agent_id):
-        raise RemoteError(f"非法 agent_id：{agent_id!r}")
-    if rel not in _READABLE_FILES:
-        raise RemoteError(f"不在可读白名单：{rel!r}")
-    d = h.get("dir", REMOTE_DIR)
-    cmd = (f"tail -n {int(limit)} {d}/instances/{shlex.quote(agent_id)}/{rel} "
-           f"2>/dev/null")
-    cp = run_remote(h, cmd, timeout=timeout)
-    rows = []
-    for line in (cp.stdout or "").splitlines():
-        try:
-            rows.append(json.loads(line))
-        except Exception:
-            pass   # 半行等坏 JSON 跳过，与 agentops._tail_jsonl 同构
-    return rows
-
-
 # ── 远端文件通道（fs-*：远端 `xusi fs-…` 同一份 files.py 实现）─────────
 
 

@@ -1,9 +1,10 @@
 # 墟司（xusi）—— xuseek 智能体管理面
 
 > 一个自洽目录，管理多个墟寻（xuseek-v2）自主体：创建/启停/暂停/删除。
-> **xusi 与 agent 之间只有一条写通道：管理邮箱**——投信/收信；只读观察收窄为
-> 两条（详情页事件流/会话 banner：GET /v1/events·status，token 缺失自动签发；
-> 会话索引读磁盘 sessions.jsonl）。
+> **xusi 与 agent 之间只有一条写通道：管理邮箱**——投信/收信（内核 v2.7.79 起
+> 信箱即事实账：mail/outbox 都是 data/facts.db 的行）；只读观察收窄为两条
+> （详情页事件流/会话 banner：GET /v1/events·status，token 缺失自动签发；
+> 会话索引读事实账 session_end 行）。
 > **彻底本地化管理**：互联由 xuseek 内核自己完成（根智能体 + `[[roots]]` 出生
 > 交割，见内核 `docs/interconnect.md`）——xusi 不参与、不设公告板。
 > agent 的对外呈现（观察台、自建服务）也是 agent 自家业务，xusi 不参与。
@@ -42,10 +43,10 @@ token 写进该文件（merge 不覆盖，内核免重启生效）；例外之�
 
 ## 互联（xuseek 自家业务）
 
-互联由 xuseek 内核自己完成（v2.7.12+）：根智能体提供目录服务，实例间两两直连，
+互联由 xuseek 内核自己完成：根智能体提供目录服务，实例间两两直连，
 协议见内核 `docs/interconnect.md`。xusi 只做一件与互联有关的事——**创建时把管理员
 给的根地址与 token 抄进出生 config 的 `[[roots]]` 段**（WebUI「新建 agent」对话框
-可选；仅 v2.7.12+ 内核）。缺省根写在 `etc/xusi.toml` 的 `[[default_roots]]`
+可选）。缺省根写在 `etc/xusi.toml` 的 `[[default_roots]]`
 （模板见 `etc/xusi.toml.example`）——创建对话框自动预填、可删改。此后互联的
 一切（目录、登记、token 轮换、断线恢复）都与 xusi 无关；存量 agent 要接入互联，
 投信把根地址与 token 发给它让它自己加段。
@@ -116,14 +117,19 @@ xusi/
 
 ## 运维要点
 
-- **掉线保护（两层）**：① 进程载体 `Restart=always` / 容器 `unless-stopped`——
+- **掉线保护（三层）**：① 进程载体 `Restart=always` / 容器 `unless-stopped`——
   崩溃/误杀 5s 内自动拉起；② 管理面启动时 reconcile——机器重启后按注册表
-  期望态（running/stopped/paused）拉齐。
+  期望态（running/stopped/paused）拉齐；③ **呼吸面看门狗**（内核 v2.7.79+）——
+  docker：入口 shim 起 stall_watch 常驻眼睛（`XUSEEK_STALL_S`，阈值
+  `[manager] stall_s`，0=关）；systemd：每 5 分钟瞬态 timer 跑内核
+  stall_check.py，呼吸停滞即重启单元（线程级挂死也看得见）。
 - **双运行时**：每个 agent 可跑 systemd 直跑（默认）或 docker 容器（host 网络，
-  需内核 ≥ v2.7.38 + docker 环境），界面一致、仅多「容器/系统」徽章。
+  需本机 docker 环境），界面一致、仅多「容器/系统」徽章。
   **切换 = 停止 → 改参 → 启动**（状态全在实例目录——含 launcher/源码/`.venv`，
   只换进程载体）；容器镜像 fleet 共享（`xuseek:<version>`）且与实例内容解耦，
   升级内核不重建镜像。前置、目录布局与排障见 `docs/container-runtime.md`。
+- **内核地板**：创建只认 xuseek-v2 ≥ 2.7.79（facts.db 事实账时代）——更低版本
+  一律拒绝（旧 jsonl 邮箱/会话索引通道已退役）。
 - **暂停** = SIGSTOP 冻结大脑（它自起的后台服务继续跑；容器模式同语义——
   exec 进容器只冻 daemon 主进程）；停止/重启一律优雅停，轮边界把会话落盘后再退。
 - **改参边界**：管理面可改簿记（name/note）、暴露开关（expose，需重启）、
