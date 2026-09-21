@@ -39,8 +39,7 @@ def api_agents_create(req: CreateAgentReq, _rec: dict = Depends(require_admin)) 
         roots=[r.model_dump() for r in req.roots] if req.roots else None,
         extra_config=req.extra_config, runtime=req.runtime or "",
         xmem=bool(req.xmem),
-        xmem_mount=req.xmem_mount or "demand",
-        greeting=req.greeting)
+        xmem_mount=req.xmem_mount or "demand")
 
 
 @router.get("/api/agents/{agent_id}")

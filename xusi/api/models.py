@@ -32,9 +32,6 @@ class CreateAgentReq(BaseModel):
                                                      "demand=首调用才挂完整 schema（省常驻开销，缺省）；"
                                                      "always=起手全挂（记忆重载的 agent 建议此档）。"
                                                      "只在 xmem=true 时有意义")
-    greeting: str = Field("", max_length=8000, description="出生开场信（可选）：创建成功后立即投递到"
-                                                           "该 agent 邮箱（第一口呼吸即读）。缺省："
-                                                           "xmem=true 时自动投内置 xmem 记忆协议开场白")
     extra_config: str = Field("", max_length=8000,
                               description="附加配置（可选·高级）：自由 TOML 原样追加进出生 config.toml 末尾"
                                           "（[amem] 等内核可选段）；落盘前整体校验，坏 TOML 拒绝创建")

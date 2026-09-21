@@ -528,7 +528,6 @@ def cmd_create(args) -> int:
                 print("error: --xmem-mount 只在 --xmem on 时有意义", file=sys.stderr)
                 return 2
             body["xmem_mount"] = xmem_mount
-        body["greeting"] = _arg_text(args.greeting) if args.greeting else ""
     try:
         r = agentops.create_agent(**body)
     except (agentops.AgentError, ValueError, TypeError, OSError) as e:
@@ -1093,8 +1092,6 @@ def main() -> int:
     c_.add_argument("--xmem-mount", choices=("demand", "always"), default=None,
                     help="xmem 工具面挂载方式（内核 v2.7.96 起；demand=首调用才挂完整 "
                          "schema/always=起手全挂；只在 --xmem on 时有意义，缺省 demand）")
-    c_.add_argument("--greeting", default="", help="出生开场信文本；@file 读文件。"
-                    "缺省：--xmem on 时自动投内置 xmem 记忆协议开场白")
     c_.set_defaults(fn=cmd_create)
 
     for op in ("start", "stop", "pause", "resume", "restart"):

@@ -34,7 +34,6 @@ patch_agent 按密钥池手术式重渲染 [brain] + [brains.*] 段，其余段�
 from __future__ import annotations
 
 import json
-import sys
 import os
 import re
 import secrets
@@ -343,8 +342,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
                  extra_config: str = "",
                  runtime: str = "",
                  xmem: bool = False,
-                 xmem_mount: str = "demand",
-                 greeting: str = "") -> dict:
+                 xmem_mount: str = "demand") -> dict:
     """创建并启动一个 agent：渲染出生 config.toml → 注册 → 按 runtime 拉起
     （systemd 直跑 / docker 容器）→ 端口验收。
 
@@ -455,17 +453,6 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
           expose=expose, brains=brain_list, source=src_ver,
           source_defaulted=not (source_version or "").strip(),
           roots=len(roots_norm), runtime=runtime)
-    # 出生开场信：管理员显式 greeting 优先；--xmem on 且未给 → 内置 xmem 记忆协议
-    # 开场白（治"无引导零采用"——实测 E4：开放式任务里 xmem 43 轮 0 调用）。
-    # 投递失败不阻塞创建（agent 不受影响，管理员可手工投信）。
-    greet = (greeting or "").strip() or (XMEM_GREETING if xmem else "")
-    if greet:
-        try:
-            mail(agent_id, greet)
-            audit("agent.greeting", agent=agent_id, chars=len(greet))
-        except AgentError as e:
-            print(f"[xusi] 出生开场信投递失败（{e}）——agent 不受影响，可手工投信",
-                  file=sys.stderr)
     return get_agent_or_404(agent_id)
 
 
@@ -750,18 +737,6 @@ def delete(agent_id: str) -> dict:
 # mission/budgets 在创建后归 agent 自治——改它们请投信让 agent 自己
 # 修改自己的 config.toml（内核每轮热重载）。
 _PATCHABLE = {"name", "note", "expose", "brains", "runtime", "xmem", "xmem_mount"}
-
-# xmem 出生开场信（--xmem on 且未给 --greeting 时自动投递）——治"无引导零采用"
-# （实测 E4：开放式任务里 xmem 43 轮 0 调用、连库都没建）。配方文档由内核播种在
-# workspace/playbook/xmem-记忆分层.md，本信把它点出来并给每口呼吸的最小协议。
-XMEM_GREETING = """【出生开场信】你已启用内核记忆层 xmem（工具：xmem_write/xmem_read/xmem_stats/xmem_list/xmem_delete）。建议从第一口呼吸就用起来：
-
-1. 每口开场：xmem_read(tags=["state"], k=1) 取焦点（state 惯例 = 每口收尾重写一条最新状态）；
-2. 干活中产生的**跨呼吸事实/结论/踩坑**：xmem_write 原句入库（标签面自定，如 fact/rule/ref/state）；
-3. 每口收尾：xmem_write 重写 state + 新结论；
-4. 完整配方见 workspace/playbook/xmem-记忆分层.md（机器播种，按你的业务改）。
-
-原则：BOOT 保持骨架，知识进 xmem——按需读、用完即走，别把事实堆进 BOOT。"""
 
 _AGENT_OWNED = {
     "mission": "使命已由 agent 自治：请投信让它自己修改 config.toml（内核每轮热重载）",
