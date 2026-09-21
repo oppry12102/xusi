@@ -28,6 +28,7 @@ manager_running 不在此协议内：xusi 管理面自身恒为 systemd 用户�
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -102,6 +103,35 @@ def _compose_args(unit: str) -> list[str]:
     对 compose.yaml 所在目录名的推导（渲染目录名 = unit，推导结果其实一致，
     显式钉死是为了杜绝改名/移动目录引起的静默行为变化）。"""
     return ["docker", "compose", "-f", str(compose_file_for(unit)), "-p", unit]
+
+
+def _prepull_bases(src: Path) -> None:
+    """解析实例 Dockerfile 的 FROM 行并逐一 docker pull（镜像站预热元数据）。
+
+    根因（tx-bj-3 实案）：buildx bake 冷路径要解析基础镜像的 manifest/
+    attestation，该解析不走 daemon.json 的 registry-mirrors——直连
+    registry-1.docker.io 在墙内静默挂死、bake 无超时 ⇒ 构建永久卡死且零
+    docker 事件（杀客户端还会楔死 dockerd 内置 buildkit 控制器，后续构建
+    排队不启动，重启 dockerd 才解）。docker pull 走镜像站，预热后 bake 冷
+    路径全本地。失败静默——只是预热，compose build 仍会给真实报错。"""
+    df = src / "Dockerfile"
+    if not df.is_file():
+        return
+    bases: list[str] = []
+    for ln in df.read_text(encoding="utf-8", errors="replace").splitlines():
+        s = ln.strip()
+        if not s.upper().startswith("FROM"):
+            continue
+        parts = s.split(None, 1)[1].split("#", 1)[0].strip()
+        img = re.split(r"\s+AS\s+", parts, flags=re.IGNORECASE)[0].strip()
+        if img and img.lower() != "scratch":
+            bases.append(img)
+    for img in dict.fromkeys(bases):
+        try:
+            subprocess.run(["docker", "pull", img], capture_output=True,
+                           text=True, timeout=180, check=False)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
 
 
 def _image_tag(version: str) -> str:
@@ -263,6 +293,12 @@ def spawn_agent(unit: str, source_dir: str, home: str, host: str, port: int, *,
                                capture_output=True, text=True,
                                timeout=30).returncode == 0
     if not has_image:
+        # 先预热基础镜像（tx-bj-3 实案）：buildx bake 的冷路径要解析基础镜像的
+        # manifest/attestation，且该解析不走 daemon.json 的 registry-mirrors——
+        # 直连 registry-1.docker.io 在墙内静默挂死、bake 无超时 → 构建永久卡死
+        # 且零事件。docker pull 走镜像站，把元数据预热进本地缓存后，bake 冷路径
+        # 全本地、秒级解析。pull 失败静默（只是预热，compose build 仍给真实报错）。
+        _prepull_bases(src)
         try:
             subprocess.run(_compose_args(unit) + ["build"], capture_output=True,
                            text=True, timeout=1800, check=True)
