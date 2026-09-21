@@ -103,6 +103,7 @@ agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier =
 | ④ | 担心 `.venv` 要重建 | 平移即可（`mv` 进新树，路径不变）——v2.7.38 起两种运行时都是实例目录里的真目录，平移通用；依赖没变指纹不漂移不重装，变了 xuseek.sh 按指纹自愈补装（有 uv 用 uv，失败回落 pip）；干脆不平移也行：新树首启自建，只是多装一次（实测 6~51s） |
 | ⑤ | 担心停单元时 manager 抢拉 | 不会——reconcile 只在 manager 重启时跑，手动操作窗口安全 |
 | ⑥ | 升级收尾后 desired_state 停在 stopped（agentops.stop 落盘、spawn_and_verify 不回写）→ 下次 manager 重启 reconcile 按期望态把已升级的 agent 停掉 | §1 脚本收尾补 `agentops.start(AID)`（active 时只 finalize、不重拉） |
+| ⑦ | docker compose build 永久挂死、零输出零事件（tx-bj-3 实案）：buildx bake 冷路径解析基础镜像 manifest/attestation 时**不走 daemon.json 的 registry-mirrors**，直连 registry-1.docker.io 在墙内静默挂死且 bake 无超时；杀客户端还会楔死 dockerd 内置 buildkit 控制器（后续构建排队不启动，重启 dockerd 才解） | 已内建修复（dockerctl 构建前解析 Dockerfile FROM 行逐一 `docker pull` 走镜像站预热，失败静默）。手工应急：先 `docker pull <基础镜像>` 把元数据拉齐，构建即秒级；已楔死则 `sudo systemctl restart docker` |
 
 ## 4. 验证清单（升级后 5 分钟）
 
