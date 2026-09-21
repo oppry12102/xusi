@@ -522,6 +522,12 @@ def cmd_create(args) -> int:
             "runtime": args.runtime or "",
             "xmem": getattr(args, "xmem", None) == "on",
         }
+        xmem_mount = getattr(args, "xmem_mount", None)
+        if xmem_mount is not None:
+            if not body["xmem"]:
+                print("error: --xmem-mount 只在 --xmem on 时有意义", file=sys.stderr)
+                return 2
+            body["xmem_mount"] = xmem_mount
     try:
         r = agentops.create_agent(**body)
     except (agentops.AgentError, ValueError, TypeError, OSError) as e:
@@ -583,6 +589,8 @@ def cmd_patch(args) -> int:
         changes["expose"] = args.expose.strip().lower() in ("on", "1", "true", "yes")
     if getattr(args, "xmem", None) is not None:
         changes["xmem"] = args.xmem.strip().lower() in ("on", "1", "true", "yes")
+    if getattr(args, "xmem_mount", None) is not None:
+        changes["xmem_mount"] = args.xmem_mount
     if args.runtime:
         changes["runtime"] = args.runtime
     if not changes:
@@ -1080,7 +1088,10 @@ def main() -> int:
                     help="'ADDRESS TOKEN' 成对，可重复")
     c_.add_argument("--extra-config", default=None, help="自由 TOML；@file 读文件")
     c_.add_argument("--xmem", default=None, choices=("on", "off"),
-                    help="内核记忆层开关（on = 出生即从极简种子 seed 自迭代；缺省 off）")
+                    help="内核记忆层开关（on = 注册内建记忆工具 xmem_write/read/...，判断全归大脑；缺省 off）")
+    c_.add_argument("--xmem-mount", choices=("demand", "always"), default=None,
+                    help="xmem 工具面挂载方式（内核 v2.7.96 起；demand=首调用才挂完整 "
+                         "schema/always=起手全挂；只在 --xmem on 时有意义，缺省 demand）")
     c_.set_defaults(fn=cmd_create)
 
     for op in ("start", "stop", "pause", "resume", "restart"):
@@ -1101,6 +1112,8 @@ def main() -> int:
     pt_.add_argument("--expose", default=None, help="on/off")
     pt_.add_argument("--xmem", default=None, choices=("on", "off"),
                     help="内核记忆层开关（下次呼吸生效，不重启）")
+    pt_.add_argument("--xmem-mount", default=None, choices=("demand", "always"),
+                    help="xmem 工具面挂载方式（不指定 = 保留现有值，不丢 agent 自改的挂载）")
     pt_.add_argument("--runtime", default=None, choices=("systemd", "docker", "bare"))
     pt_.set_defaults(fn=cmd_patch)
 

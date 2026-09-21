@@ -28,6 +28,10 @@ class CreateAgentReq(BaseModel):
     xmem: bool = Field(False, description="内核记忆层开关（on = 注册内建记忆工具 "
                                              "xmem_write/read/stats/list/delete——判断全归大脑，"
                                              "机器只存取/排序；缺省 off = 行为与未装 xmem 一致）")
+    xmem_mount: str | None = Field(None, description="xmem 工具面挂载方式（内核 v2.7.96 起）："
+                                                     "demand=首调用才挂完整 schema（省常驻开销，缺省）；"
+                                                     "always=起手全挂（记忆重载的 agent 建议此档）。"
+                                                     "只在 xmem=true 时有意义")
     extra_config: str = Field("", max_length=8000,
                               description="附加配置（可选·高级）：自由 TOML 原样追加进出生 config.toml 末尾"
                                           "（[amem] 等内核可选段）；落盘前整体校验，坏 TOML 拒绝创建")
@@ -54,6 +58,8 @@ class PatchAgentReq(BaseModel):
     note: str | None = None
     expose: bool | None = None
     xmem: bool | None = Field(None, description="内核记忆层开关（下次呼吸生效，不重启）")
+    xmem_mount: str | None = Field(None, description="xmem 工具面挂载方式（demand/always；"
+                                                     "不指定 = 保留现有值，不丢 agent 自改的挂载）")
     brains: list[str] | None = Field(None, description="大脑列表（首个为默认；故障转移只在与默认同档"
                                                         "（tier 相同）的大脑之间按此顺序循环；下次呼吸生效，不重启）")
     runtime: str | None = Field(None, description="切换运行时（systemd/docker）：须先停止 agent，"
