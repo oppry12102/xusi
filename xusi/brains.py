@@ -216,17 +216,17 @@ XMEM_MARKER = "# ── xmem 内核记忆层（本块由管理面渲染；`xusi 
 
 
 def render_xmem_block(on: bool) -> str:
-    """[xmem] 段渲染：开启 = 极简种子 seed（none 词面档参数未校准——起点不是
-    成品，agent 自行迭代）；关闭 = 行为与未装 xmem 逐字节一致（可回滚）。
-    context_policy 不在此渲染——seed profile 自带（内核装配时合并，
-    显式配置 > profile > 默认）。"""
+    """[xmem] 段渲染：开启 = 注册内建记忆工具 xmem_write/read/stats/list/delete
+    （判断全归大脑，机器只存取/排序）；关闭 = 行为与未装 xmem 逐字节一致
+    （可回滚，data/xmem.db 纯新增不随版本走）。"""
     return "\n".join([
         XMEM_MARKER,
-        "# 开启 = 从极简种子 seed 出发自我迭代（none 词面档参数未校准——起点不是成品）；",
-        "# 关闭（缺省）= 行为与未装 xmem 一致，升级可回滚。种子说明见内核 xuseek/xmem/profiles/seed.json",
+        "# 开启 = 注册内建记忆工具 xmem_write/read/stats/list/delete——判断全归大脑",
+        "# （记什么/检索条件/删哪条），机器只做存取与排序。分层配方见",
+        "# workspace/playbook/xmem-记忆分层.md（BOOT 骨架 + 条目库 + amem 三层）。",
+        "# 关闭（缺省）= 行为与未装 xmem 一致，升级可回滚。",
         "[xmem]",
         f"enabled = {'true' if on else 'false'}",
-        'profile = "seed"',
         "",
     ])
 

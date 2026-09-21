@@ -25,9 +25,9 @@ class CreateAgentReq(BaseModel):
     roots: list[RootEntry] | None = Field(None, max_length=8,
                                           description="根智能体（可选：首次启动一次性交割到 "
                                                       "workspace/playbook/根智能体.json，此后死键）")
-    xmem: bool = Field(False, description="内核记忆层开关（on = 出生即从极简种子 seed "
-                                             "自迭代；none 词面档参数未校准——起点不是成品；"
-                                             "缺省 off = 行为与未装 xmem 一致）")
+    xmem: bool = Field(False, description="内核记忆层开关（on = 注册内建记忆工具 "
+                                             "xmem_write/read/stats/list/delete——判断全归大脑，"
+                                             "机器只存取/排序；缺省 off = 行为与未装 xmem 一致）")
     extra_config: str = Field("", max_length=8000,
                               description="附加配置（可选·高级）：自由 TOML 原样追加进出生 config.toml 末尾"
                                           "（[amem] 等内核可选段）；落盘前整体校验，坏 TOML 拒绝创建")
