@@ -341,6 +341,7 @@
         </div>
       </div>
       <div><label>备注（可选）</label><input id="f-note" type="text"></div>
+      <div><label>出生开场信（可选——创建后立即投递，第一口呼吸即读；勾选 xmem 且留空 = 自动投内置 xmem 记忆协议开场白）</label><textarea id="f-greeting" rows="3" style="width:100%;resize:vertical"></textarea></div>
     </div>
   </div>
   <div id="f-err" class="err" style="min-height:27px;padding:0 18px 0"></div>
@@ -1170,7 +1171,7 @@ async function openNew() {
   if (me?.role !== "admin") { alert("创建 agent 需要 admin token"); return; }
   $("#f-err").textContent = ""; $("#f-mission").value = ""; $("#f-name").value = "";
   $("#f-note").value = ""; $("#f-expose").checked = false; $("#f-xmem").checked = false;
-  $("#f-xmem-mount").value = "demand";
+  $("#f-xmem-mount").value = "demand"; $("#f-greeting").value = "";
   $("#f-runtime").value = "systemd";
   $("#f-roots").innerHTML = "";
   switchCreateTab("main");
@@ -1215,6 +1216,7 @@ async function createBlank() {
     expose: $("#f-expose").checked, note: $("#f-note").value.trim(),
     xmem: $("#f-xmem").checked };
   if ($("#f-xmem").checked) body.xmem_mount = $("#f-xmem-mount").value;
+  const gv = $("#f-greeting").value.trim(); if (gv) body.greeting = gv;
   if (roots.length) body.roots = roots;
   const p = $("#f-port").value; if (p) body.port = parseInt(p, 10);
   const sv = $("#f-version").value; if (sv) body.source_version = sv;
