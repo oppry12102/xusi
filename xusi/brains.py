@@ -210,11 +210,33 @@ def render_brain_section(chosen: list[str]) -> list[str]:
     return ["[brain]", f"default = {_q(chosen[0])}", ""] + render_brain_blocks(chosen)
 
 
+# ── xmem 块（内核记忆层开关；create 渲染与 patch 手术改写共用同一渲染器，
+# 逐字节同源——标记行是手术的锚）──
+XMEM_MARKER = "# ── xmem 内核记忆层（本块由管理面渲染；`xusi patch --xmem on|off` 管理）──"
+
+
+def render_xmem_block(on: bool) -> str:
+    """[xmem] 段渲染：开启 = 极简种子 seed（none 词面档参数未校准——起点不是
+    成品，agent 自行迭代）；关闭 = 行为与未装 xmem 逐字节一致（可回滚）。
+    context_policy 不在此渲染——seed profile 自带（内核装配时合并，
+    显式配置 > profile > 默认）。"""
+    return "\n".join([
+        XMEM_MARKER,
+        "# 开启 = 从极简种子 seed 出发自我迭代（none 词面档参数未校准——起点不是成品）；",
+        "# 关闭（缺省）= 行为与未装 xmem 一致，升级可回滚。种子说明见内核 xuseek/xmem/profiles/seed.json",
+        "[xmem]",
+        f"enabled = {'true' if on else 'false'}",
+        'profile = "seed"',
+        "",
+    ])
+
+
 def render_agent_config(mission: str, brains: list[str], budgets: dict | None = None,
                         display_timezone: str | None = None,
                         instance_id: str = "",
                         roots: list | None = None,
-                        extra_config: str = "") -> str:
+                        extra_config: str = "",
+                        xmem: bool = False) -> str:
     """渲染 agent 的 config.toml 全文（注册表数据 → 配置文件，单向渲染）。
 
     ⚠ brains 列表顺序即语义：chosen[0] 渲染为 [brain] default——主回路
@@ -285,6 +307,9 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     extra = (extra_config or "").strip()
     if extra:
         lines.extend(["", extra])
+    # xmem（可选）：内核记忆层开关——管理面渲染的受管块（patch 手术的锚）
+    if xmem:
+        lines.extend(["", render_xmem_block(True)])
     text = "\n".join(lines)
     # 落盘前整体校验：出生配置必须是合法 TOML（内核 preflight 对坏 TOML 静默
     # 保持旧值——渲染侧必须挡住，否则坏附加配置会静默生效为零配置）
@@ -318,7 +343,8 @@ def write_agent_config(home: Path, mission: str, brains: list[str],
                        budgets: dict | None = None,
                        instance_id: str = "",
                        roots: list | None = None,
-                       extra_config: str = "") -> Path:
+                       extra_config: str = "",
+                       xmem: bool = False) -> Path:
     """渲染并写入 <home>/config.toml（chmod 600，含 api_key）。
 
     只在创建时调用——出生配置，首写即终写；此后该文件归 agent 自治，
@@ -328,7 +354,8 @@ def write_agent_config(home: Path, mission: str, brains: list[str],
     """
     text = render_agent_config(mission, brains, budgets,
                                instance_id=instance_id,
-                               roots=roots, extra_config=extra_config)
+                               roots=roots, extra_config=extra_config,
+                               xmem=xmem)
     p = home / "config.toml"
     p.write_text(text, encoding="utf-8")
     p.chmod(0o600)

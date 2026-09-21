@@ -520,6 +520,7 @@ def cmd_create(args) -> int:
             "roots": _parse_roots(args.roots) if args.roots else None,
             "extra_config": _arg_text(args.extra_config) if args.extra_config else "",
             "runtime": args.runtime or "",
+            "xmem": getattr(args, "xmem", None) == "on",
         }
     try:
         r = agentops.create_agent(**body)
@@ -580,10 +581,12 @@ def cmd_patch(args) -> int:
         changes["brains"] = [b.strip() for b in args.brains.split(",") if b.strip()]
     if args.expose is not None:
         changes["expose"] = args.expose.strip().lower() in ("on", "1", "true", "yes")
+    if getattr(args, "xmem", None) is not None:
+        changes["xmem"] = args.xmem.strip().lower() in ("on", "1", "true", "yes")
     if args.runtime:
         changes["runtime"] = args.runtime
     if not changes:
-        print("error: 至少给一个可改字段（--brains/--name/--note/--expose/--runtime）",
+        print("error: 至少给一个可改字段（--brains/--name/--note/--expose/--xmem/--runtime）",
               file=sys.stderr)
         return 2
     try:
@@ -600,6 +603,8 @@ def cmd_patch(args) -> int:
         print(f"  brains : {' → '.join(r.get('brains', []))}{eff}")
     if r.get("restart_required"):
         print("  expose 变更已保存——需重启生效（`xusi restart <id>`）")
+    if r.get("xmem_effective"):
+        print(f"  xmem    : {r.get('xmem')}（下次呼吸生效，不重启）")
     return 0
 
 
@@ -1074,6 +1079,8 @@ def main() -> int:
     c_.add_argument("--roots", action="append", default=None,
                     help="'ADDRESS TOKEN' 成对，可重复")
     c_.add_argument("--extra-config", default=None, help="自由 TOML；@file 读文件")
+    c_.add_argument("--xmem", default=None, choices=("on", "off"),
+                    help="内核记忆层开关（on = 出生即从极简种子 seed 自迭代；缺省 off）")
     c_.set_defaults(fn=cmd_create)
 
     for op in ("start", "stop", "pause", "resume", "restart"):
@@ -1092,6 +1099,8 @@ def main() -> int:
     pt_.add_argument("--note", default=None)
     pt_.add_argument("--brains", default=None, help="逗号分隔（池条目名；老名自动升级）")
     pt_.add_argument("--expose", default=None, help="on/off")
+    pt_.add_argument("--xmem", default=None, choices=("on", "off"),
+                    help="内核记忆层开关（下次呼吸生效，不重启）")
     pt_.add_argument("--runtime", default=None, choices=("systemd", "docker", "bare"))
     pt_.set_defaults(fn=cmd_patch)
 

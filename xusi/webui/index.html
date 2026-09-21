@@ -322,6 +322,9 @@
           <input id="f-expose" type="checkbox"><label for="f-expose" style="margin:0">暴露外网（监听 0.0.0.0）</label>
         </div></div>
       </div>
+      <div style="display:flex;align-items:end"><div class="switch">
+        <input id="f-xmem" type="checkbox"><label for="f-xmem" style="margin:0">内核记忆层 xmem（出生即从极简种子自迭代；词面档参数未校准——起点不是成品）</label>
+      </div></div>
     </div>
 
     <div id="f-tab-opt" hidden>
@@ -411,6 +414,9 @@
         <input id="e-expose" type="checkbox"><label for="e-expose" style="margin:0">暴露外网（改后需重启）</label>
       </div></div>
     </div>
+    <div style="display:flex;align-items:end"><div class="switch">
+      <input id="e-xmem" type="checkbox"><label for="e-xmem" style="margin:0">内核记忆层 xmem（下次呼吸生效，不重启）</label>
+    </div></div>
     <div><label>运行时<span class="hint" style="font-weight:400">——切换须先「停止」：停止 → 改参 → 启动（切换后不自动启动）</span></label>
       <select id="e-runtime" disabled>
         <option value="systemd">系统进程（systemd）</option>
@@ -1157,7 +1163,7 @@ async function openNew() {
   if (!tok) { alert("请先认证"); return; }
   if (me?.role !== "admin") { alert("创建 agent 需要 admin token"); return; }
   $("#f-err").textContent = ""; $("#f-mission").value = ""; $("#f-name").value = "";
-  $("#f-note").value = ""; $("#f-expose").checked = false;
+  $("#f-note").value = ""; $("#f-expose").checked = false; $("#f-xmem").checked = false;
   $("#f-runtime").value = "systemd";
   $("#f-roots").innerHTML = "";
   switchCreateTab("main");
@@ -1199,7 +1205,8 @@ async function createBlank() {
   let roots;
   try { roots = collectRoots(); } catch (e) { return; }
   const body = { name: $("#f-name").value.trim(), mission, brains,
-    expose: $("#f-expose").checked, note: $("#f-note").value.trim() };
+    expose: $("#f-expose").checked, note: $("#f-note").value.trim(),
+    xmem: $("#f-xmem").checked };
   if (roots.length) body.roots = roots;
   const p = $("#f-port").value; if (p) body.port = parseInt(p, 10);
   const sv = $("#f-version").value; if (sv) body.source_version = sv;
@@ -1753,6 +1760,7 @@ async function openEdit(id) {
     $("#e-name").value = s.name || "";
     $("#e-note").value = s.note || "";
     $("#e-expose").checked = !!s.expose;
+    $("#e-xmem").checked = !!s.xmem;
     $("#e-runtime").value = s.runtime || "systemd";
     // running 时禁用 runtime 切换：后端要求停止态（运行中提交会 400）——
     // 与其「能选不能改」，不如灰显 + hint 说明；停止后恢复可编辑
@@ -1787,6 +1795,10 @@ async function saveEdit() {
     expose: $("#e-expose").checked,
     note: $("#e-note").value.trim(),
   };
+  const xmemChanged = $("#e-xmem").checked !== !!editCur.xmem;
+  if (xmemChanged) body.xmem = $("#e-xmem").checked;
+  // xmem 只在勾选态变化时上送：非受管段（agent 手工写过 [xmem]）不因
+  // 无关编辑被手术覆盖——管理面不碰非受管配置
   if (editBrainsOk) {
     // 池序收集勾选——与创建对话框同语义：首个勾选（池序）= 默认；
     // 故障转移只发生在与默认同档之间（economy 档不参与主循环轮换）

@@ -340,7 +340,8 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
                  source_version: str = "",
                  roots: list | None = None,
                  extra_config: str = "",
-                 runtime: str = "") -> dict:
+                 runtime: str = "",
+                 xmem: bool = False) -> dict:
     """创建并启动一个 agent：渲染出生 config.toml → 注册 → 按 runtime 拉起
     （systemd 直跑 / docker 容器）→ 端口验收。
 
@@ -405,6 +406,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
             "brains": list(brain_list),
             "budgets": budgets or {},
             "expose": bool(expose),
+            "xmem": bool(xmem),
             "port": port,
             "desired_state": "running",
             "note": note,
@@ -421,7 +423,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
             raise AgentError(f"创建失败已回滚：{e}") from e
 
         try:
-            _init_workspace(rec, src_ver, roots_norm, extra_config)
+            _init_workspace(rec, src_ver, roots_norm, extra_config, xmem=xmem)
             # 注册（期望态 running）
             registry.add_agent(rec)
         except Exception as e:
@@ -452,7 +454,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
 
 
 def _init_workspace(rec: dict, src_ver: str, roots: list | None = None,
-                    extra_config: str = "") -> None:
+                    extra_config: str = "", xmem: bool = False) -> None:
     """在 agent 被注册/拉起之前，把它的 home 准备到位：
 
     - 从版本仓库解压源码到实例私有副本（instances/<id>/xuseek-v2/）
@@ -466,7 +468,7 @@ def _init_workspace(rec: dict, src_ver: str, roots: list | None = None,
     versions.extract(src_ver, home / versions.SRC_DIR_NAME)
     brains.write_agent_config(home, rec["mission"], rec["brains"], rec["budgets"],
                               instance_id=rec["id"],
-                              roots=roots, extra_config=extra_config)
+                              roots=roots, extra_config=extra_config, xmem=xmem)
 
 
 def spawn_and_verify(rec: dict) -> None:
@@ -729,7 +731,7 @@ def delete(agent_id: str) -> dict:
 # 已建立的互联与观测台入口；要换端口只能删了重建（或克隆到新端口）。
 # mission/budgets 在创建后归 agent 自治——改它们请投信让 agent 自己
 # 修改自己的 config.toml（内核每轮热重载）。
-_PATCHABLE = {"name", "note", "expose", "brains", "runtime"}
+_PATCHABLE = {"name", "note", "expose", "brains", "runtime", "xmem"}
 
 _AGENT_OWNED = {
     "mission": "使命已由 agent 自治：请投信让它自己修改 config.toml（内核每轮热重载）",
@@ -739,6 +741,43 @@ _AGENT_OWNED = {
 _IMMUTABLE = {
     "port": "端口创建后固定（agent 对外联络 = ip+port，改端口等于换地址）",
 }
+
+
+def _rewrite_xmem_section(agent: dict, on: bool) -> None:
+    """[xmem] 段手术改写（与 brains 段手术同族）：管理面渲染的块从标记行
+    整块替换；标记不在且已有 [xmem] 段 = agent/管理员手工改过——不覆盖
+    （那是它自己的世界），报 AgentError 让管理员投信或手工改。落盘前
+    tomllib 整体校验，坏 TOML 不落盘（坏段会静默生效为零配置）。"""
+    p = Path(_home(agent)) / "config.toml"
+    text = p.read_text(encoding="utf-8")
+    block = brains.render_xmem_block(on)
+    if brains.XMEM_MARKER in text:
+        i = text.index(brains.XMEM_MARKER)
+        rest = text[i:]
+        h = rest.find("\n[xmem]")
+        if h < 0:
+            raise AgentError("config.toml 里有 xmem 标记但块结构被改动"
+                             "——请投信或手工修 config.toml")
+        after = rest[h + 1:]
+        m = re.search(r"\n\[", after)   # 跳过块自己的 [xmem] 段头，找下一段
+        end = i + h + 1 + (m.start() + 1 if m else len(after))
+        text = text[:i] + block + text[end:]
+    else:
+        try:
+            raw = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as e:
+            raise AgentError(f"config.toml 无法解析（先手工修好再试）：{e}") from None
+        if "xmem" in raw:
+            raise AgentError(
+                "config.toml 里已有 [xmem] 段但不是管理面渲染的块（agent/管理员"
+                "手工改过）——请投信让 agent 自己改，或手工编辑 config.toml；"
+                "管理面不覆盖非受管段")
+        text = text.rstrip("\n") + "\n\n" + block
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise AgentError(f"改写后的 config.toml 无法解析（未落盘）：{e}") from None
+    p.write_text(text, encoding="utf-8")
 
 
 def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) -> dict:
@@ -799,6 +838,13 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
         _rewrite_brain_sections(agent, bl)
         registry.update_agent(agent_id, {"brains": bl})   # 快照即真相（卡片/状态 tab）
         brains_new = bl
+    # xmem 段手术：管理面渲染的受管块整块替换（下次呼吸生效，不重启——
+    # 内核每个大循环热重载 config.toml）。注册表快照随真相更新
+    xmem_new = None
+    if "xmem" in changes:
+        _rewrite_xmem_section(agent, bool(changes["xmem"]))
+        registry.update_agent(agent_id, {"xmem": bool(changes["xmem"])})
+        xmem_new = bool(changes["xmem"])
 
     # runtime 载体动作（校验全过才开始动载体）：旧载体防御性清理（幂等）——
     # docker → compose down 回收容器防残留占端口；涉 docker 一侧顺手清
@@ -851,6 +897,9 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     out = {**out, "restart_required": need_restart, "restarted": restarted}
     if brains_new is not None:
         out["brains_effective"] = "next_breath"   # 下次呼吸生效，不重启
+    if xmem_new is not None:
+        out["xmem"] = xmem_new
+        out["xmem_effective"] = "next_breath"     # 下次呼吸生效，不重启
     return out
 
 
@@ -884,6 +933,7 @@ def status(agent_id: str) -> dict:
         "budgets": agent.get("budgets", {}),
         "port": agent["port"],
         "expose": agent.get("expose", False),
+        "xmem": agent.get("xmem", False),
         "note": agent.get("note", ""),
         "source_version": agent.get("source_version", ""),
         "roots": agent.get("roots", []),

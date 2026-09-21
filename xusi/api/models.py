@@ -25,6 +25,9 @@ class CreateAgentReq(BaseModel):
     roots: list[RootEntry] | None = Field(None, max_length=8,
                                           description="根智能体（可选：首次启动一次性交割到 "
                                                       "workspace/playbook/根智能体.json，此后死键）")
+    xmem: bool = Field(False, description="内核记忆层开关（on = 出生即从极简种子 seed "
+                                             "自迭代；none 词面档参数未校准——起点不是成品；"
+                                             "缺省 off = 行为与未装 xmem 一致）")
     extra_config: str = Field("", max_length=8000,
                               description="附加配置（可选·高级）：自由 TOML 原样追加进出生 config.toml 末尾"
                                           "（[amem] 等内核可选段）；落盘前整体校验，坏 TOML 拒绝创建")
@@ -50,6 +53,7 @@ class PatchAgentReq(BaseModel):
     name: str | None = None
     note: str | None = None
     expose: bool | None = None
+    xmem: bool | None = Field(None, description="内核记忆层开关（下次呼吸生效，不重启）")
     brains: list[str] | None = Field(None, description="大脑列表（首个为默认；故障转移只在与默认同档"
                                                         "（tier 相同）的大脑之间按此顺序循环；下次呼吸生效，不重启）")
     runtime: str | None = Field(None, description="切换运行时（systemd/docker）：须先停止 agent，"
