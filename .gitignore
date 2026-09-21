@@ -48,3 +48,5 @@ etc/backups/
 etc/*.deprecated.*
 # brains.toml 的带密钥备份——永不入库（brains.toml 本身已忽略）
 etc/brains.toml.bak-*
+# 运行时日志（serve 进程的 stdout/stderr 重定向落点；每台机器自己的一份）
+serve.log
