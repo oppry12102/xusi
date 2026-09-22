@@ -21,6 +21,7 @@ CLI 与 serve 同一条实现（跨进程并发由 registry.file_lock 互斥）�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import secrets
@@ -44,6 +45,21 @@ def _ensure_venv() -> Path:
         subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
         subprocess.run([str(venv / "bin" / "pip"), "install", "--quiet",
                         "--disable-pip-version-check", *DEPS], check=True)
+    # 依赖指纹 top-up（2026-09-22 实案：DEPS 加 python-multipart 后老机器 venv
+    # 永远补不上——远端 serve 一起动就崩 RuntimeError）：DEPS 变了才补装一次。
+    # 失败软着陆：serve 才依赖 fastapi 系，纯 CLI 运维（status/patch/升级）不
+    # 该被网络问题拖死——响亮警告 + 不写标记，下回再试。
+    marker = venv / "xusi-deps.txt"
+    want = hashlib.sha256("\n".join(DEPS).encode()).hexdigest()
+    have = marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+    if have != want:
+        try:
+            subprocess.run([str(venv / "bin" / "pip"), "install", "--quiet",
+                            "--disable-pip-version-check", *DEPS], check=True)
+            marker.write_text(want, encoding="utf-8")
+        except (subprocess.CalledProcessError, OSError) as e:
+            print(f"warning: 管理面依赖 top-up 失败（serve 可能起不来；CLI 不受影响）：{e}",
+                  file=sys.stderr)
     # 依赖只装在 venv 里：若本进程不在 venv（系统 python 直接 `python -m xusi install`），
     # 重建 venv 后重进 venv 再执行——后续 cmd_install 会 import httpx 等第三方库。
     # 注意 venv 的 python 是指向系统 python 的符号链接，不能用 resolve() 比对。
