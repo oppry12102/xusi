@@ -507,6 +507,17 @@ def cmd_create(args) -> int:
         # API body 同构翻译：API 字段 brains ↔ agentops 参数 brain_list
         if "brains" in body:
             body["brain_list"] = body.pop("brains")
+        # 防御（2026-09-22 实案：旧管理面 serve 在内存里还发 xmem_mount，远端新
+        # create_agent 直接 TypeError）：spec 可能来自旧管理面/手写文件，含退役
+        # 或笔误键——按 create_agent 签名白名单过滤，不认的键大声提醒后忽略，
+        # 别让一个退役字段炸掉整个创建。
+        import inspect as _inspect
+        _ok = _inspect.signature(agentops.create_agent).parameters
+        _dropped = [k for k in body if k not in _ok]
+        if _dropped:
+            print(f"warning: spec 里有 create_agent 不认的键，已忽略："
+                  f"{', '.join(sorted(_dropped))}", file=sys.stderr)
+        body = {k: v for k, v in body.items() if k in _ok}
     else:
         body = {
             "name": args.name,
