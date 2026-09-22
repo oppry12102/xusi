@@ -341,8 +341,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
                  roots: list | None = None,
                  extra_config: str = "",
                  runtime: str = "",
-                 xmem: bool = False,
-                 xmem_mount: str = "demand") -> dict:
+                 xmem: bool = False) -> dict:
     """创建并启动一个 agent：渲染出生 config.toml → 注册 → 按 runtime 拉起
     （systemd 直跑 / docker 容器）→ 端口验收。
 
@@ -408,7 +407,6 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
             "budgets": budgets or {},
             "expose": bool(expose),
             "xmem": bool(xmem),
-            "xmem_mount": xmem_mount if xmem_mount in brains.XMEM_MOUNTS else "demand",
             "port": port,
             "desired_state": "running",
             "note": note,
@@ -425,8 +423,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
             raise AgentError(f"创建失败已回滚：{e}") from e
 
         try:
-            _init_workspace(rec, src_ver, roots_norm, extra_config, xmem=xmem,
-                            xmem_mount=rec["xmem_mount"])
+            _init_workspace(rec, src_ver, roots_norm, extra_config, xmem=xmem)
             # 注册（期望态 running）
             registry.add_agent(rec)
         except Exception as e:
@@ -457,8 +454,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
 
 
 def _init_workspace(rec: dict, src_ver: str, roots: list | None = None,
-                    extra_config: str = "", xmem: bool = False,
-                    xmem_mount: str = "demand") -> None:
+                    extra_config: str = "", xmem: bool = False) -> None:
     """在 agent 被注册/拉起之前，把它的 home 准备到位：
 
     - 从版本仓库解压源码到实例私有副本（instances/<id>/xuseek-v2/）
@@ -472,8 +468,7 @@ def _init_workspace(rec: dict, src_ver: str, roots: list | None = None,
     versions.extract(src_ver, home / versions.SRC_DIR_NAME)
     brains.write_agent_config(home, rec["mission"], rec["brains"], rec["budgets"],
                               instance_id=rec["id"],
-                              roots=roots, extra_config=extra_config, xmem=xmem,
-                              xmem_mount=xmem_mount)
+                              roots=roots, extra_config=extra_config, xmem=xmem)
 
 
 def spawn_and_verify(rec: dict) -> None:
@@ -736,7 +731,7 @@ def delete(agent_id: str) -> dict:
 # 已建立的互联与观测台入口；要换端口只能删了重建（或克隆到新端口）。
 # mission/budgets 在创建后归 agent 自治——改它们请投信让 agent 自己
 # 修改自己的 config.toml（内核每轮热重载）。
-_PATCHABLE = {"name", "note", "expose", "brains", "runtime", "xmem", "xmem_mount"}
+_PATCHABLE = {"name", "note", "expose", "brains", "runtime", "xmem"}
 
 _AGENT_OWNED = {
     "mission": "使命已由 agent 自治：请投信让它自己修改 config.toml（内核每轮热重载）",
@@ -748,17 +743,16 @@ _IMMUTABLE = {
 }
 
 
-def _rewrite_xmem_section(agent: dict, on: bool, mount: str | None = None) -> None:
+def _rewrite_xmem_section(agent: dict, on: bool) -> None:
     """[xmem] 段手术改写（与 brains 段手术同族）：管理面渲染的块从标记行
     整块替换；标记不在且已有 [xmem] 段 = agent/管理员手工改过——不覆盖
     （那是它自己的世界），报 AgentError 让管理员投信或手工改。落盘前
     tomllib 整体校验，坏 TOML 不落盘（坏段会静默生效为零配置）。
 
-    mount（内核 v2.7.96 起）：缺省不指定 = **保留旧块里已有的 mount 值**
-    （agent 自改的挂载方式不能被一次 enabled 切换抹掉）；显式指定则覆盖。
+    整块替换顺带迁移：老块里的 mount = "demand|always"（v2.7.96/97 时代
+    渲染残留）随新块一起消失——内核 v2.7.98 已裁撤该键（enabled=true
+    恒起手全挂），留着是死配置。
     """
-    if mount is not None and mount not in brains.XMEM_MOUNTS:
-        raise AgentError(f"xmem mount 只能是 demand/always：{mount!r}")
     p = Path(_home(agent)) / "config.toml"
     text = p.read_text(encoding="utf-8")
     if brains.XMEM_MARKER in text:
@@ -771,15 +765,7 @@ def _rewrite_xmem_section(agent: dict, on: bool, mount: str | None = None) -> No
         after = rest[h + 1:]
         m = re.search(r"\n\[", after)   # 跳过块自己的 [xmem] 段头，找下一段
         end = i + h + 1 + (m.start() + 1 if m else len(after))
-        old_block = text[i:end]
-        # 保留旧 mount（agent 自改过就不丢；老块无 mount = 内核缺省 demand）
-        old_m = re.search(r'\nmount\s*=\s*"([^"]+)"', old_block)
-        keep = mount if mount is not None else (old_m.group(1) if old_m else "demand")
-        if keep not in brains.XMEM_MOUNTS:
-            raise AgentError(
-                f"config.toml 里 xmem mount 值非法（{keep!r}，应为 demand/always）"
-                "——请投信或手工修 config.toml")
-        block = brains.render_xmem_block(on, keep)
+        block = brains.render_xmem_block(on)
         text = text[:i] + block + text[end:]
     else:
         try:
@@ -791,7 +777,7 @@ def _rewrite_xmem_section(agent: dict, on: bool, mount: str | None = None) -> No
                 "config.toml 里已有 [xmem] 段但不是管理面渲染的块（agent/管理员"
                 "手工改过）——请投信让 agent 自己改，或手工编辑 config.toml；"
                 "管理面不覆盖非受管段")
-        text = text.rstrip("\n") + "\n\n" + brains.render_xmem_block(on, mount or "demand")
+        text = text.rstrip("\n") + "\n\n" + brains.render_xmem_block(on)
     try:
         tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
@@ -860,17 +846,10 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     # xmem 段手术：管理面渲染的受管块整块替换（下次呼吸生效，不重启——
     # 内核每个大循环热重载 config.toml）。注册表快照随真相更新
     xmem_new = None
-    if "xmem" in changes or "xmem_mount" in changes:
-        on = bool(changes["xmem"]) if "xmem" in changes else bool(agent.get("xmem"))
-        mount = changes.get("xmem_mount")
-        _rewrite_xmem_section(agent, on, mount)
-        upd = {}
-        if "xmem" in changes:
-            upd["xmem"] = on
-        if mount is not None:
-            upd["xmem_mount"] = mount
-        if upd:
-            registry.update_agent(agent_id, upd)
+    if "xmem" in changes:
+        on = bool(changes["xmem"])
+        _rewrite_xmem_section(agent, on)
+        registry.update_agent(agent_id, {"xmem": on})
         xmem_new = on
 
     # runtime 载体动作（校验全过才开始动载体）：旧载体防御性清理（幂等）——

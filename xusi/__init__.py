@@ -12,4 +12,4 @@
 data/webui_tokens.json），会话索引读事实账 session_end 行。systemd 进程/信号
 是宿主职责，不算通信。
 """
-__version__ = "2.6.0"
+__version__ = "2.6.1"

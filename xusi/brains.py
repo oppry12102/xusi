@@ -215,30 +215,24 @@ def render_brain_section(chosen: list[str]) -> list[str]:
 XMEM_MARKER = "# ── xmem 内核记忆层（本块由管理面渲染；`xusi patch --xmem on|off` 管理）──"
 
 
-XMEM_MOUNTS = ("demand", "always")
-
-
-def render_xmem_block(on: bool, mount: str = "demand") -> str:
+def render_xmem_block(on: bool) -> str:
     """[xmem] 段渲染：开启 = 注册内建记忆工具 xmem_write/read/stats/list/delete
     （判断全归大脑，机器只存取/排序）；关闭 = 行为与未装 xmem 逐字节一致
     （可回滚，data/xmem.db 纯新增不随版本走）。
 
-    mount（内核 v2.7.96 起）：工具面挂载方式——demand=起手只挂系统提示一行
-    声明、大脑首次调用才挂完整 schema（闲置连续 8 轮自动摘回声明态）；
-    always=起手全挂（记忆重载的 agent 建议此档，省去首调一轮延迟）。
+    挂载方式已随内核 v2.7.98 收敛：enabled=true 起手五件全挂（v2.7.95 行为），
+    v2.7.96/97 的 mount=demand|always 选项整体裁撤——本渲染器不再写 mount 键
+    （2.7.96/97 内核无此键 = 缺省 demand，与旧缺省渲染逐字节同义）。
     """
-    if mount not in XMEM_MOUNTS:
-        raise ValueError(f"xmem mount 只能是 demand/always：{mount!r}")
     return "\n".join([
         XMEM_MARKER,
         "# 开启 = 注册内建记忆工具 xmem_write/read/stats/list/delete——判断全归大脑",
         "# （记什么/检索条件/删哪条），机器只做存取与排序。分层配方见",
         "# workspace/playbook/xmem-记忆分层.md（BOOT 骨架 + 条目库 + amem 三层）。",
-        "# mount：demand=首调用才挂完整 schema（省常驻开销）；always=起手全挂。",
+        "# 挂载方式：内核 v2.7.98 起 enabled=true 恒为起手全挂（无挂载状态机）。",
         "# 关闭（缺省）= 行为与未装 xmem 一致，升级可回滚。",
         "[xmem]",
         f"enabled = {'true' if on else 'false'}",
-        f'mount = "{mount}"',
         "",
     ])
 
@@ -248,8 +242,7 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
                         instance_id: str = "",
                         roots: list | None = None,
                         extra_config: str = "",
-                        xmem: bool = False,
-                        xmem_mount: str = "demand") -> str:
+                        xmem: bool = False) -> str:
     """渲染 agent 的 config.toml 全文（注册表数据 → 配置文件，单向渲染）。
 
     ⚠ brains 列表顺序即语义：chosen[0] 渲染为 [brain] default——主回路
@@ -322,7 +315,7 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
         lines.extend(["", extra])
     # xmem（可选）：内核记忆层开关——管理面渲染的受管块（patch 手术的锚）
     if xmem:
-        lines.extend(["", render_xmem_block(True, xmem_mount)])
+        lines.extend(["", render_xmem_block(True)])
     text = "\n".join(lines)
     # 落盘前整体校验：出生配置必须是合法 TOML（内核 preflight 对坏 TOML 静默
     # 保持旧值——渲染侧必须挡住，否则坏附加配置会静默生效为零配置）
@@ -357,8 +350,7 @@ def write_agent_config(home: Path, mission: str, brains: list[str],
                        instance_id: str = "",
                        roots: list | None = None,
                        extra_config: str = "",
-                       xmem: bool = False,
-                       xmem_mount: str = "demand") -> Path:
+                       xmem: bool = False) -> Path:
     """渲染并写入 <home>/config.toml（chmod 600，含 api_key）。
 
     只在创建时调用——出生配置，首写即终写；此后该文件归 agent 自治，
@@ -369,7 +361,7 @@ def write_agent_config(home: Path, mission: str, brains: list[str],
     text = render_agent_config(mission, brains, budgets,
                                instance_id=instance_id,
                                roots=roots, extra_config=extra_config,
-                               xmem=xmem, xmem_mount=xmem_mount)
+                               xmem=xmem)
     p = home / "config.toml"
     p.write_text(text, encoding="utf-8")
     p.chmod(0o600)
