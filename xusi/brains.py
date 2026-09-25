@@ -22,7 +22,7 @@ from .config import get_config
 
 # 渲染进 agent config.toml 时允许透传的可选字段（v2 config 认识的）
 _OPTIONAL_FIELDS = ("temperature", "timeout", "tier", "price_prompt", "price_completion",
-                    "context_window", "no_think_dialect")
+                    "context_window", "no_think_dialect", "vision")
 
 # 老名 → 新名（池条目改名的一次性别名）：厂商段展开为多模型平级条目后，
 # 老段名（deepseek/glm）在池里查无此人——校验时自动升级并落快照，
@@ -197,7 +197,13 @@ def render_brain_blocks(chosen: list[str]) -> list[str]:
         for k in _OPTIONAL_FIELDS:
             if k in spec and spec[k] not in ("", None):
                 v = spec[k]
-                lines.append(f"{k} = {_q(v)}" if isinstance(v, str) else f"{k} = {v}")
+                if isinstance(v, str):
+                    lines.append(f"{k} = {_q(v)}")
+                elif isinstance(v, bool):
+                    # TOML 布尔必须小写（Python 直渲是 True/False = 非法）
+                    lines.append(f"{k} = {'true' if v else 'false'}")
+                else:
+                    lines.append(f"{k} = {v}")
         lines.append("")
     return lines
 
