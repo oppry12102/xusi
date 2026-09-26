@@ -26,7 +26,8 @@ from pathlib import Path, PurePosixPath
 from .config import get_config
 
 # 实例内私有源码副本的目录名（agentops 也引用）
-SRC_DIR_NAME = "xuseek-v2"
+SRC_DIR_NAME = "xuseek"          # 内核目录统一叫 xuseek（2026-09-26 定案）
+_LEGACY_SRC_DIR = "xuseek-v2"   # 迁移前存量实例的旧目录名（只读兼容）
 
 # 内核地板（2026-09-20 收敛）：管理面只支持 ≥ 此版本的内核——v2.7.79 起是
 # facts.db 事实账时代（mail/outbox/session_end 全部落账本，jsonl 邮箱/会话
@@ -115,6 +116,15 @@ def list_versions() -> list[dict]:
             })
     out.sort(key=lambda r: _rank(r["version"]), reverse=True)
     return out
+
+
+def kernel_dir(home: Path) -> Path:
+    """实例内核目录：新名 xuseek/ 优先，旧名 xuseek-v2/ 只读兼容（迁移窗口）。"""
+    for name in (SRC_DIR_NAME, _LEGACY_SRC_DIR):
+        p = home / name
+        if p.is_dir():
+            return p
+    return home / SRC_DIR_NAME
 
 
 def zip_for(version: str) -> Path:

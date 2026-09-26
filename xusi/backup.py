@@ -40,7 +40,7 @@ from .config import get_config
 # 匹配，09b6 旧布局 workspace/.local 同样排除）；.pylib = PIP_TARGET 时代
 # 遗留（venv 即世界后成死重，agent-abef 实测 5.9G）；.hf_cache = HF 下载
 # 缓存，可重新下载重建
-_EXCLUDE_DIRS = {".venv", "xuseek-v2", "__pycache__", ".pytest_cache",
+_EXCLUDE_DIRS = {".venv", "xuseek", "xuseek-v2", "__pycache__", ".pytest_cache",
                  ".cache", ".local", ".pylib", ".hf_cache"}
 _EXCLUDE_SUFFIXES = {".pyc", ".egg-info"}
 _EXCLUDE_FILES = {"webui_tokens.json"}
@@ -448,7 +448,7 @@ def restore(backup_path: Path, *, new_id: str | None = None,
         raise
 
     # 3. 从 versions 重建 xuseek-v2 副本（除非包内带）
-    src_dir = home / versions.SRC_DIR_NAME
+    src_dir = versions.kernel_dir(home)
     if not (src_dir / "xuseek.sh").exists():
         sv = meta.get("source_version") or ""
         if not sv:

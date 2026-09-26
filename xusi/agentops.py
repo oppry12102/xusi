@@ -115,7 +115,7 @@ def _source_for(agent: dict) -> Path:
     """该 agent 的 xuseek-v2 源码目录 = 实例私有副本 instances/<id>/xuseek-v2/
     （创建时从版本仓库解压，实例间完全隔离，可各跑各的版本）。"""
     ver = str(agent.get("source_version") or "").strip()
-    p = _home(agent) / versions.SRC_DIR_NAME
+    p = versions.kernel_dir(_home(agent))
     if not (p / "xuseek.sh").exists():
         raise AgentError(
             f"agent {agent['id']} 的私有源码副本缺失：{p}（版本 {ver}）。"
@@ -827,7 +827,7 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
                     raise AgentError(f"docker 不可用：{hint}")
                 # 入口 shim 是内核地板（≥ KERNEL_FLOOR）的必有件——文件缺失
                 # 只可能是实例目录被改动，仍做防御性检查（消息不再谈版本）
-                if not (Path(_home(agent)) / versions.SRC_DIR_NAME
+                if not versions.kernel_dir(Path(_home(agent)))
                         / "docker-entrypoint.sh").is_file():
                     raise AgentError(
                         "实例内核副本不含入口 shim docker-entrypoint.sh（实例目录被改动？）"
