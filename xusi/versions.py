@@ -122,7 +122,7 @@ def zip_for(version: str) -> Path:
     if not _VER_RE.match(v):
         raise VersionError(
             f"非法版本号 {version!r}（允许字母数字开头，仅字母数字 . _ -，≤64 位）")
-    p = repo_dir() / f"xuseek2-v{v}.zip"           # 新前缀优先
+    p = repo_dir() / f"xuseek2-{v}.zip"           # 新前缀优先（版本号自带 v）
     if not p.is_file():
         p = repo_dir() / f"xuseek-v2-{v}.zip"      # 旧前缀兼容（存量包）
     if not p.is_file():
