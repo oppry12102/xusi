@@ -50,8 +50,11 @@ agentops.stop(AID)                          # 1) 优雅停（agentops.stop：冻
                                             #    SIGCONT 解救再停，不裸调 systemdctl；
                                             #    desired_state 落 stopped，中途死不
                                             #    谎报，reconcile 不从半迁移目录乱拉）
-src, tmp = home / versions.SRC_DIR_NAME, home / "xuseek-v2.new"
-bak = home / f"xuseek-v2.old-{OLD}"
+src, tmp = versions.kernel_dir(home), home / "xuseek.new"   # 坑⑨：src 必须走
+                                            # kernel_dir（兼容旧名 xuseek-v2 的存量
+                                            # 实例——东京实案：直接用 SRC_DIR_NAME 时
+                                            # rename 报 FileNotFoundError，卡在半迁移）
+bak = home / f"{versions.SRC_DIR_NAME}.old-{OLD}"
 for d in (tmp, bak):
     if d.exists(): shutil.rmtree(d)
 versions.extract(NEW, tmp)                  # 2) 官方解压器（坑①：勿用裸 unzip）
@@ -104,6 +107,7 @@ agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier =
 | ⑤ | 担心停单元时 manager 抢拉 | 不会——reconcile 只在 manager 重启时跑，手动操作窗口安全 |
 | ⑥ | 升级收尾后 desired_state 停在 stopped（agentops.stop 落盘、spawn_and_verify 不回写）→ 下次 manager 重启 reconcile 按期望态把已升级的 agent 停掉 | §1 脚本收尾补 `agentops.start(AID)`（active 时只 finalize、不重拉） |
 | ⑧ | 内核目录改名（2026-09-26 xuseek-v2→xuseek）后：**实例自有脚本的硬编码旧路径**（ctl.sh 锚点/自愈脚本/BOOT 指令里的 `/data/xuseek-v2`）与**常驻服务未恢复**（收信口 8409 类断连，邻居报 >9 分钟拒连）——72ad 实案：ctl 锚点 rc=127、收信服务靠管理员投信才恢复；47db/8a43 同款残留已投信自修 | 升级/改名后**逐实例检查**：grep 实例 home 的 ctl.sh/workspace 里 `xuseek-v2` 残留；pidfile vs 进程对账（`kill -0`）；有发现投信让 agent 自修（72ad 已把锚点改成 VIRTUAL_ENV→python3→/data/xuseek→/app 探测式，可作范本） |
+| ⑨ | §1 脚本的 src 直接取 `versions.SRC_DIR_NAME` → 存量实例还是旧目录名时 rename 报 FileNotFoundError、**卡在半迁移**（服务已停、新树已解包、venv 没平移）——tx-tokyo-1 两实例实案 | src 走 `versions.kernel_dir(home)`（新名优先、旧名兼容）；已在半迁移态时手工收尾：wrapper → 新树改名 → venv 平移 → 旧树备份 → spawn |
 | ⑦ | docker compose build 永久挂死、零输出零事件（tx-bj-3 实案）：buildx bake 冷路径解析基础镜像 manifest/attestation 时**不走 daemon.json 的 registry-mirrors**，直连 registry-1.docker.io 在墙内静默挂死且 bake 无超时；杀客户端还会楔死 dockerd 内置 buildkit 控制器（后续构建排队不启动，重启 dockerd 才解） | 已内建修复（dockerctl 构建前解析 Dockerfile FROM 行逐一 `docker pull` 走镜像站预热，失败静默）。手工应急：先 `docker pull <基础镜像>` 把元数据拉齐，构建即秒级；已楔死则 `sudo systemctl restart docker` |
 
 ## 4. 验证清单（升级后 5 分钟）
