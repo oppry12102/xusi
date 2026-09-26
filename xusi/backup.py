@@ -6,12 +6,12 @@
      已无从得知 daemon 何时休眠（/v1/status 已取消）——运行中备份一律冻结快照，
      不再挑睡眠窗。
   2. 备份包 = meta.json + config.toml + data/ + workspace/。
-     排除：.venv/（重建）、xuseek-v2/（重建）、__pycache__/*.pyc（缓存）、
+     排除：.venv/（重建）、xuseek/（重建）、__pycache__/*.pyc（缓存）、
      webui_tokens.json（agent 自己的凭证文件，恢复后由 agent 自行重建）。
   3. backend 解耦：LocalBackend 是当前实现，第三方可 drop-in 实现 S3Backend 等。
   4. 跨主机：备份包自描述（meta 含 source_version / port / brains 等），
-     在另一台装了 xuseek-v2 versions 的机器上 `xusi restore` 即可起。
-  5. 恢复流程：解压 → 从 versions 重建私有 xuseek-v2 副本 → 写注册表 → 启动
+     在另一台装了 xuseek versions 的机器上 `xusi restore` 即可起。
+  5. 恢复流程：解压 → 从 versions 重建私有 xuseek 副本 → 写注册表 → 启动
      （.venv 由 xuseek.sh 首次启动自建，无需打包）。
 """
 from __future__ import annotations
@@ -40,7 +40,7 @@ from .config import get_config
 # 匹配，09b6 旧布局 workspace/.local 同样排除）；.pylib = PIP_TARGET 时代
 # 遗留（venv 即世界后成死重，agent-abef 实测 5.9G）；.hf_cache = HF 下载
 # 缓存，可重新下载重建
-_EXCLUDE_DIRS = {".venv", "xuseek", "xuseek-v2", "__pycache__", ".pytest_cache",
+_EXCLUDE_DIRS = {".venv", "xuseek", "xuseek", "__pycache__", ".pytest_cache",
                  ".cache", ".local", ".pylib", ".hf_cache"}
 _EXCLUDE_SUFFIXES = {".pyc", ".egg-info"}
 _EXCLUDE_FILES = {"webui_tokens.json"}
@@ -361,7 +361,7 @@ def restore(backup_path: Path, *, new_id: str | None = None,
             backend: BackupBackend | None = None) -> dict:
     """从本地路径（或 backend 拉的本地路径）恢复 agent 到 instances/。
 
-    流程：解压 → versions 重建 xuseek-v2 → 写注册表 → 启动（agentops 同一条
+    流程：解压 → versions 重建 xuseek → 写注册表 → 启动（agentops 同一条
     拉起路径，listen host 由注册表 expose 推导——旧 host 参数已删：它只会
     让 expose=true 的恢复「注册表说外网、实际绑 127.0.0.1」地撒谎）。
     new_id 冲突时：overwrite=True 强覆盖（先停旧），否则报错。
@@ -447,7 +447,7 @@ def restore(backup_path: Path, *, new_id: str | None = None,
         shutil.rmtree(home, ignore_errors=True)
         raise
 
-    # 3. 从 versions 重建 xuseek-v2 副本（除非包内带）
+    # 3. 从 versions 重建 xuseek 副本（除非包内带）
     src_dir = versions.kernel_dir(home)
     if not (src_dir / "xuseek.sh").exists():
         sv = meta.get("source_version") or ""

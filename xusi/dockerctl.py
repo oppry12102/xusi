@@ -151,7 +151,7 @@ def _render_compose(unit: str, source_dir: Path, home: Path, host: str,
     """渲染 compose.yaml（全绝对路径字面量、无 ${} 插值——文件自足可审计）。
 
     与内核 compose.example.yaml 的差异：build context 指实例私有副本
-    xuseek-v2、镜像 tag 含版本、logging 补 json-file 轮转（docker 默认无上限，
+    xuseek、镜像 tag 含版本、logging 补 json-file 轮转（docker 默认无上限，
     长跑 agent 会写穿磁盘）、**user 钉为管理面用户**（cfg.docker_user）——
     内核模板默认 root，但 root 写进 /data 的文件宿主属主是 root，管理面
     （普通用户）就写不了 facts.db / webui_tokens.json（投信与观察台
@@ -403,7 +403,7 @@ def _daemon_pid(unit: str) -> int | None:
     try:
         r = subprocess.run(
             # 模式不能以 "-" 开头（pgrep 会当选项解析）——用 python.* 前缀锚住
-            # daemon 的 cmdline（/data/xuseek-v2/.venv/bin/python -m xuseek serve …）
+            # daemon 的 cmdline（/data/xuseek/.venv/bin/python -m xuseek serve …）
             ["docker", "exec", unit, "pgrep", "-f", "python.*-m xuseek serve"],
             capture_output=True, text=True, timeout=15)
     except (subprocess.TimeoutExpired, OSError):

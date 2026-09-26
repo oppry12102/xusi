@@ -108,7 +108,7 @@ def _install_xusi_toml() -> None:
 
 def cmd_install(args) -> int:
     py = _ensure_venv()
-    # xuseek-v2 源码唯一事实源 = versions/ 里的 zip 包：新建 agent 一律从版本仓库
+    # xuseek 源码唯一事实源 = versions/ 里的 zip 包：新建 agent 一律从版本仓库
     # 解压成实例私有副本。
     from . import versions as _versions
     cfg = get_config()
@@ -118,7 +118,7 @@ def cmd_install(args) -> int:
         print(f"==> 版本仓库就位：{cfg.versions_dir}（{len(vs)} 个版本包："
               + "、".join(v['version'] for v in vs) + "）——新建 agent 将取最新版作实例私有副本")
     else:
-        print(f"==> 版本仓库为空：{cfg.versions_dir}——请投放 xuseek-v2-<版本号>.zip"
+        print(f"==> 版本仓库为空：{cfg.versions_dir}——请投放 xuseek-<版本号>.zip"
               f"（见 docs/versions.md），否则无法创建 agent")
     # 密钥池起手：etc/brains.toml 不存在时从模板复制（空 key，600）——clone 后的第一步引导
     cfg = get_config()
@@ -333,11 +333,11 @@ def cmd_doctor(args) -> int:
     print(f"墟司 doctor（v{__version__}，root={ROOT}）")
     check("systemd 用户会话", subprocess.run(
         ["systemctl", "--user", "is-system-running"], capture_output=True).returncode in (0, 1))
-    # xuseek-v2 源码唯一事实源 = versions/ 里的 zip（新建 agent 取最新版作实例
+    # xuseek 源码唯一事实源 = versions/ 里的 zip（新建 agent 取最新版作实例
     # 私有副本）；仓库为空则无法创建 agent，算 FAIL。
     vs = versions.list_versions()
-    check("版本仓库非空（xuseek-v2 源码事实源）", bool(vs),
-          "" if vs else f"{cfg.versions_dir} 为空——请投放 xuseek-v2-<版本号>.zip（docs/versions.md）")
+    check("版本仓库非空（xuseek 源码事实源）", bool(vs),
+          "" if vs else f"{cfg.versions_dir} 为空——请投放 xuseek-<版本号>.zip（docs/versions.md）")
     if vs:
         print(f"  [INFO] 版本仓库 {cfg.versions_dir}：{len(vs)} 个版本包"
               f"（{'、'.join(v['version'] for v in vs)}）——新建 agent 取最新版")

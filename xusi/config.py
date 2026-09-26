@@ -44,7 +44,7 @@ class XusiConfig:
     port: int = 8601
     port_lo: int = 8602          # agent 端口分配下界（8601 归管理面）
     port_hi: int = 8699
-    versions_dir: Path = ROOT / "versions"  # xuseek-v2 源码唯一事实源：管理员投放 xuseek-v2-<版本号>.zip
+    versions_dir: Path = ROOT / "versions"  # xuseek 源码唯一事实源：管理员投放 xuseek-<版本号>.zip
     display_timezone: str = "Asia/Shanghai"
 
     # —— 身份 ——

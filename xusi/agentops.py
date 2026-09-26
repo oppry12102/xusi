@@ -112,7 +112,7 @@ def _listen_host(agent: dict) -> str:
 
 
 def _source_for(agent: dict) -> Path:
-    """该 agent 的 xuseek-v2 源码目录 = 实例私有副本 instances/<id>/xuseek-v2/
+    """该 agent 的 xuseek 源码目录 = 实例私有副本 instances/<id>/xuseek/
     （创建时从版本仓库解压，实例间完全隔离，可各跑各的版本）。"""
     ver = str(agent.get("source_version") or "").strip()
     p = versions.kernel_dir(_home(agent))
@@ -137,7 +137,7 @@ def _spawn_unit(agent: dict) -> None:
 
 def _resolve_source_choice(src_ver: str) -> str:
     """创建时的源码抉择：显式版本 → 提前校验后直接用（失败零副作用）；
-    缺省 → **版本仓库最新包**（每个 agent 自带 xuseek-v2 私有副本，
+    缺省 → **版本仓库最新包**（每个 agent 自带 xuseek 私有副本，
     instances/<id>/ 自洽、可单独迁移）。仓库为空 → 报错并指引投放 zip。"""
     if src_ver:
         versions.zip_for(src_ver)
@@ -146,7 +146,7 @@ def _resolve_source_choice(src_ver: str) -> str:
     if not avail:
         raise AgentError(
             f"版本仓库（{get_config().versions_dir}）为空。"
-            f"请管理员投放 xuseek-v2-<版本号>.zip（见 docs/versions.md）")
+            f"请管理员投放 xuseek-<版本号>.zip（见 docs/versions.md）")
     return avail[0]["version"]   # list_versions 已按版本号新→旧排序
 
 
@@ -350,7 +350,7 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     （daemon + compose 插件），创建前早校验（失败零副作用，不拖到验收超时）。
     创建后仍可切换（停止 → 改参 → 启动，见 patch_agent）。
 
-    source_version：版本号 → 该版本源码解压成实例私有副本（instances/<id>/xuseek-v2/，
+    source_version：版本号 → 该版本源码解压成实例私有副本（instances/<id>/xuseek/，
     删除时随 home 进 .trash）；缺省 → 版本仓库最新包（每 agent 自带私有副本，
     实例自洽可单独迁移；仓库为空报错，见 _resolve_source_choice）。任何路径
     都过内核地板闸（≥ versions.KERNEL_FLOOR）。
@@ -457,7 +457,7 @@ def _init_workspace(rec: dict, src_ver: str, roots: list | None = None,
                     extra_config: str = "", xmem: bool = False) -> None:
     """在 agent 被注册/拉起之前，把它的 home 准备到位：
 
-    - 从版本仓库解压源码到实例私有副本（instances/<id>/xuseek-v2/）
+    - 从版本仓库解压源码到实例私有副本（instances/<id>/xuseek/）
     - 渲染 config.toml（含所选大脑与 key）——出生配置，唯一一次
       （data/、workspace/ 由内核启动时自建，xusi 不动）
 

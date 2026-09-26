@@ -67,7 +67,7 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="墟司 xusi —— xuseek 智能体管理面",
-    description="创建/启停/暂停/删除 xuseek-v2 自主体；唯一写接口是管理邮箱（投信/收信），观察为只读 events/status 两条。",
+    description="创建/启停/暂停/删除 xuseek 自主体；唯一写接口是管理邮箱（投信/收信），观察为只读 events/status 两条。",
     version=__version__,
     openapi_url="/api/openapi.json", docs_url="/docs", redoc_url=None,
     lifespan=_lifespan,

@@ -32,7 +32,7 @@ class CreateAgentReq(BaseModel):
                               description="附加配置（可选·高级）：自由 TOML 原样追加进出生 config.toml 末尾"
                                           "（[amem] 等内核可选段）；落盘前整体校验，坏 TOML 拒绝创建")
     note: str = Field("", description="备注")
-    source_version: str = Field("", description="xuseek-v2 版本号（GET /api/versions）。缺省 = 仓库最新版"
+    source_version: str = Field("", description="xuseek 版本号（GET /api/versions）。缺省 = 仓库最新版"
                                                 "（每 agent 自带私有副本，可单独迁移）。私有副本创建后不可改；"
                                                 "任何路径都过内核地板闸（≥ 2.7.80）")
     runtime: str | None = Field(None, description="运行时：systemd（默认，系统进程）/ docker（容器）/ bare（容器直跑裸进程），"

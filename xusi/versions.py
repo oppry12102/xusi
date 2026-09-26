@@ -1,12 +1,12 @@
-"""xuseek-v2 版本仓库：versions/ 下的 zip 包由管理员投放，创建 agent 时按版本号选用。
-versions/ 是 xuseek-v2 源码的**唯一事实源**（每 agent 一份实例私有副本）。
+"""xuseek 版本仓库：versions/ 下的 zip 包由管理员投放，创建 agent 时按版本号选用。
+versions/ 是 xuseek 源码的**唯一事实源**（每 agent 一份实例私有副本）。
 
 约定：文件名 xuseek-v<版本号>.zip（**统称 xuseek，前缀永久不变**——版本升级
 不改包名前缀，如 xuseek-v2.8.48.zip）。历史前缀 xuseek2- / xuseek-v2-
 只读兼容（存量包）。包内是源码根
 （xuseek.sh 所在目录）——在压缩包根部、或包在唯一的一级子目录里都认。
 
-选定版本后解压一份**实例私有副本**到 instances/<id>/xuseek-v2/：实例之间
+选定版本后解压一份**实例私有副本**到 instances/<id>/xuseek/：实例之间
 互不影响，实例目录自洽、可单独迁移。
 
 解压是防御式的：绝对路径 / .. / 符号链接成员一律跳过（防 zip-slip），
@@ -146,7 +146,7 @@ def zip_for(version: str) -> Path:
 
 
 def extract(version: str, dest: Path) -> Path:
-    """把版本的源码解压到 dest（如 instances/<id>/xuseek-v2），返回 dest。
+    """把版本的源码解压到 dest（如 instances/<id>/xuseek），返回 dest。
 
     dest 已存在视为冲突（创建流程只在全新 home 里调用）；失败时尽量不留半成品。
     """
@@ -209,5 +209,5 @@ def _locate_root(base: Path) -> Path:
         if p.is_dir() and (p / "xuseek.sh").exists():
             return p
     raise VersionError(
-        f"压缩包里找不到 xuseek.sh（应打包 xuseek-v2 源码根目录；"
+        f"压缩包里找不到 xuseek.sh（应打包 xuseek 源码根目录；"
         f"打包方法见 docs/versions.md）")

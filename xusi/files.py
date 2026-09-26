@@ -11,7 +11,7 @@ agent 取件路径：内核 file_read/file_write 以 workspace 为牢（够不�
 
 安全模型（_safe）三道闸：
 1. 首段白名单——路径第一段必须是 upload / workspace，实例目录其余
-   （data/、config.toml、xuseek-v2/ 源码副本）彻底不可见；
+   （data/、config.toml、xuseek/ 源码副本）彻底不可见；
 2. 逐段名校验——拒空段、`.`、`..`、控制字符、超长名（防拼路径绕过）；
 3. resolve 后 containment——符号链接指向开放区外的一律拒绝
    （与 backup.py 的逃逸防线同口径）。
