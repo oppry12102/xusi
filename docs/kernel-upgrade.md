@@ -17,7 +17,7 @@
 
 1. **git pull 管理面**到 `ca56645` 及之后——老代码把未标注脑分到 "premium" 档，
    与内核 v2.5.5 的 "power" 档不一致（只影响混合标注池的预算推导）。
-2. **versions/ 放入内核新包**：`xuseek-v2-<版本>.zip`（打包方法见
+2. **versions/ 放入内核新包**：`xuseek-v<版本>.zip`（统称 xuseek，前缀永久不变）（打包方法见
    [versions.md](versions.md)；包内根目录或唯一一级子目录两种布局都认）。
 3. **etc/brains.toml 补齐每脑数据**：`tier`（power/economy）、`context_window`、
    economy 脑加 `note`（如"免费（自托管）"）。内核 v2.5.5 的**同档循环与按脑

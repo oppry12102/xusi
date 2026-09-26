@@ -8,12 +8,13 @@ agent」对话框与 `POST /api/agents` 的 `source_version` 字段都从这里�
 ## 命名约定
 
 ```
-xuseek-v2-<版本号>.zip
+xuseek-v<版本号>.zip      # 统称 xuseek——版本升级不改包名前缀
 ```
 
+历史前缀 `xuseek2-` / `xuseek-v2-` 只读兼容（存量包，勿再新增）。
 版本号以字母或数字开头，仅含 `字母 数字 . _ -`，≤64 位。例如：
 
-- `xuseek-v2-v2.3.0.zip`
+- `xuseek-v2.8.48.zip`
 - `xuseek-v2-20260821.zip`
 
 不符合命名的文件会被清单静默忽略。
