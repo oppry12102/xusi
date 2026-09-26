@@ -103,6 +103,7 @@ agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier =
 | ④ | 担心 `.venv` 要重建 | 平移即可（`mv` 进新树，路径不变）——v2.7.38 起两种运行时都是实例目录里的真目录，平移通用；依赖没变指纹不漂移不重装，变了 xuseek.sh 按指纹自愈补装（有 uv 用 uv，失败回落 pip）；干脆不平移也行：新树首启自建，只是多装一次（实测 6~51s） |
 | ⑤ | 担心停单元时 manager 抢拉 | 不会——reconcile 只在 manager 重启时跑，手动操作窗口安全 |
 | ⑥ | 升级收尾后 desired_state 停在 stopped（agentops.stop 落盘、spawn_and_verify 不回写）→ 下次 manager 重启 reconcile 按期望态把已升级的 agent 停掉 | §1 脚本收尾补 `agentops.start(AID)`（active 时只 finalize、不重拉） |
+| ⑧ | 内核目录改名（2026-09-26 xuseek-v2→xuseek）后：**实例自有脚本的硬编码旧路径**（ctl.sh 锚点/自愈脚本/BOOT 指令里的 `/data/xuseek-v2`）与**常驻服务未恢复**（收信口 8409 类断连，邻居报 >9 分钟拒连）——72ad 实案：ctl 锚点 rc=127、收信服务靠管理员投信才恢复；47db/8a43 同款残留已投信自修 | 升级/改名后**逐实例检查**：grep 实例 home 的 ctl.sh/workspace 里 `xuseek-v2` 残留；pidfile vs 进程对账（`kill -0`）；有发现投信让 agent 自修（72ad 已把锚点改成 VIRTUAL_ENV→python3→/data/xuseek→/app 探测式，可作范本） |
 | ⑦ | docker compose build 永久挂死、零输出零事件（tx-bj-3 实案）：buildx bake 冷路径解析基础镜像 manifest/attestation 时**不走 daemon.json 的 registry-mirrors**，直连 registry-1.docker.io 在墙内静默挂死且 bake 无超时；杀客户端还会楔死 dockerd 内置 buildkit 控制器（后续构建排队不启动，重启 dockerd 才解） | 已内建修复（dockerctl 构建前解析 Dockerfile FROM 行逐一 `docker pull` 走镜像站预热，失败静默）。手工应急：先 `docker pull <基础镜像>` 把元数据拉齐，构建即秒级；已楔死则 `sudo systemctl restart docker` |
 
 ## 4. 验证清单（升级后 5 分钟）
@@ -112,6 +113,9 @@ agentops.mail(AID, "请把你 config.toml 的 [brains.glm] 段更新为：tier =
       旧 `[agent]` 预算段已清掉（v2.7.5 不再认——max_context_tokens 改自动派生、
       max_seconds 删除；轮数限额只剩 `[limits] max_rounds`）
 - [ ] 事件流 `llm_response.brain` 正常粘滞、无 `llm_error` / `llm_retry` 风暴（观察 1~2 个会话）
+- [ ] **实例自有脚本无旧路径残留 + 常驻服务已恢复**：grep 实例 home（ctl.sh/自愈脚本/
+      BOOT 指令）无 `/data/xuseek-v2` 硬编码；`data/*.pid` 与进程 `kill -0` 对账全活；
+      对外口（收信/数据服务）实测可达——死口邻居视角 9 分钟起步才报（见坑⑧）
 
 ## 5. 语义变化提醒（内核 v2.5.5）
 
