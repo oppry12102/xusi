@@ -306,7 +306,7 @@
         <div id="f-brains" class="check grid"></div></div>
 
       <div style="display:flex;gap:12px">
-        <div style="flex:1"><label>xuseek-v2 版本（源码副本随实例隔离；缺省 = 仓库最新版）</label>
+        <div style="flex:1"><label>xuseek 版本（源码副本随实例隔离；缺省 = 仓库最新版）</label>
           <select id="f-version"><option value="">最新版本</option></select></div>
         <div style="flex:1"><label>运行时（创建后可切换：停止 → 改参 → 启动）</label>
           <select id="f-runtime">
@@ -350,7 +350,7 @@
   <div class="dlg-h">📦 备份 agent <button onclick="dlgBackup.close()">✕</button></div>
   <div class="dlg-b">
     <p class="hint" style="margin:0">把当前 agent 的 <code class="mono">data/</code> + <code class="mono">workspace/</code> + <code class="mono">config.toml</code> 打成 tar 包到本地 etc/backups/。
-      排除：<code>.venv/</code>、<code>xuseek-v2/</code>、<code>__pycache__/</code>、<code>*.pyc</code>、<code>webui_tokens.json</code>。
+      排除：<code>.venv/</code>、<code>xuseek/</code>、<code>__pycache__/</code>、<code>*.pyc</code>、<code>webui_tokens.json</code>。
       运行中备份 = SIGSTOP 冻结窗快照（jsonl 为追加型文件，一致性风险低）。</p>
     <div><label>agent</label>
       <div id="bk-id" class="mono" style="font-size:13px;color:var(--sub)"></div></div>
@@ -999,7 +999,7 @@ function renderCards(list) {
       <div class="row">
         <span>自动重启 <b>${(a.process || {}).auto_restarts ?? 0}</b></span>
         <span>在线 ${fmtDur((a.process || {}).active_since)}</span>
-        <span>xuseek-v2 ${esc(a.source_version)}</span>
+        <span>xuseek ${esc(a.source_version)}</span>
       </div>
       <div class="acts">${acts.join("")}</div>
     </div>`;
@@ -1440,7 +1440,7 @@ async function loadDetail() {
           <b>呼吸</b><span>${daemonRowHtml(s)}</span>
           <b>监听</b><span class="mono">${esc(s.listen_host)}:${s.port}${s.expose ? "（外网直连）" : "（仅本机）"}</span>
           <b>大脑</b><span>${(s.brains || []).map(esc).join(" → ")}</span>
-          <b>源码</b><span>xuseek-v2 ${esc(s.source_version)}（实例私有副本）</span>
+          <b>源码</b><span>xuseek ${esc(s.source_version)}（实例私有副本）</span>
           <b>使命</b><span>${esc(s.mission)}</span>
           ${s.note ? `<b>备注</b><span>${esc(s.note)}</span>` : ""}
           ${rootsRow}
@@ -1467,7 +1467,7 @@ async function loadDetail() {
           <b>呼吸</b><span>${daemonRowHtml(s)}</span>
           <b>监听</b><span class="mono">${esc(s.listen_host)}:${s.port}${s.expose ? "（外网直连）" : "（仅本机）"}</span>
           <b>大脑</b><span>${(s.brains || []).map(esc).join(" → ")}</span>
-          <b>源码</b><span>xuseek-v2 ${esc(s.source_version)}（实例私有副本）</span>
+          <b>源码</b><span>xuseek ${esc(s.source_version)}（实例私有副本）</span>
           <b>使命</b><span>${esc(s.mission)}</span>
           ${s.note ? `<b>备注</b><span>${esc(s.note)}</span>` : ""}
           ${rootsRow}
@@ -1832,7 +1832,7 @@ async function saveEdit() {
 }
 
 /* ── 文件 tab：upload/（投递区·可写）· workspace/（agent 领地·只读）────
-   实例目录只开放这两处（data/、config.toml、xuseek-v2/ 不可见）；写操作
+   实例目录只开放这两处（data/、config.toml、xuseek/ 不可见）；写操作
    只收 upload/ 前缀，删除软删进 etc/.trash。路径全走事件委托的 data-*
    属性（含引号/中文安全），不用内联 onclick 拼字符串。 */
 let fsPath = "";        // 当前目录相对路径（"" = 根视图：upload + workspace）

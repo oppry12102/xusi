@@ -827,7 +827,7 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
                     raise AgentError(f"docker 不可用：{hint}")
                 # 入口 shim 是内核地板（≥ KERNEL_FLOOR）的必有件——文件缺失
                 # 只可能是实例目录被改动，仍做防御性检查（消息不再谈版本）
-                if not versions.kernel_dir(Path(_home(agent)))
+                if not (versions.kernel_dir(Path(_home(agent)))
                         / "docker-entrypoint.sh").is_file():
                     raise AgentError(
                         "实例内核副本不含入口 shim docker-entrypoint.sh（实例目录被改动？）"
