@@ -1,8 +1,9 @@
 """xuseek-v2 版本仓库：versions/ 下的 zip 包由管理员投放，创建 agent 时按版本号选用。
 versions/ 是 xuseek-v2 源码的**唯一事实源**（每 agent 一份实例私有副本）。
 
-约定：文件名 xuseek2-v<版本号>.zip（新前缀，如 xuseek2-v2.8.48.zip）；
-旧前缀 xuseek-v2-<版本号>.zip 继续兼容（仅存量包）。包内是源码根
+约定：文件名 xuseek-v<版本号>.zip（**统称 xuseek，前缀永久不变**——版本升级
+不改包名前缀，如 xuseek-v2.8.48.zip）。历史前缀 xuseek2- / xuseek-v2-
+只读兼容（存量包）。包内是源码根
 （xuseek.sh 所在目录）——在压缩包根部、或包在唯一的一级子目录里都认。
 
 选定版本后解压一份**实例私有副本**到 instances/<id>/xuseek-v2/：实例之间
@@ -35,7 +36,7 @@ SRC_DIR_NAME = "xuseek-v2"
 # 镜像构建门禁（详见 docs/kernel-v279-upstream-feedback.md）。
 KERNEL_FLOOR = "2.7.80"
 
-_ZIP_RE = re.compile(r"^(?:xuseek2|xuseek-v2)-(?P<v>[A-Za-z0-9][A-Za-z0-9._-]*)\.zip$")
+_ZIP_RE = re.compile(r"^(?:xuseek|xuseek2|xuseek-v2)-(?P<v>[A-Za-z0-9][A-Za-z0-9._-]*)\.zip$")
 _VER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 # 这些目录/后缀不落地（运行时产物或仓库元数据，解压时自动剔除）
@@ -122,9 +123,10 @@ def zip_for(version: str) -> Path:
     if not _VER_RE.match(v):
         raise VersionError(
             f"非法版本号 {version!r}（允许字母数字开头，仅字母数字 . _ -，≤64 位）")
-    p = repo_dir() / f"xuseek2-{v}.zip"           # 新前缀优先（版本号自带 v）
-    if not p.is_file():
-        p = repo_dir() / f"xuseek-v2-{v}.zip"      # 旧前缀兼容（存量包）
+    for pref in ("xuseek", "xuseek2", "xuseek-v2"):   # 新前缀优先，历史前缀只读兼容
+        p = repo_dir() / f"{pref}-{v}.zip"
+        if p.is_file():
+            break
     if not p.is_file():
         avail = "、".join(r["version"] for r in list_versions()) or "（仓库为空）"
         raise VersionError(
