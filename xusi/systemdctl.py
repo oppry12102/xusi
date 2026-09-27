@@ -5,6 +5,7 @@ Restart=always，掉电/崩溃/误杀自动拉起，manager 重启后按期望�
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -69,15 +70,32 @@ def spawn_agent(unit: str, source_dir: str, home: str, host: str, port: int, *,
 _STALL_POLL_S = 300
 
 
+def _stall_timer_files(tunit: str) -> tuple[Path, Path]:
+    """停活 timer 的持久化 unit 文件路径（~/.config/systemd/user/）。
+
+    不用 systemd-run 瞬态 timer——两个实测坑（2026-09-27 全队核查）：
+    ① --on-unit-active 生 OnUnitActiveSec（以被触发单元上次激活为基准），
+    stall.service 只可能被本 timer 激活 ⇒ 鸡生蛋死锁、从不武装；
+    ② 即使用了 --on-active，瞬态 timer 触发一次后即被 systemd 收集
+    （无 stop 日志地消失，3 台实案）。持久化文件 + OnActiveSec（以 timer
+    自身激活为基准、周期重复）才是正解，且重启后不丢（顺带补 transient
+    单元重启即消失的缺口）。
+    """
+    d = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd" / "user"
+    return d / f"{tunit}.timer", d / f"{tunit}.service"
+
+
 def ensure_stall_timer(unit: str, source_dir: str, home: str) -> None:
-    """呼吸面看门狗（systemd 形态）：瞬态 timer 每 5 分钟跑一次内核
+    """呼吸面看门狗（systemd 形态）：持久化 timer 每 5 分钟跑一次内核
     stall_check.py——判据 = data/breath.json 的 mtime 超阈且 serve 进程在跑，
     退出 1（停滞）时重启 agent 单元（借 Restart=always 起死回生，与 docker
     的 stall_watch kill 1 同语义）；退出 0 放行、退出 2（阈值坏）不动作。
 
     条件：[manager] stall_s > 0 且实例内核副本带 stall_check.py（内核地板
-    ≥ 2.7.79 必有）。timer PartOf=agent 单元——停 agent 自动停 timer，
-    start 时 spawn 幂等重建（load-state 判存）。建立失败不阻塞 spawn：
+    ≥ 2.7.79 必有）。timer PartOf=agent 单元——停 agent 自动停 timer。
+    ensure 幂等：每次重写 unit 文件（路径/阈值随升级与目录改名自愈）+
+    daemon-reload + start（active 时 no-op）。旧瞬态 timer（systemd-run
+    产物，/run 下 FragmentPath）先拆掉再落持久化。建立失败不阻塞 spawn：
     看门狗是增强不是硬依赖（stderr 提示）。
     """
     import sys
@@ -90,26 +108,40 @@ def ensure_stall_timer(unit: str, source_dir: str, home: str) -> None:
     if not script.is_file():
         return
     tunit = f"{unit}-stall"
-    if unit_load_state(f"{tunit}.timer") == "loaded":
-        return
+    # 旧瞬态（systemd-run 产物）先拆：FragmentPath 在 /run 下即瞬态——
+    # 无论死锁版（OnUnitActiveSec）还是一次性版，都不可留
+    frag = unit_property(f"{tunit}.timer", "FragmentPath")
+    if frag and frag.startswith("/run/"):
+        try:
+            _run(["systemctl", "--user", "stop", f"{tunit}.timer"], timeout=15)
+        except SystemdError:
+            pass
     py = sys.executable
-    # 只有退出 1（真停滞）才重启；0（无脉搏/无 serve）与 2（阈值坏）都不动
+    # 只有退出 1（真停滞）才重启；0（无脉搏/无 serve）与 2（阈值坏）都不动。
+    # 健康时 [ "$rc" = 1 ] 为假、shell 退出 1——service 显示 failed 属正常噪音
     inner = (f'rc=$({shlex.quote(py)} {shlex.quote(str(script))} '
              f'{shlex.quote(str(home))} {thr} 2>/dev/null); '
              f'[ "$rc" = 1 ] && systemctl --user restart {shlex.quote(unit)}')
-    # PartOf 值须带 .service 后缀——systemd-run 对裸名（无类型后缀）报
-    # 「Invalid unit name」并拒绝创建 timer（实测 systemd 255）
-    # 坑（2026-09-27 全队核查）：--on-unit-active 生的是 OnUnitActiveSec——
-    # 以「被触发单元上次激活」为基准，而 stall.service 只可能被本 timer 激活
-    # ⇒ 鸡生蛋死锁、永远不武装（NextElapseUSecMonotonic=infinity，3/3 台
-    # systemd agent 的停活看门狗自创建起 0 次执行）。改用 --on-active
-    # （OnActiveSec，以 timer 自身激活为基准、周期触发）。
-    cmd = ["systemd-run", "--user", "--collect",
-           "--timer-property", f"PartOf={unit}.service",
-           "--on-active", str(_STALL_POLL_S),
-           "--unit", tunit, "/bin/sh", "-c", inner]
+    tf, sf = _stall_timer_files(tunit)
+    tf.parent.mkdir(parents=True, exist_ok=True)
+    tf.write_text(
+        "[Unit]\n"
+        f"Description=呼吸面看门狗 timer（{unit}）：内核 stall_check.py 每 "
+        f"{_STALL_POLL_S}s 巡检，停滞即重启 agent 单元\n"
+        f"PartOf={unit}.service\n\n"          # 停 agent 自动停 timer
+        "[Timer]\n"
+        f"OnActiveSec={_STALL_POLL_S}\n",     # 以 timer 自身激活为基准、周期重复
+        encoding="utf-8")
+    sf.write_text(
+        "[Unit]\n"
+        f"Description=呼吸面看门狗巡检（{unit}）\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart=/bin/sh -c {shlex.quote(inner)}\n",
+        encoding="utf-8")
     try:
-        _run(cmd)
+        _run(["systemctl", "--user", "daemon-reload"], timeout=15)
+        _run(["systemctl", "--user", "start", f"{tunit}.timer"], timeout=15)
     except SystemdError as e:
         print(f"[xusi] 呼吸看门狗 timer 未建立（{unit}）：{e}")
 
@@ -117,14 +149,25 @@ def ensure_stall_timer(unit: str, source_dir: str, home: str) -> None:
 def stall_timer_remove(unit: str) -> None:
     """删除呼吸看门狗 timer（delete/回滚收尾；stop 不清——timer 对停止态
     agent 恒放行（serve 不在 → stall_check 退出 0），且 PartOf 已随停联动）。"""
+    tunit = f"{unit}-stall"
     for suffix in (".timer", ".service"):
         try:
-            _run(["systemctl", "--user", "stop", unit + "-stall" + suffix], timeout=15)
+            _run(["systemctl", "--user", "stop", tunit + suffix], timeout=15)
         except SystemdError:
             pass
+    tf, sf = _stall_timer_files(tunit)
+    for p in (tf, sf):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    try:
+        _run(["systemctl", "--user", "daemon-reload"], timeout=15)
+    except SystemdError:
+        pass
     try:
         _run(["systemctl", "--user", "reset-failed",
-              unit + "-stall.timer", unit + "-stall.service"], timeout=15)
+              f"{tunit}.timer", f"{tunit}.service"], timeout=15)
     except SystemdError:
         pass
 
@@ -179,6 +222,16 @@ def unit_load_state(unit: str) -> str:
         return out.strip() or "not-found"
     except SystemdError:
         return "not-found"
+
+
+def unit_property(unit: str, prop: str) -> str:
+    """单属性读取（FragmentPath 等）；读不到返回空串。"""
+    try:
+        out = _run(["systemctl", "--user", "show", unit, "-p", prop, "--value"],
+                   timeout=10)
+        return out.strip()
+    except SystemdError:
+        return ""
 
 
 def stop(unit: str) -> None:
