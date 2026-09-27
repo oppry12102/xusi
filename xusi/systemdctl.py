@@ -118,10 +118,11 @@ def ensure_stall_timer(unit: str, source_dir: str, home: str) -> None:
             pass
     py = sys.executable
     # 只有退出 1（真停滞）才重启；0（无脉搏/无 serve）与 2（阈值坏）都不动。
-    # 健康时 [ "$rc" = 1 ] 为假、shell 退出 1——service 显示 failed 属正常噪音
+    # if 结构保证 service 恒 exit 0（健康巡检不该在 journal 里记 failed 噪音）
     inner = (f'rc=$({shlex.quote(py)} {shlex.quote(str(script))} '
              f'{shlex.quote(str(home))} {thr} 2>/dev/null); '
-             f'[ "$rc" = 1 ] && systemctl --user restart {shlex.quote(unit)}')
+             f'if [ "$rc" = 1 ]; then '
+             f'systemctl --user restart {shlex.quote(unit)}; fi')
     tf, sf = _stall_timer_files(tunit)
     tf.parent.mkdir(parents=True, exist_ok=True)
     tf.write_text(
@@ -130,7 +131,13 @@ def ensure_stall_timer(unit: str, source_dir: str, home: str) -> None:
         f"{_STALL_POLL_S}s 巡检，停滞即重启 agent 单元\n"
         f"PartOf={unit}.service\n\n"          # 停 agent 自动停 timer
         "[Timer]\n"
-        f"OnActiveSec={_STALL_POLL_S}\n",     # 以 timer 自身激活为基准、周期重复
+        # 双基准（2026-09-27 实测三坑）：OnActiveSec 只保首触发（timer 自身
+        # 激活后 300s 火一次、不重复）；OnUnitActiveSec 在每次巡检 service
+        # 激活后重新武装（周期自续）。两行缺一不可：单 OnUnitActiveSec =
+        # 鸡生蛋死锁（service 从未被激活过则永不火）；单 OnActiveSec =
+        # 一次性（火完 Trigger: n/a）。
+        f"OnActiveSec={_STALL_POLL_S}\n"
+        f"OnUnitActiveSec={_STALL_POLL_S}\n",
         encoding="utf-8")
     sf.write_text(
         "[Unit]\n"
