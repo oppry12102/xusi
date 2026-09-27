@@ -4,7 +4,7 @@
 > agent-0e50 两轮升级 + 4 个一次性验证 agent 建删全流程）。
 > API 层「source_version 创建后不可改」约束的是**创建流程**；存量升级是目录级
 > 操作，本文是标准做法。
-> **当前目标版本：v2.7.98（2026-09-22 投放，xmem 挂载回 always 裁定版）**。
+> **当前目标版本：v2.8.66（2026-09-26 首点投放 agent-0d18，svc 看护退役版）**。
 > 升级流程同 §1；语义变化见 §5 末节（v2.7.79 起）——**注意：管理面（xusi）与
 > 内核须同批升级**（xusi v2.6.0 起投信/收信/会话索引全部走 facts.db，
 > 旧 jsonl 通道已退役：旧内核 + 新 xusi 或新内核 + 旧 xusi 的邮箱会静默
@@ -195,6 +195,41 @@ agentops.mail(AID, "内核已升级至 v2.7.79：① 请删除 config.toml 里�
   选项全部移除（2.7.96/97 内核无 mount 键 = 缺省 demand，与旧缺省渲染同义，
   向后兼容；仅 v2.7.96/97 的 always 档不可再选——全队升 2.7.98 后 moot）。
 
+### 内核 v2.8.66（2026-09-26）：svc 看护退役——服务判活责任归大脑
+
+- **`xuseek svc` 看护整体移除**：`xuseek/svc.py` 删除、daemon 休眠期探测
+  （`_svc_probe`）删除、CLI `svc register|unregister|list` 删除。
+  `data/svc_registry.json` 成死数据；**自起服务掉线不再按铃**。判活分两层：
+  ① 经壳启动（start_wrapped）的常驻服务由壳看门狗管（进程死即按铃，没变）；
+  ② agent 自己 ctl 起的服务，判活归大脑自己（掉线发现延迟 = 下口开场，
+  最坏 = 休眠间隔）。
+- **退役裁定（2026-09-27 用户定案，四方分析）**：登记制看护是「空转陷阱 +
+  假安全感」——不登记就永不响铃，登记了就以为有人在看。机器只守「壳内进程」
+  一条边界铁律，业务健康语义归 agent（它比固定 probe 更懂自己的服务）。
+  观察者与被观察者分离的外部共识靠壳看门狗这层确定性 tripwire 兜底。
+- **升级后投信模板（必投）**——这是责任转移：agent 不改自己 playbook 就没人
+  看家（0d18 实案：容器重建后 23 个非壳孪生实例全死无铃，agent 自检才补上）：
+
+```python
+from xusi import agentops
+agentops.mail(AID, "内核已升级至 v2.8.66：① **svc 看护已退役**（`xuseek svc` "
+                   "CLI、daemon 探测、svc_registry.json 全部移除）——你自起的常驻"
+                   "服务掉线不再有任何铃。请把 playbook/常驻服务.md 里的 "
+                   "`xuseek svc register` 旧节改写为：经壳启动（start_wrapped，"
+                   "壳看门狗按铃）+ 自检腿（每口开场例行：进程面 pidfile+kill -0 / "
+                   "健康面 healthz / 业务面心跳 / 对账）。记住「形（pidfile 在）≠"
+                   "活（端口在听 + healthz 答得出）」。② data/svc_registry.json "
+                   "是死数据可清理。③ config 残留 params_blacklist / [limits] "
+                   "context_soft_warn_ratio 请删（已退役，残留会被大声提醒）。"
+                   "范本可参考 agent-0d18（墟寻）改写的常驻服务.md §七 + "
+                   "scripts/instance_sweep.py 自扫。")
+```
+
+- 同批语义（2.8.50–2.8.66 窗口，随信一起告知）：能力目录瘦身（system_time
+  探针与 brains 的 params_blacklist 移除）、`[limits] context_soft_warn_ratio`
+  退役（v2.8.51，残留键大声提醒）、skip_over_window 路由判断留痕、连续失败
+  计数不响铃（改开场白直方图可见）。
+
 ### 内核 v2.7.39–v2.7.41（2026-09-12）
 
 - **`[[services]]` 段退役（v2.7.40）**：常驻服务的判活从 daemon 移到**启动壳看门狗**
@@ -246,6 +281,8 @@ docker 实例**不涉及镜像**——镜像 fleet 共享（`xuseek:<version>`�
 ## 7. 批量升级建议
 
 - 先升 1 个 agent 观察半天，再批量（§1 脚本循环 AID 列表，各自停机 ~1 分钟）。
+- **v2.8.66 起：升级信必须带 svc 退役说明（§5 v2.8.66 模板）**——责任转移不
+  投信 = 该 agent 的非壳服务无人看家；批量时逐家投、回执逐个收。
 - 一次性 / 实验 agent 直接**删除重建**更省事：新建缺省即取 versions/ 最新版。
 - 稳定后删掉 `xuseek-v2.old-*` 备份树省磁盘（实例目录可单独迁移，别把 GB 级
   备份带着走）。

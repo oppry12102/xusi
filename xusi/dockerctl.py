@@ -73,6 +73,10 @@ def docker_available() -> tuple[bool, str]:
     # ② daemon 在线
     try:
         _run(["docker", "version", "--format", "{{.Server.Version}}"], timeout=15)
+    except FileNotFoundError:
+        # docker 本体未安装（bare 主机实案：audl-4080）——subprocess.run
+        # 找不到可执行文件时抛 FileNotFoundError，此前未兜底会一路炸穿 doctor
+        return False, "docker 未安装（bare 主机无 docker 属正常形态）"
     except DockerError as e:
         msg = str(e)
         low = msg.lower()

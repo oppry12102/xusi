@@ -99,9 +99,14 @@ def ensure_stall_timer(unit: str, source_dir: str, home: str) -> None:
              f'[ "$rc" = 1 ] && systemctl --user restart {shlex.quote(unit)}')
     # PartOf 值须带 .service 后缀——systemd-run 对裸名（无类型后缀）报
     # 「Invalid unit name」并拒绝创建 timer（实测 systemd 255）
+    # 坑（2026-09-27 全队核查）：--on-unit-active 生的是 OnUnitActiveSec——
+    # 以「被触发单元上次激活」为基准，而 stall.service 只可能被本 timer 激活
+    # ⇒ 鸡生蛋死锁、永远不武装（NextElapseUSecMonotonic=infinity，3/3 台
+    # systemd agent 的停活看门狗自创建起 0 次执行）。改用 --on-active
+    # （OnActiveSec，以 timer 自身激活为基准、周期触发）。
     cmd = ["systemd-run", "--user", "--collect",
            "--timer-property", f"PartOf={unit}.service",
-           "--on-unit-active", str(_STALL_POLL_S),
+           "--on-active", str(_STALL_POLL_S),
            "--unit", tunit, "/bin/sh", "-c", inner]
     try:
         _run(cmd)
