@@ -1183,9 +1183,14 @@ def boot(agent_id: str) -> dict:
 # ── 投信 / 收信（唯一的写通道）──────────────────────────────────────
 
 def mail(agent_id: str, text: str) -> dict:
-    """给大脑投信：向事实账（data/facts.db）追加 mail 行——与内核 post() 完全
-    同语义（sender=admin）。账本只增不减，投信历史即 mail 行本身（旧的
-    mailbox_log 双写随 jsonl 邮箱一起退役）。休眠中数秒内被轮询唤醒。"""
+    """给大脑投信：事实账 mail 行（归档，永不清）+ data/mail.txt 队列（内核
+    ≥2.8.80 的唤醒与读信通道）双写。
+
+    队列行格式与内核 channels.append 完全一致（{"at","sender","text"} 一行
+    JSON）；旧内核（<2.8.80）不认识 mail.txt、仍走事实账轮询——双写对两代
+    内核都兼容。队列写失败不阻塞（账本已在，真相先落；stderr 可见）。
+    """
+    import json as _json
     agent = get_agent_or_404(agent_id)
     text = (text or "").strip()
     if not text:
@@ -1194,6 +1199,16 @@ def mail(agent_id: str, text: str) -> dict:
     if not home.exists():
         raise AgentError("实例目录不存在")
     fact = factsdb.append(home, "mail", sender="admin", text=text)
+    try:
+        q = home / "data" / "mail.txt"
+        q.parent.mkdir(parents=True, exist_ok=True)
+        with open(q, "a", encoding="utf-8") as f:
+            f.write(_json.dumps({"at": fact["at"], "sender": "admin",
+                                 "text": text}, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"[xusi] mail.txt 队列追加失败（{home}/data/mail.txt——"
+              f"归档已在账本，唤醒缺席）: {type(e).__name__}: {e}",
+              file=sys.stderr)
     audit("agent.mail", agent=agent_id, chars=len(text))
     return {"posted": True, "id": fact["n"], "at": fact["at"]}
 
