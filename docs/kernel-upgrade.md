@@ -271,7 +271,36 @@ agentops.mail(AID, "内核已升级至 v2.8.70。① **开场白一行化**：�
   开场白新格式；会话正常 end_session、next_wake 正常；自检腿是否报错并
   自适应；投信/回执通道（账本即通道）正常。
 
+### 内核 v2.8.87（2026-09-30）：id 身份体系——存量靠投信迁移，内核零运行时
+
+- **id（4-hex 短号，分配制/终身）即对外身份**：管理面 create 渲染
+  `instance_id = "短号"`（87e5198）；内核 `handover_id()` 启动预检交割身份卡
+  `workspace/playbook/我的身份.md`（id+全称写法+撞号处置；幂等，删卡+改
+  config+重启=重交割）。**升级不重渲染 config**——存量 agent 的四步迁移
+  （config 短号/身份卡/自述 id 字段+X-Peer-Id/按 id 重登记根目录）靠投信
+  令其自办（LLM 做，数分钟~数小时自节奏）；细则见内核
+  docs/proposal-id-as-identity.md、interconnect.md §2.1。
+- **升级信即迁移令**：信模板与名册对照见 work/投信-id身份迁移-20260930.md
+  （2026-09-30 已全队投递：37 台 + 根实例 86c0 专件）。大跨度（≤2.8.48）
+  随信带语义附录（段退役/队列收口/开场白一行化/svc 三件套/自改覆盖）。
+- **根实例 = agent-86c0 的 directory_server 服务**（引路星，www.oppry.com:8400
+  双门牌 → tx-sv-1 host 网）：升级 86c0 = 根目录断窗，其服务随它的下一口
+  呼吸自愈；期间对等发现暂停（同伴有缓存联系），登记排队等它回来。
+  **根 id = 86c0（一实例一 id）**——勿再给根另配预留号（09-30 实案：先投
+  4a2f 后更正 86c0，两号并存曾致一信矛盾）。
+- **坑⑫（控制端本机）：docker bridge 断供但 host 网正常**——构建容器 apt
+  全挂（VPC 内可达、公网方向无声丢包，tcpdump 见 SYN 出无回包；iptables
+  双后端 legacy/nft 并存但 legacy 为空、非双 NAT），**运行容器 host 网所以
+  无人察觉，只有 compose build 踩坑**。解法：`docker build --network=host
+  --build-arg APT_MIRROR=… -t xuseek:<v> <context>` 手工出镜像后 spawn 复用
+  （context 必须是**已换新树的实例目录或 zip 解包目录**——绝不能拿未升级
+  实例的旧树当 context，会打出假 tag）。远端各机 bridge 独立体检：
+  `docker run --rm python:3.12-slim python3 -c "…create_connection((镜像源,80))"`
+  ——**测试目标用该机 etc/xusi.toml 里配的镜像源**（compshare-104=ustc、
+  hdhz-nas=tuna；拿腾讯内网源测非腾讯机=假阴性）。
+
 ### 内核 v2.8.80/81（2026-09-27 晚）：消息通道收口——mail.txt 队列双写铁律
+
 
 - **信箱/门铃改队列文件**：data/mail.txt、data/bell.txt（大脑 read_file 读、
   读完清空=声明已读；事实账 mail/bell 行=归档不唤醒）；**唤醒=队列非空**；
