@@ -78,10 +78,13 @@ def gen_id(_name: str = "") -> str:
     名字不进 id（拼音残根/英文词不再产生奇形前缀）；辨识度归别名
     （注册表 name 字段，管理员随时改、可重复，纯显示）。已有 agent 的 id 不动。
 
-    id 只是本机簿记句柄（注册表 = 「本机住着谁」的缓存）；agent 对外的
-    身份是 ip+port 与自己起的名字。撞号重摇（本机注册表查重）必须发生在
+    id 是实例的对外身份（id 分配制：出生分配、终身不变——渲染进出生 config 的
+    instance_id 短形，互联对账/署名/目录注册全用它，见 xuseek2
+    docs/proposal-id-as-identity.md）；agent- 前缀与实例目录名只是本机簿记
+    （运维键，不随 id 换）。撞号重摇（本机注册表查重）必须发生在
     create_agent 的创建锁内：锁窗口含解压（分钟级），锁外查重的话 CLI
-    与 serve 并发 create 会各摇各的、双双注册同号。"""
+    与 serve 并发 create 会各摇各的、双双注册同号；跨机撞号的守门在根目录
+    （先到先得，同 id 异址响亮退回）。"""
     while True:
         aid = f"agent-{uuid.uuid4().hex[:4]}"
         if registry.get_agent(aid) is None:
@@ -467,7 +470,9 @@ def _init_workspace(rec: dict, src_ver: str, roots: list | None = None,
     home.mkdir(parents=True, exist_ok=True)
     versions.extract(src_ver, home / versions.SRC_DIR_NAME)
     brains.write_agent_config(home, rec["mission"], rec["brains"], rec["budgets"],
-                              instance_id=rec["id"],
+                              instance_id=rec["id"].removeprefix("agent-"),  # 短形 4-hex
+                              #（id 本体；agent- 前缀是本机簿记/目录名，不进身份——见
+                              #  xuseek2 docs/proposal-id-as-identity.md）
                               roots=roots, extra_config=extra_config, xmem=xmem)
 
 

@@ -291,9 +291,10 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     ]
     if instance_id:
         lines[-1:] = [
-            "# 你的终身 id（世界唯一、迁移随行、永不改变——本文件归你自治，",
-            "# 但这一行请勿修改：它是迁移/克隆时认亲的唯一凭据。",
-            "# 跨实例场合（登记目录/署名/提及身份）照抄全串，不缩写不补全）",
+            "# 你的 id（4-hex 短号，管理员分配、终身不变——机器对账的键：",
+            "# 自述 id 字段、出信署名（X-Peer-Id 头的值）、letter 编号、目录注册。",
+            "# 内核首次启动交割至 workspace/playbook/我的身份.md，此后本行被忽略；",
+            "# 本文件归你自治，但这一行请勿修改——撞号换 id 走管理员（改此行+删身份卡+重启））",
             f'instance_id = {_q(instance_id)}',
             "",
         ]
@@ -360,9 +361,8 @@ def write_agent_config(home: Path, mission: str, brains: list[str],
     """渲染并写入 <home>/config.toml（chmod 600，含 api_key）。
 
     只在创建时调用——出生配置，首写即终写；此后该文件归 agent 自治，
-    xusi 不再读回、不再重渲染。instance_id = 终身 id（出生时交割给实例，
-    此后它自带身份迁移，注册表只是缓存——内核无 id 机制，此键是管理面
-    自己的认亲凭据，内核忽略）。
+    xusi 不再读回、不再重渲染。instance_id = 4-hex 短号（id 分配制的终身键：
+    v2.8.87 起内核出生交割至 playbook/我的身份.md，自述/署名/目录注册用它）。
     """
     text = render_agent_config(mission, brains, budgets,
                                instance_id=instance_id,
