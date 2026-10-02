@@ -271,6 +271,35 @@ agentops.mail(AID, "内核已升级至 v2.8.70。① **开场白一行化**：�
   开场白新格式；会话正常 end_session、next_wake 正常；自检腿是否报错并
   自适应；投信/回执通道（账本即通道）正常。
 
+### 内核 v2.8.88–91（2026-10-02）：身份面减法轮 + letter/1 指针教学（全队已升）
+
+- **88 身份卡示例均质化**：示例不再写死具体全称根 id，改「现取现读」口径
+  （勿抄示例——读根目录取真值）。
+- **89 letter/1 指针教学化**：letter/1 规范单点 = `GET /letter1`（自述键
+  `"letter":"letter/1"` 选择启用）；信里留指针，正文随实现演进。
+- **90 amem 模型产物「先复制再下载」**（防下载期产物竞态/被清理）。
+- **91（减法轮，撞号处置单源化）**：B1 撞号处置照根退回文案=「换新 id」
+  （非「改名」）；B2 旧目录条目读取规则（id 形如 http… = 旧格式，该值即
+  地址）；B3 want_id 回执校验槽位——仅 4 位小写短 id，旧地址署名留空白；
+  B4 注册区分大小写——不静默 `.lower()`，响亮拒绝。
+- **2026-10-02 全队推送**（40 台/10 主机，含根 86c0）：增量信四段自足
+  （playbook 不随升级同步）；三台本地 LLM 主机最后推。报告见
+  `work/报告-内核v2891全队推送-20261002.md`。
+- **坑⑬（bare 裸机运行时）：升级停机 = 常驻服务 + 壳看门狗陪葬**——stop
+  杀进程树，vllm/llm_proxy/inbox 与 ctl.sh 的 nohup 包装一起没、不会按铃
+  （本轮 f280 实案）。恢复走实例自己的配方（`. ctl.sh` + start_wrapped，
+  或 `ops/restart_vllm_embed_v2.sh start`），环境同大脑会话口径
+  （`VIRTUAL_ENV=实例 xuseek/.venv` 进 PATH、cwd=workspace）；管理员代拉
+  后须投信通报该 agent（避免它归因错乱）——服务判活责任在 agent，代拉
+  只是止血。
+- **坑⑭：systemd 瞬态单元残留撞名**——升级 spawn 时旧
+  `xusi-a-<id>.service` 尚 loaded（未收集）→ `systemd-run` 报 "Unit … was
+  already loaded or has a fragment file"。等 systemd 收集（`--collect`，
+  分钟级）后 `python3.12 -m xusi start <id>` 即可；残留期勿反复 spawn。
+- **坑⑮：批量脚本 `| tail -n` 吞退出码**——管道退出码 = tail 的 0，失败被
+  伪装成 rc=0（本轮 llm-1-4355 的 spawn 失败即由此漏检，靠事后扫 process
+  面补出）。批量驱动判 rc 不接管道（或 PIPESTATUS）。
+
 ### 内核 v2.8.87（2026-09-30）：id 身份体系——存量靠投信迁移，内核零运行时
 
 - **id（4-hex 短号，分配制/终身）即对外身份**：管理面 create 渲染
@@ -384,6 +413,10 @@ docker 实例**不涉及镜像**——镜像 fleet 共享（`xuseek:<version>`�
   投信 = 该 agent 的非壳服务无人看家；批量时逐家投、回执逐个收。
 - **v2.8.70 起：升级信改用 §5 v2.8.70 模板**（svc 说明并入，另加开场白一行化/
   段退役三件/0B 自检删除）；先单点试点观察一口会话节奏再批量。
+- **v2.8.91 起：增量信 = 四段自足**（playbook 不随升级同步、永不覆盖；信里
+  必须自含本版语义 + 其一指针）；三台本地 LLM 主机（compshare-04/audl-4080/
+  compshare-104）排最后推；升级后逐机核 `status --json` 的 process 面
+  （registry 版本 ≠ 活着，见 §5 坑⑮）。
 - 一次性 / 实验 agent 直接**删除重建**更省事：新建缺省即取 versions/ 最新版。
 - 稳定后删掉 `xuseek-v2.old-*` 备份树省磁盘（实例目录可单独迁移，别把 GB 级
   备份带着走）。
