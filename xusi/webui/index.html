@@ -77,6 +77,13 @@
                background:#f6f7fa;padding:4px 10px;border-radius:8px}
   .check.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:6px 12px}
   .check.grid label{background:transparent;border:1px solid var(--line);white-space:nowrap;overflow:hidden}
+  .bcol{display:flex;flex-direction:column;gap:4px;border:1px solid var(--line);border-radius:10px;
+        padding:7px 9px;min-width:190px;max-width:250px;background:#fafbfd}
+  .bcol-head{display:flex;align-items:center;gap:5px;font-weight:600;cursor:pointer;margin:0}
+  .bcol-head small{color:var(--sub);font-weight:400}
+  .bcol-body{display:flex;flex-direction:column;gap:3px;max-height:230px;overflow:auto}
+  .bcol-body label{display:flex;align-items:center;gap:5px;font-weight:400;margin:0;
+                   background:transparent;padding:2px 4px;border-radius:6px;white-space:nowrap}
   .adv-card{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:8px;
             display:flex;flex-direction:column;gap:12px;background:#fafbfd}
   .switch{display:flex;align-items:center;gap:8px}
@@ -303,7 +310,7 @@
         <textarea id="f-mission" placeholder="持续获取中国A股的交易数据，形成本地数据库，并对外提供查询服务。"></textarea></div>
 
       <div><label>大脑（首个为默认；故障转移只在与默认同档的大脑之间按此顺序循环，power 在 power 档、economy 在 economy 档；economy 档不参与主循环轮换，供智能体按档调用）</label>
-        <div id="f-brains" class="check grid"></div></div>
+        <div id="f-brains" class="check"></div></div>
 
       <div style="display:flex;gap:12px">
         <div style="flex:1"><label>xuseek 版本（源码副本随实例隔离；缺省 = 仓库最新版）</label>
@@ -1124,9 +1131,40 @@ $("#f-tab-opt-btn").onclick = () => switchCreateTab("opt");
 
 function renderBrainChecks(containerSel, defaults) {
   const defs = new Set(defaults || []);
-  $(containerSel).innerHTML = _brainsPool.map(b =>
-    `<label title="${esc(b.name)} — ${esc(b.model)}"><input type="checkbox" value="${esc(b.name)}" ${defs.has(b.name) ? "checked" : ""} ${b.has_key ? "" : "disabled"}>
-      ${esc(b.name)}${b.has_key ? "" : "（缺key）"}${b.model !== b.name ? ` <small style="color:var(--sub)">${esc(b.model)}</small>` : ""}</label>`).join("");
+  // 四列分组：deepseek / 月卡(glm·kimi·minimax) / 免费(c150) / economy——每列可单选、可整列一起选
+  const GROUPS = [
+    { title: "deepseek", test: n => n.startsWith("deepseek") },
+    { title: "月卡 · glm/kimi/minimax", test: n => /^(glm|kimi|minimax)/.test(n) },
+    { title: "免费 · c150", test: n => n.startsWith("c150") },
+    { title: "economy", test: n => n.startsWith("qwen-local") },
+  ];
+  const groups = GROUPS.map(g => ({ ...g, items: _brainsPool.filter(b => g.test(b.name)) }));
+  const known = new Set(groups.flatMap(g => g.items.map(b => b.name)));
+  groups.push({ title: "其他", test: null, items: _brainsPool.filter(b => !known.has(b.name)) });
+  $(containerSel).innerHTML = groups.filter(g => g.items.length).map(g => `
+    <div class="bcol">
+      <label class="bcol-head" title="整列全选 / 全不选"><input type="checkbox" class="colall" ${g.items.every(b => defs.has(b.name)) ? "checked" : ""}>
+        ${esc(g.title)}<small>${g.items.length}</small></label>
+      <div class="bcol-body">${g.items.map(b =>
+        `<label title="${esc(b.name)} — ${esc(b.model)}"><input type="checkbox" value="${esc(b.name)}" ${defs.has(b.name) ? "checked" : ""} ${b.has_key ? "" : "disabled"}>
+          ${esc(b.name)}${b.has_key ? "" : "（缺key）"}${b.model !== b.name ? ` <small style="color:var(--sub)">${esc(b.model)}</small>` : ""}</label>`).join("")}
+      </div>
+    </div>`).join("");
+  const syncHead = h => {
+    const items = [...h.closest(".bcol").querySelectorAll(".bcol-body input:not(:disabled)")];
+    const on = items.filter(i => i.checked).length;
+    h.checked = on === items.length && on > 0;
+    h.indeterminate = on > 0 && on < items.length;
+  };
+  $(containerSel).querySelectorAll(".colall").forEach(h => {
+    h.onchange = () => {
+      h.closest(".bcol").querySelectorAll(".bcol-body input:not(:disabled)").forEach(i => i.checked = h.checked);
+      syncHead(h);
+    };
+  });
+  $(containerSel).querySelectorAll(".bcol-body input").forEach(i => {
+    i.onchange = () => syncHead(i.closest(".bcol").querySelector(".colall"));
+  });
 }
 
 /* 根智能体动态行（[[roots]] 出生交割条目；后端做版本门槛与去重） */
@@ -1200,7 +1238,8 @@ $("#btn-create").onclick = createBlank;
 async function createBlank() {
   const mission = $("#f-mission").value.trim();
   if (!mission) { $("#f-err").textContent = "请填写使命 mission"; return; }
-  const brains = [...$("#f-brains").querySelectorAll("input:checked")].map(i => i.value);
+  const sel = new Set([...$("#f-brains").querySelectorAll("input:checked:not(.colall)")].map(i => i.value));
+  const brains = _brainsPool.map(b => b.name).filter(n => sel.has(n));  // 池序=默认脑序（与改参数同款）
   if (!brains.length) { $("#f-err").textContent = "至少勾选一家大脑"; return; }
   let roots;
   try { roots = collectRoots(); } catch (e) { return; }
@@ -1803,7 +1842,7 @@ async function saveEdit() {
     // 池序收集勾选——与创建对话框同语义：首个勾选（池序）= 默认；
     // 故障转移只发生在与默认同档之间（economy 档不参与主循环轮换）
     const brains = _brainsPool.map(b => b.name).filter(n =>
-      [...$("#e-brains").querySelectorAll("input:checked")].some(i => i.value === n));
+      [...$("#e-brains").querySelectorAll("input:checked:not(.colall)")].some(i => i.value === n));
     if (!brains.length) { $("#e-err").textContent = "至少勾选一家大脑"; return; }
     if (JSON.stringify(brains) !== JSON.stringify(editCur.brains || [])) body.brains = brains;
   }
