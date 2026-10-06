@@ -77,13 +77,13 @@
                background:#f6f7fa;padding:4px 10px;border-radius:8px}
   .check.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:6px 12px}
   .check.grid label{background:transparent;border:1px solid var(--line);white-space:nowrap;overflow:hidden}
-  .bcol{display:flex;flex-direction:column;gap:4px;border:1px solid var(--line);border-radius:10px;
-        padding:7px 9px;min-width:190px;max-width:250px;background:#fafbfd}
+  .bcol{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:4px;border:1px solid var(--line);
+        border-radius:10px;padding:7px 9px;background:#fafbfd}
   .bcol-head{display:flex;align-items:center;gap:5px;font-weight:600;cursor:pointer;margin:0}
-  .bcol-head small{color:var(--sub);font-weight:400}
   .bcol-body{display:flex;flex-direction:column;gap:3px;max-height:230px;overflow:auto}
   .bcol-body label{display:flex;align-items:center;gap:5px;font-weight:400;margin:0;
-                   background:transparent;padding:2px 4px;border-radius:6px;white-space:nowrap}
+                   background:transparent;padding:2px 4px;border-radius:6px;
+                   white-space:nowrap;overflow:hidden}
   .adv-card{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:8px;
             display:flex;flex-direction:column;gap:12px;background:#fafbfd}
   .switch{display:flex;align-items:center;gap:8px}
@@ -121,6 +121,26 @@
   #sel-scope{border:1px solid var(--line);border-radius:8px;padding:5px 8px;background:#fff;
     color:var(--ink);font-size:12.5px;max-width:190px}
   #pane{flex:1;overflow:auto;padding:14px 18px;font-size:13px}
+  /* ── 详情全功能模式（桌面）：事件流/会话/信箱/文件 四列常驻；
+     其他（状态/Boot/工具/日志四列）与详情（状态单列）点顶栏展开，再点收起 ── */
+  #drawer.fullmode{width:100vw;right:0;border-left:none;box-shadow:none}
+  #pane.gridmode{display:flex;flex-direction:column;gap:10px;padding:10px;overflow:hidden}
+  .dcols4{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.3fr) minmax(0,1.3fr) minmax(0,1fr);gap:10px}
+  #pane.gridmode .dpanel{display:flex;flex-direction:column;min-height:0;flex:1;
+                         border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fff}
+  .dcols3{flex:1;min-height:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:10px}
+  .dcols3.wboot{grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,1fr)}   /* 「其他」页三列：状态+工具叠一列 / Boot / 日志（仅本地四子页齐时挂；远端两列自动均分） */
+  #pane.gridmode .dcol{display:flex;flex-direction:column;gap:10px;min-width:0;min-height:0}   /* 叠放列：内含面板各占一半（.dpanel 的 flex:1 在此生效），各自内滚 */
+  .dph{padding:6px 12px;font-weight:600;font-size:12.5px;color:var(--sub);
+       border-bottom:1px solid var(--line);background:#fafbfd}
+  .dpb{flex:1;min-height:0;overflow:auto;padding:10px 12px}
+  /* 宽页多栏：子卡片正文统一 12px（此前 kv/信箱 13、事件/会话行 12.5、表格/pre 12 混杂）。
+     基准压到 12 + 显式字号逐个覆盖；时间戳/chips 的 11.5px 小字保持不动（全局一致的非正文层） */
+  #pane.gridmode .dpb{font-size:12px}
+  #pane.gridmode .kv,#pane.gridmode .mailrow,#pane.gridmode .ev,
+  #pane.gridmode .md,#pane.gridmode .md table,
+  #pane.gridmode details.sessrow summary{font-size:12px}
+  #pane.gridmode .sendbox{margin:10px -12px -12px}
   #pane pre{background:#f6f7fa;border-radius:8px;padding:10px;font-size:12px;overflow:auto;
             font-family:var(--mono);white-space:pre-wrap;word-break:break-all}
   .kv{display:grid;grid-template-columns:130px 1fr;gap:4px 10px;font-size:13px}
@@ -165,7 +185,7 @@
   /* 信箱对话：管理员靠右（强调色气泡），大脑靠左（卡片底气泡） */
   .chatrow{display:flex;margin-bottom:8px}
   .chatrow.me{justify-content:flex-end}
-  .bubble{max-width:78%;padding:7px 11px;border-radius:10px;border:1px solid var(--line);
+  .bubble{max-width:88%;padding:7px 11px;border-radius:10px;border:1px solid var(--line);
           background:var(--card);font-size:13px;white-space:pre-wrap;word-break:break-word}
   .bubble .t{font-size:11px;font-family:var(--mono);opacity:.72;margin-bottom:3px}
   .chatrow.me .bubble{background:var(--acc);border-color:var(--acc);color:#fff}
@@ -309,29 +329,19 @@
       <div><label>使命 mission（创建时渲染进 config.toml 一次；此后归 agent 自治，改它请投信）</label>
         <textarea id="f-mission" placeholder="持续获取中国A股的交易数据，形成本地数据库，并对外提供查询服务。"></textarea></div>
 
-      <div><label>大脑（首个为默认；故障转移只在与默认同档的大脑之间按此顺序循环，power 在 power 档、economy 在 economy 档；economy 档不参与主循环轮换，供智能体按档调用）</label>
+      <div><label>大脑</label>
         <div id="f-brains" class="check"></div></div>
 
       <div style="display:flex;gap:12px">
-        <div style="flex:1"><label>xuseek 版本（源码副本随实例隔离；缺省 = 仓库最新版）</label>
+        <div style="flex:1"><label>xuseek 版本</label>
           <select id="f-version"><option value="">最新版本</option></select></div>
-        <div style="flex:1"><label>运行时（创建后可切换：停止 → 改参 → 启动）</label>
+        <div style="flex:1"><label>运行时</label>
           <select id="f-runtime">
             <option value="systemd">系统进程（systemd）</option>
             <option value="docker">Docker 容器（host 网络；需本机 docker 环境）</option>
             <option value="bare">容器直跑（裸进程——AutoDL 等无 systemd/不可嵌套 docker 的容器机）</option>
           </select></div>
       </div>
-      <div style="display:flex;gap:12px">
-        <div style="flex:1"><label>端口（缺省自动分配）</label>
-          <select id="f-port"><option value="">自动分配</option></select></div>
-        <div style="flex:1;display:flex;align-items:end"><div class="switch">
-          <input id="f-expose" type="checkbox"><label for="f-expose" style="margin:0">暴露外网（监听 0.0.0.0）</label>
-        </div></div>
-      </div>
-      <div style="display:flex;align-items:end"><div class="switch">
-        <input id="f-xmem" type="checkbox"><label for="f-xmem" style="margin:0">内核记忆层 xmem（内建记忆工具，判断归大脑）</label>
-      </div></div>
     </div>
 
     <div id="f-tab-opt" hidden>
@@ -343,6 +353,13 @@
           首次启动一次性交割进 workspace/playbook/根智能体.json（此后死键）；address 与 token 都填才生效，
           token 可写 env:变量名。缺省根（etc/xusi.toml 的 [[default_roots]]）自动预填、可删改。
         </div>
+      </div>
+      <div style="display:flex;gap:12px">
+        <div style="width:160px"><label>端口</label>
+          <select id="f-port"><option value="">自动分配</option></select></div>
+        <div style="flex:1;display:flex;align-items:end"><div class="switch">
+          <input id="f-expose" type="checkbox"><label for="f-expose" style="margin:0">暴露外网（监听 0.0.0.0）</label>
+        </div></div>
       </div>
       <div><label>备注（可选）</label><input id="f-note" type="text"></div>
     </div>
@@ -388,6 +405,7 @@
 <!-- 详情抽屉 -->
 <div id="drawer">
   <div class="dh"><span class="nm" id="d-nm"></span><span class="aid mono" id="d-id" style="color:var(--sub);font-size:12px"></span>
+    <button id="d-mode" onclick="toggleDetailMode()" title="切换详情布局：桌面全功能（多栏）/ 手机抽屉">🖥</button>
     <button id="d-refresh" onclick="loadDetail()" style="margin-left:auto" title="手动刷新">⟳</button>
     <button id="d-edit" onclick="openEdit(cur)" hidden>✎ 改参</button>
     <a id="d-ui" href="#" target="_blank" style="font-size:12.5px;text-decoration:none;color:var(--acc)">观测台 ↗</a>
@@ -421,24 +439,16 @@
         <input id="e-expose" type="checkbox"><label for="e-expose" style="margin:0">暴露外网（改后需重启）</label>
       </div></div>
     </div>
-    <div style="display:flex;align-items:end"><div class="switch">
-      <input id="e-xmem" type="checkbox"><label for="e-xmem" style="margin:0">内核记忆层 xmem（下次呼吸生效，不重启）</label>
-    </div></div>
-    <div><label>运行时<span class="hint" style="font-weight:400">——切换须先「停止」：停止 → 改参 → 启动（切换后不自动启动）</span></label>
+    <div><label>运行时</label>
       <select id="e-runtime" disabled>
         <option value="systemd">系统进程（systemd）</option>
         <option value="docker">Docker 容器（host 网络）</option>
         <option value="bare">容器直跑（裸进程）</option>
       </select></div>
     <div><label>备注（可选）</label><input id="e-note" type="text"></div>
-    <div><label>大脑（首个勾选为默认；与默认同档之间按此顺序故障转移）<span class="hint" style="font-weight:400">——下次呼吸生效，不重启</span></label>
+    <div><label>大脑</label>
       <div id="e-brains" class="check"></div></div>
     <div id="e-err" class="err"></div>
-    <div class="hint" style="color:var(--sub);font-size:12px">
-      大脑（brains）改的是 config.toml 的 [brain] + [brains.*] 段（按密钥池模板重渲染，
-      其余段原样保留），<b>下次呼吸生效、不重启</b>；mission / 预算在创建后仍归
-      <b>agent 自治</b>——改它们请到「信箱」tab 投信（每口呼吸热重载）。
-    </div>
   </div>
   <div class="dlg-f"><button onclick="dlgEdit.close()">取消</button>
     <button id="btn-edit-save" class="pri">保存</button></div>
@@ -1131,38 +1141,40 @@ $("#f-tab-opt-btn").onclick = () => switchCreateTab("opt");
 
 function renderBrainChecks(containerSel, defaults) {
   const defs = new Set(defaults || []);
-  // 四列分组：deepseek / 月卡(glm·kimi·minimax) / 免费(c150) / economy——每列可单选、可整列一起选
+  // 三竖列分组：按量 / 月卡 / 免费——条目只显名字，整列全选点列首复选框；
+  // 细节（model、缺key）进 hover 提示。以后按量计费的新脑，把名前缀加进 PAYG 即归列
+  const PAYG = ["deepseek"];
   const GROUPS = [
-    { title: "deepseek", test: n => n.startsWith("deepseek") },
-    { title: "月卡 · glm/kimi/minimax", test: n => /^(glm|kimi|minimax)/.test(n) },
-    { title: "免费 · c150", test: n => n.startsWith("c150") },
-    { title: "economy", test: n => n.startsWith("qwen-local") },
+    { title: "按量", test: n => PAYG.some(p => n.startsWith(p)) },
+    { title: "月卡", test: n => /^(glm|kimi|minimax)/.test(n) },
+    { title: "免费", test: n => n.startsWith("c150") || n.startsWith("qwen-local") },
   ];
   const groups = GROUPS.map(g => ({ ...g, items: _brainsPool.filter(b => g.test(b.name)) }));
   const known = new Set(groups.flatMap(g => g.items.map(b => b.name)));
   groups.push({ title: "其他", test: null, items: _brainsPool.filter(b => !known.has(b.name)) });
+  groups.sort((a, b) => a.items.length - b.items.length);   // 列按条目数从少到多，齐整
   $(containerSel).innerHTML = groups.filter(g => g.items.length).map(g => `
     <div class="bcol">
       <label class="bcol-head" title="整列全选 / 全不选"><input type="checkbox" class="colall" ${g.items.every(b => defs.has(b.name)) ? "checked" : ""}>
-        ${esc(g.title)}<small>${g.items.length}</small></label>
+        ${esc(g.title)}</label>
       <div class="bcol-body">${g.items.map(b =>
-        `<label title="${esc(b.name)} — ${esc(b.model)}"><input type="checkbox" value="${esc(b.name)}" ${defs.has(b.name) ? "checked" : ""} ${b.has_key ? "" : "disabled"}>
-          ${esc(b.name)}${b.has_key ? "" : "（缺key）"}${b.model !== b.name ? ` <small style="color:var(--sub)">${esc(b.model)}</small>` : ""}</label>`).join("")}
+        `<label title="${esc(b.name)} — ${esc(b.model)}${b.has_key ? "" : " · 缺key，不可选"}"><input type="checkbox" class="item" value="${esc(b.name)}" ${defs.has(b.name) ? "checked" : ""} ${b.has_key ? "" : "disabled"}>
+          ${esc(b.name)}</label>`).join("")}
       </div>
     </div>`).join("");
   const syncHead = h => {
-    const items = [...h.closest(".bcol").querySelectorAll(".bcol-body input:not(:disabled)")];
+    const items = [...h.closest(".bcol").querySelectorAll("input.item:not(:disabled)")];
     const on = items.filter(i => i.checked).length;
     h.checked = on === items.length && on > 0;
     h.indeterminate = on > 0 && on < items.length;
   };
   $(containerSel).querySelectorAll(".colall").forEach(h => {
     h.onchange = () => {
-      h.closest(".bcol").querySelectorAll(".bcol-body input:not(:disabled)").forEach(i => i.checked = h.checked);
+      h.closest(".bcol").querySelectorAll("input.item:not(:disabled)").forEach(i => i.checked = h.checked);
       syncHead(h);
     };
   });
-  $(containerSel).querySelectorAll(".bcol-body input").forEach(i => {
+  $(containerSel).querySelectorAll("input.item").forEach(i => {
     i.onchange = () => syncHead(i.closest(".bcol").querySelector(".colall"));
   });
 }
@@ -1201,7 +1213,7 @@ async function openNew() {
   if (!tok) { alert("请先认证"); return; }
   if (me?.role !== "admin") { alert("创建 agent 需要 admin token"); return; }
   $("#f-err").textContent = ""; $("#f-mission").value = ""; $("#f-name").value = "";
-  $("#f-note").value = ""; $("#f-expose").checked = false; $("#f-xmem").checked = false;
+  $("#f-note").value = ""; $("#f-expose").checked = false;
   $("#f-runtime").value = "systemd";
   $("#f-roots").innerHTML = "";
   switchCreateTab("main");
@@ -1244,8 +1256,7 @@ async function createBlank() {
   let roots;
   try { roots = collectRoots(); } catch (e) { return; }
   const body = { name: $("#f-name").value.trim(), mission, brains,
-    expose: $("#f-expose").checked, note: $("#f-note").value.trim(),
-    xmem: $("#f-xmem").checked };
+    expose: $("#f-expose").checked, note: $("#f-note").value.trim() };
   if (roots.length) body.roots = roots;
   const p = $("#f-port").value; if (p) body.port = parseInt(p, 10);
   const sv = $("#f-version").value; if (sv) body.source_version = sv;
@@ -1378,7 +1389,7 @@ const TABS = ["状态", "事件", "会话", "信箱", "工具", "Boot", "文件"
 // 中转 upload/workspace）可看；工具统计/日志暂不提供——「观测台 ↗」直连看全貌
 const REMOTE_TABS = ["状态", "事件", "信箱", "会话", "Boot", "文件"];
 async function openDetail(id) {
-  cur = id; curTab = "状态";
+  cur = id; curTab = "状态"; fullTab = "详情";
   fsPath = ""; fsViewing = null; fsEditing = false;
   drawer.classList.add("open");
   const isR = scope !== "local";
@@ -1423,10 +1434,15 @@ async function openDetail(id) {
   loadDetail();
 }
 function closeDetail() {
-  cur = null; drawer.classList.remove("open");
+  cur = null; drawer.classList.remove("open", "fullmode");
   if (!pollTimer && tok) refresh(true);
 }
 function switchTab(t) {
+  if ($("#pane").classList.contains("gridmode")) {
+    fullTab = t;   // 全功能模式：顶栏仅「详情/其他」两标签，点谁显谁（无再点收起）
+    loadDetail();
+    return;
+  }
   if (t === "信箱" && curTab !== "信箱") mailToBottom = true;
   curTab = t; loadDetail();
 }
@@ -1454,12 +1470,108 @@ function eventsHtml(evs) {
   }).join("") || "<p>（事件流为空：agent 刚启动，或进程重启过——事件仅存于内存）</p>";
 }
 
+/* 详情双模式：手机 = 原抽屉单栏（不变）；桌面 = 全功能——事件流/会话/信箱/文件
+   四列常驻，「其他」（状态/Boot/工具/日志四列）与「详情」（状态单列）点顶栏展开、
+   再点收起。宽屏自动进全功能，可手动切换并记住。 */
+let modeOverride = (() => { try { return localStorage.getItem("xusi-detail-mode") || ""; } catch { return ""; } })();
+const detailEff = () => modeOverride || (window.innerWidth >= 1200 ? "desktop" : "mobile");
+function toggleDetailMode() {
+  modeOverride = detailEff() === "desktop" ? "mobile" : "desktop";
+  try { localStorage.setItem("xusi-detail-mode", modeOverride); } catch {}
+  if (cur) loadDetail();
+}
+let fullTab = "详情";   // 全功能模式顶栏当前页：详情=主四列（事件/信箱/会话/文件），其他=子页四列（状态/Boot/工具/日志）
+let loadGen = 0, loadQ = Promise.resolve();   // 详情加载代际+串行队列：快速连点时旧执行过期即退出（否则 loadTabInto 的 setPane 拦截器交叉，旧执行迟归还原真 setPane，新执行的输出会裸写整个 pane）
+const FULL_FIXED = ["事件", "信箱", "会话", "文件"];
+const FULL_OTHERS = () => ["详情", "其他"];   // 顶栏仅此两标签
+const SUB_OTHERS = ["状态", "Boot", "工具", "日志"];   // 「其他」页内容：状态+工具叠第一列（状态在上），Boot/日志各一列，共三列
+async function loadDetailFull(id) {
+  const gen = ++loadGen;
+  const run = () => gen === loadGen ? loadDetailFullNow(id) : undefined;   // 过期执行：直接退出，不碰 DOM
+  await (loadQ = loadQ.then(run, run));
+}
+async function loadDetailFullNow(id) {
+  drawer.classList.add("fullmode");
+  const pane = $("#pane");
+  pane.classList.add("gridmode");
+  const tabs = scope !== "local" ? REMOTE_TABS : TABS;
+  const others = FULL_OTHERS();
+  const show = others.includes(fullTab) ? fullTab : "详情";   // 异常值兜底回详情
+  const subOthers = SUB_OTHERS.filter(t => tabs.includes(t));
+  // 顶栏仅两个标签：详情=主四列，其他=子页四列
+  $("#tabs").innerHTML = others.map(t =>
+    `<button data-t="${t}" class="${t === show ? "on" : ""}" onclick="switchTab('${t}')">${t}</button>`).join("");
+  // 滚动语义区别处理：事件/会话最新在顶（重载回顶部即可）；信箱最新在底——
+  // 粘底跟随（用户上翻读史则保留位置）；刚投信/点名看信则强制到底
+  const oldMail = pane.querySelector('.dpanel[data-t="信箱"] .dpb');
+  const mailNearBottom = !oldMail || oldMail.scrollHeight - oldMail.scrollTop - oldMail.clientHeight < 48;
+  const mailKeepTop = oldMail ? oldMail.scrollTop : 0;
+  const isSub = show === "其他";
+  // 「其他」页三列：第一列 状态（上）+ 工具（下）叠放，Boot、日志各占一列
+  const panel = t => `<div class="dpanel" data-t="${t}"><div class="dph">${t}</div><div class="dpb"></div></div>`;
+  const subMain = subOthers.filter(t => t === "状态" || t === "工具");
+  const subRest = subOthers.filter(t => t !== "状态" && t !== "工具");
+  pane.innerHTML = isSub
+    ? `<div class="dcols3${subOthers.length === 4 ? " wboot" : ""}">${subMain.length ? `<div class="dcol">${subMain.map(panel).join("")}</div>` : ""}${subRest.map(panel).join("")}</div>`
+    : `<div class="dcols4">${FULL_FIXED.filter(t => tabs.includes(t)).map(panel).join("")}</div>`;
+  const load = isSub ? subOthers : FULL_FIXED.filter(t => tabs.includes(t));
+  for (const t of load) await loadTabInto(id, t);   // 串行：并发会互踩全局 curTab（分支在 await 之后才读）
+  const mb = pane.querySelector('.dpanel[data-t="信箱"] .dpb');
+  if (mb) mb.scrollTop = (mailToBottom || mailNearBottom) ? mb.scrollHeight
+                                                          : Math.min(mailKeepTop, Math.max(0, mb.scrollHeight - mb.clientHeight));
+  mailToBottom = false;
+  // 草稿/焦点恢复（面板直填绕过了 setPane 的恢复段——此处补上，与 setPane 同源）
+  if (paneSnap) {
+    for (const [did, v] of Object.entries(paneSnap.drafts)) {
+      const el2 = document.getElementById(did);
+      if (el2 && !el2.value) el2.value = v;
+    }
+    if (paneSnap.focus) {
+      const el2 = document.getElementById(paneSnap.focus);
+      if (el2) { el2.focus(); try { el2.setSelectionRange(paneSnap.sel[0], paneSnap.sel[1]); } catch {} }
+    }
+  }
+  [...$("#tabs").children].forEach(b => b.classList.toggle("on", b.dataset.t === show));
+}
+// 单个 tab 渲染进面板：借道 setPane 捕获该 tab 的输出（手机路径零改动）
+async function loadTabInto(id, t) {
+  const el = document.querySelector(`#pane .dpanel[data-t="${t}"] .dpb`);
+  if (!el) return;
+  const real = setPane, saved = curTab;
+  let html = null;
+  setPane = h => { html = h; };
+  curTab = t;
+  try { await loadDetailSingle(t); }   // 显式传 tab：迟归的全局 curTab 不可信
+  finally { setPane = real; curTab = saved; }
+  if (html != null) el.innerHTML = html;
+}
 async function loadDetail() {
+  const eff = detailEff(), btn = $("#d-mode");
+  if (btn) {
+    btn.textContent = eff === "desktop" ? "🖥 多栏" : "📱 抽屉";
+    btn.title = `切换详情布局（当前：${eff === "desktop" ? "桌面全功能" : "手机抽屉"}；点击切换并记住）`;
+  }
   const id = cur;
+  if (!id) return;
+  if (eff === "desktop") {
+    paneSnap = snapshotPane();
+    try { await loadDetailFull(id); }
+    catch (e) { if (String(e.message) !== "401") setPane(`<p class="err">${esc(e.message)}</p>`); }
+    return;
+  }
+  drawer.classList.remove("fullmode");
+  $("#pane").classList.remove("gridmode");
+  // 顶栏还原为全部 tab（全功能模式下它只放「其他」）
+  $("#tabs").innerHTML = (scope !== "local" ? REMOTE_TABS : TABS)
+    .map(t => `<button data-t="${t}" onclick="switchTab('${t}')">${t}</button>`).join("");
+  await loadDetailSingle();
+}
+async function loadDetailSingle(forceTab) {
+  const id = cur, tab = forceTab || curTab;
   paneSnap = snapshotPane();
   [...$("#tabs").children].forEach(b => b.classList.toggle("on", b.dataset.t === curTab));
   try {
-    if (curTab === "状态") {
+    if (tab === "状态") {
       if (scope !== "local") {
         const s = await api(`/api/remote/agents/${id}?host=${encodeURIComponent(scope)}`);
         if (id !== cur) return;
@@ -1512,7 +1624,7 @@ async function loadDetail() {
           ${rootsRow}
         </div>`
       );
-    } else if (curTab === "事件") {
+    } else if (tab ==="事件") {
       if (scope !== "local") {
         // 远端事件 = ssh 观察通道一次性快照（与本地同一条 agentops.observe）
         const r = await api(`/api/remote/agents/${id}/events?limit=80&host=${encodeURIComponent(scope)}`);
@@ -1523,7 +1635,7 @@ async function loadDetail() {
       const r = await api(`/api/agents/${id}/events?limit=80`);
       if (id !== cur) return;
       setPane(eventsHtml(r.events || []));
-    } else if (curTab === "会话") {
+    } else if (tab ==="会话") {
       if (scope !== "local") {
         // 远端会话 = 远端 CLI sessions（事实账 session_end 行——文件通道，不反代）；
         // API 已返回最新在前（与本地同构），无需再倒序
@@ -1546,7 +1658,7 @@ async function loadDetail() {
       setPane(
         (running ? `<div class="mailrow" style="border-color:var(--acc)"><b>呼吸进行中</b> <span class="t">${esc(curId || "")}</span>——本口呼吸结束后出现在下方列表</div>` : "") +
         ss.map(s => sessRowHtml(s)).join("") || (!running ? "<p>（还没有完成的呼吸）</p>" : ""));
-    } else if (curTab === "信箱") {
+    } else if (tab ==="信箱") {
       if (scope !== "local") {
         const [o, m] = await Promise.all([
           api(`/api/remote/agents/${id}/mailbox?box=outbox&limit=50&host=${encodeURIComponent(scope)}`),
@@ -1558,7 +1670,7 @@ async function loadDetail() {
         <div class="sendbox"><textarea id="m-txt" placeholder="给大脑写信…（改 mission / 换大脑 / 调预算都在这里）"></textarea>
           <button class="pri" onclick="sendMail('${id}')">投递</button></div>`
       );
-        if (mailToBottom) { $("#pane").scrollTop = $("#pane").scrollHeight; mailToBottom = false; }
+        if (mailToBottom && !$("#pane").classList.contains("gridmode")) { $("#pane").scrollTop = $("#pane").scrollHeight; mailToBottom = false; }
         return;
       }
       const [o, m] = await Promise.all([
@@ -1571,10 +1683,10 @@ async function loadDetail() {
         <div class="sendbox"><textarea id="m-txt" placeholder="给大脑写信…（改 mission / 换大脑 / 调预算都在这里）"></textarea>
           <button class="pri" onclick="sendMail('${id}')">投递</button></div>`
       );
-        if (mailToBottom) { $("#pane").scrollTop = $("#pane").scrollHeight; mailToBottom = false; }
-    } else if (curTab === "工具") {
+        if (mailToBottom && !$("#pane").classList.contains("gridmode")) { $("#pane").scrollTop = $("#pane").scrollHeight; mailToBottom = false; }
+    } else if (tab ==="工具") {
       await renderToolsTab(id);
-    } else if (curTab === "Boot") {
+    } else if (tab ==="Boot") {
       if (scope !== "local") {
         // 远端 Boot = 磁盘文件（workspace/BOOT.md），ssh 透传 CLI boot
         const r = await api(`/api/remote/agents/${id}/boot?host=${encodeURIComponent(scope)}`);
@@ -1595,9 +1707,9 @@ async function loadDetail() {
           ? `<div class="md">${mdRender(r.text)}</div>`      // mdRender 先转义后变换，XSS 安全
           : `<p class="hint">（还没有 BOOT.md——agent 首口呼吸后才会写自述）</p>`)
       );
-    } else if (curTab === "文件") {
+    } else if (tab ==="文件") {
       await renderFsTab(id);
-    } else if (curTab === "日志") {
+    } else if (tab ==="日志") {
       const r = await api(`/api/agents/${id}/logs?limit=300`);
       if (id !== cur) return;
       setPane(`<pre>${esc((r.lines || []).join("\n"))}</pre>`);
@@ -1678,7 +1790,7 @@ async function sessToggle(el) {
   }
 }
 
-async function renderToolsTab(id) {
+async function _renderToolsTabRaw(id) {
   // 工具/技能调用统计：聚合最近事件窗口里的 tool_exec / tool_error / tool_timeout。
   // 事件仅存于 agent 进程内存（重启清零），属进程生命周期内的真实计数。
   const r = await api(`/api/agents/${id}/events?limit=500`);
@@ -1799,19 +1911,14 @@ async function openEdit(id) {
     $("#e-name").value = s.name || "";
     $("#e-note").value = s.note || "";
     $("#e-expose").checked = !!s.expose;
-    $("#e-xmem").checked = !!s.xmem;
     $("#e-runtime").value = s.runtime || "systemd";
     // running 时禁用 runtime 切换：后端要求停止态（运行中提交会 400）——
     // 与其「能选不能改」，不如灰显 + hint 说明；停止后恢复可编辑
     const $rt = $("#e-runtime");
     const rtActive = (s.process || {}).active === "active";
     $rt.disabled = rtActive;
-    const $rtHint = $rt.parentElement.querySelector("label .hint");
-    if ($rtHint) {
-      $rtHint.textContent = rtActive
-        ? "—— 当前正在运行：切换须先「停止」（停止 → 改参 → 启动，切换后不自动启动）"
-        : "—— 切换须先「停止」：停止 → 改参 → 启动（切换后不自动启动）";
-    }
+    $rt.title = rtActive ? "当前正在运行：切换须先「停止」（停止 → 改参 → 启动）"
+                         : "切换须先「停止」：停止 → 改参 → 启动（切换后不自动启动）";
     $("#e-port").value = s.port;   // 创建后固定，只读展示（对外联络 = ip+port）
     try {
       _brainsPool = await api("/api/brains");   // 每次重取，别用新建对话框的旧池
@@ -1834,10 +1941,6 @@ async function saveEdit() {
     expose: $("#e-expose").checked,
     note: $("#e-note").value.trim(),
   };
-  const xmemChanged = $("#e-xmem").checked !== !!editCur.xmem;
-  if (xmemChanged) body.xmem = $("#e-xmem").checked;
-  // xmem 只在勾选态变化时上送：非受管段（agent 手工写过 [xmem]）不因
-  // 无关编辑被手术覆盖——管理面不碰非受管配置
   if (editBrainsOk) {
     // 池序收集勾选——与创建对话框同语义：首个勾选（池序）= 默认；
     // 故障转移只发生在与默认同档之间（economy 档不参与主循环轮换）
@@ -1928,7 +2031,7 @@ function fsRowHtml(e) {
   </tr>`;
 }
 
-async function renderFsTab(id) {
+async function _renderFsTabRaw(id) {
   if (fsViewing) return fsRenderView(id);
   let r;
   try { r = await api(fsApi(id, "", {path: fsPath})); }
@@ -2016,7 +2119,8 @@ async function fsRenderView(id) {
 /* 文件 tab 的事件委托：#pane 常驻（重渲染不丢监听），data-fs-act 分发 */
 $("#pane").addEventListener("click", e => {
   const el = e.target.closest("[data-fs-act]");
-  if (!el || curTab !== "文件" || !cur) return;
+  if (!el || !cur) return;
+  if (!$("#pane").classList.contains("gridmode") && curTab !== "文件") return;
   const act = el.dataset.fsAct, path = el.dataset.path || "", id = cur;
   if (act === "nav") { fsPath = path; fsViewing = null; fsEditing = false; renderFsTab(id); }
   else if (act === "up") {
@@ -2143,6 +2247,25 @@ function fsBindDrop(id) {
 /* ── 启动：带 token（URL ?mtoken= / localStorage 记忆）立即拉数据并武装 15s
    轮询；无 token 时 refresh 走 setLogin 显示认证提示 ── */
 refresh(true);
+
+/* ── 工具/文件 tab 的网格路由包装：全功能模式下 setPane 输出进对应面板，
+   抽屉模式原样直通（原实现改名 _raw，此声明靠后覆盖同名的全部调用点）── */
+async function renderToolsTab(id) {
+  if (!$("#pane").classList.contains("gridmode")) return _renderToolsTabRaw(id);
+  const real = setPane; let html = null;
+  setPane = h => { html = h; };
+  try { await _renderToolsTabRaw(id); } finally { setPane = real; }
+  const el = document.querySelector('#pane .dpanel[data-t="工具"] .dpb');
+  if (html != null && el) el.innerHTML = html;
+}
+async function renderFsTab(id) {
+  if (!$("#pane").classList.contains("gridmode")) return _renderFsTabRaw(id);
+  const real = setPane; let html = null;
+  setPane = h => { html = h; };
+  try { await _renderFsTabRaw(id); } finally { setPane = real; }
+  const el = document.querySelector('#pane .dpanel[data-t="文件"] .dpb');
+  if (html != null && el) el.innerHTML = html;
+}
 </script>
 </body>
 </html>
