@@ -226,3 +226,19 @@ xmem/amem、playbook、seed 三层配方（通道补齐后大脑自己会挪，�
 迁移方向（另案）：正文迁文件（outbox.txt 兑现描述、mail 存档文件），账本行留
 sender/at/len 元数据，观测台与转发桥改读文件。旧行不动（append-only，历史肥行
 原地保留）；舰队兼容同 §5 信槽——旧内核不读新文件，无害。
+
+## 12. 全景走查：睡眠到醒来（目标态）
+
+**家当**：BOOT.md（身份快照，注入）｜letter.md（信槽，覆盖写=新顶旧）｜
+mail.txt/bell.txt（队列，领取后清）｜facts.db（纯账本，只增无人必须读）｜
+sessions/（存档，只增）｜todo（大脑自记自读）｜xmem/amem（沉淀）。
+
+**收口**：end_session(信, sleep_seconds, stop) → 存档先行 → 信入槽（空=删）→
+session_end 行（只有元数据）→ 睡，mail/bell 早醒；脏死则只有 residue 行，
+信槽里是上上口旧信。
+
+**第一口零动作三件**：BOOT（我是谁）+ 索引行（事实 N｜队列路径｜清空命令）+
+信段（上口交代，8K 墙）+ 条件脏死行（信的保质期）——一次读不用做。
+
+**主动各一跳**：读 todo（唯一惯例必做）→ 想收货才读 mail.txt（读完清）→
+考古才碰 facts_tail/存档。之后写随做记 todo、干活、收口写信，循环。
