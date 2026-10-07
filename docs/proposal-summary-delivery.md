@@ -118,6 +118,8 @@ summary 据此改走**信槽文件** `data/letter.md`（机器自有数据目录
 
 - `tools/meta.py`：end_session 的 summary 描述改「写给下一口自己的交代（下口开场
   送达；新顶旧；空=不送）」
+- `tools/meta.py`（顺手改真话）：send_mail 描述删去从未兑现的「追加
+  data/outbox.txt」——现状是归档 outbox 行，迁移后才是文件
 - `agent.py`：_persist_session 捕获声明原值（6.2 陷阱），写信槽 `data/letter.md`
   （覆盖写，空=删文件；存档先行不变）；session_end 行只加 `summary_chars` 元数据
   （账本轻量律：正文不进账本）
@@ -221,6 +223,8 @@ xmem/amem、playbook、seed 三层配方（通道补齐后大脑自己会挪，�
 - **转发桥技能**（seed 内置）：扫 facts.since(type="outbox") 逐条转发、游标
   outbox_n 推进——账本被当队列用
 - **xusi 投信**：agentops 直接向 facts.db 追加 mail 行（正文入账）
+- **bell 同罪**（五审补）：doorbell/seed 按铃同样全文双写（「facts.db 归档一行
+  历史全文 + 队列一行」自认）——便签正文该走队列+档，行留 at/len/按铃者
 - **文档谎言**：meta.py 描述许诺「追加 data/outbox.txt」，代码从未写该文件
 
 迁移方向（另案）：正文迁文件（outbox.txt 兑现描述、mail 存档文件），账本行留
@@ -242,3 +246,20 @@ session_end 行（只有元数据）→ 睡，mail/bell 早醒；脏死则只有
 
 **主动各一跳**：读 todo（唯一惯例必做）→ 想收货才读 mail.txt（读完清）→
 考古才碰 facts_tail/存档。之后写随做记 todo、干活、收口写信，循环。
+
+## 13. 冗余审计（五审）
+
+**真冗余（治）**：全文双写仅一处大类——mail/outbox/bell 队列×账本同文两存
+（§11 立案，bell 五审补）；meta.py outbox.txt 文档谎言（§6.1 顺手改）。
+
+**似双写实分工（不治）**：信=槽+档+行（transcript 本含信原文，档非新副本）；
+mail=队列+log+行（账本价值在事件按时间线交织）；breath.json=槽、账本=流；
+final_summary=索引、transcript=raw；BOOT=注入通道、xmem/amem=深存储。
+
+**可合并不合并**：facts_tail⊂facts_since（名字即意图，两薄工具胜一带 flag）；
+opening 清空命令教学（30 字符买开场自含）；requested_sleep_seconds 与 stop_reason
+（观测面无害）。
+
+**已知依赖点名**：「领取后清」是内核唯一承载于大脑纪律的机制（忘清 bell.txt→
+即刻再醒；机器零游标，清空=大脑声明）。其余纪律均已结构化（墙/槽/覆盖写），
+唯此一条留纪律——治它需游标或机器搬正文，更贵，记录不治。
