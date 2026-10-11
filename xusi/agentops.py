@@ -1187,13 +1187,34 @@ def boot(agent_id: str) -> dict:
 
 # ── 投信 / 收信（唯一的写通道）──────────────────────────────────────
 
-def mail(agent_id: str, text: str) -> dict:
-    """给大脑投信：事实账 mail 行（归档，永不清）+ data/mail.txt 队列（内核
-    ≥2.8.80 的唤醒与读信通道）双写。
+def _kernel_version(home: Path) -> tuple[int, ...] | None:
+    """实例内核版本号：私有副本 pyproject.toml 的 version = "X.Y.Z"，解析成
+    整数元组便于比较。读不到/解析不了返回 None——调用方走保守路径
+    （保持旧行为），不为未知布局发明新语义。"""
+    try:
+        text = (versions.kernel_dir(home) / "pyproject.toml").read_text(
+            encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(r'^version\s*=\s*"([\d.]+)"', text, re.M)
+    if not m:
+        return None
+    try:
+        return tuple(int(x) for x in m.group(1).rstrip(".").split("."))
+    except ValueError:
+        return None
 
-    队列行格式与内核 channels.append 完全一致（{"at","sender","text"} 一行
-    JSON）；旧内核（<2.8.80）不认识 mail.txt、仍走事实账轮询——双写对两代
-    内核都兼容。队列写失败不阻塞（账本已在，真相先落；stderr 可见）。
+
+def mail(agent_id: str, text: str) -> dict:
+    """给大脑投信：事实账 mail 行（归档，永不清，投递+唤醒同源）；
+    内核 <2.9.32 再加写 data/mail.txt 信号闩（{"at","sender","text"} 一行
+    JSON，格式与旧内核 channels.append 一致）。
+
+    内核 v2.9.32 起信号闩退役（retire_queues 开机删闩、唤醒走账本局部基线
+    ——「内容在哪，信号就在哪」），账本行已同时完成投递与唤醒；此版本以上
+    再写闩文件只会造出大脑永不读、永不清的幽灵文件，故跳过。版本读不到
+    （None）按旧内核保守处理：照旧双写。闩写失败不阻塞（账本已在，真相
+    先落；stderr 可见）。
     """
     import json as _json
     agent = get_agent_or_404(agent_id)
@@ -1204,6 +1225,10 @@ def mail(agent_id: str, text: str) -> dict:
     if not home.exists():
         raise AgentError("实例目录不存在")
     fact = factsdb.append(home, "mail", sender="admin", text=text)
+    audit("agent.mail", agent=agent_id, chars=len(text))
+    ver = _kernel_version(home)
+    if ver is not None and ver >= (2, 9, 32):
+        return {"posted": True, "id": fact["n"], "at": fact["at"]}
     try:
         q = home / "data" / "mail.txt"
         q.parent.mkdir(parents=True, exist_ok=True)
@@ -1214,7 +1239,6 @@ def mail(agent_id: str, text: str) -> dict:
         print(f"[xusi] mail.txt 队列追加失败（{home}/data/mail.txt——"
               f"归档已在账本，唤醒缺席）: {type(e).__name__}: {e}",
               file=sys.stderr)
-    audit("agent.mail", agent=agent_id, chars=len(text))
     return {"posted": True, "id": fact["n"], "at": fact["at"]}
 
 
@@ -1282,11 +1306,12 @@ def reconcile() -> list[dict]:
     return report
 
 
-def list_status() -> list[dict]:
-    ids = [a["id"] for a in registry.list_agents()]
+def list_status(only_id: str | None = None, mask_roots: bool = False) -> list[dict]:
+    ids = [a["id"] for a in registry.list_agents()
+           if only_id is None or a["id"] == only_id]
     if not ids:
         return []
     # 每 agent 一次 systemd 子进程 + 一次只读观察 HTTP（最长 6s 超时）——
     # 串行会把看板 15s 轮询拖成 N×6s，小线程池并行
     with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
-        return list(ex.map(status, ids))
+        return list(ex.map(lambda i: status(i, mask_roots=mask_roots), ids))
