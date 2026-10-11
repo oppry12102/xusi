@@ -81,6 +81,7 @@ class Scheduler:
         self.heartbeats = {}      # name → iso ts
         self.missed = {}          # name → 连续缺席次数
         self.down = set()         # 判失联的岗
+        self.started_at = time.time()   # P-20261011-01：零心跳宽限锚点（重启重起算）
         self.fired = {}           # 当日已触发的时间轴任务（落盘防重启重发）
         self.state_path = os.path.join(data_dir, "state.json")
         self._load_state()
@@ -257,12 +258,19 @@ class Scheduler:
             for name, entry in self.roster.items():
                 if name == "beidou" or entry.get("role") == "infra":
                     continue
-                hb = self.heartbeats.get(name)
-                if hb is None:
-                    continue
                 expect = DEFAULT_ROLES.get(entry.get("role"), 3600)
                 if is_trading_time():
                     expect = min(expect, 900)
+                hb = self.heartbeats.get(name)
+                if hb is None:
+                    # P-20261011-01（keeper 提案·PM+风控双签·主人终批）：
+                    # 查无此跳≠在岗——启动后满 expect×2 仍零心跳判失联。
+                    # 纯告警路径：PM freeze 与一切降级动作零触碰（主路径不动）。
+                    if now - self.started_at >= expect * 2 and name not in self.down:
+                        self.down.add(name)
+                        self.alert(f"零心跳 {int((now - self.started_at) // expect)} 周期："
+                                   f"{name} 查无此跳判失联（role={entry.get('role')}）")
+                    continue
                 age = now - hb
                 misses = int(age // expect)
                 if misses >= MISS_LIMIT and name not in self.down:
@@ -272,7 +280,7 @@ class Scheduler:
                         self.s1_admin("freeze", {"scope": "new_opens",
                                                  "reason": "PM 失联·代码规则冻结（§六）"})
                 elif misses < MISS_LIMIT and name in self.down:
-                    self.down.discard(name)      # 恢复
+                    self.down.discard(name)      # 恢复（含零心跳岗首跳到达）
                     self.alert(f"{name} 心跳恢复")
 
     def beat(self, name):
