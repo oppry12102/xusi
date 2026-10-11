@@ -50,3 +50,6 @@ etc/*.deprecated.*
 etc/brains.toml.bak-*
 # 运行时日志（serve 进程的 stdout/stderr 重定向落点；每台机器自己的一份）
 serve.log
+# stocksim 运行时：S1 账本与 secrets（600）永不入库；S2 告警日志同
+services/stocksim/data/s1/
+services/stocksim/data/s2/alerts.log

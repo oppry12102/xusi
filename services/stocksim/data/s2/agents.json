@@ -1,0 +1,16 @@
+{
+ "beidou":     {"agent_id": "agent-4dd8", "port": 8709, "role": "infra"},
+ "env-lead":   {"agent_id": "agent-5290", "port": 8711, "role": "env"},
+ "env-tech":   {"agent_id": "agent-8c22", "port": 8712, "role": "env"},
+ "env-fund":   {"agent_id": "agent-185b", "port": 8713, "role": "env"},
+ "theme-lead": {"agent_id": "agent-06ad", "port": 8721, "role": "theme"},
+ "theme-news": {"agent_id": "agent-5c49", "port": 8722, "role": "theme"},
+ "theme-tape": {"agent_id": "agent-280e", "port": 8723, "role": "theme"},
+ "pm-core":    {"agent_id": "agent-19bd", "port": 8730, "role": "pm"},
+ "risk-watch": {"agent_id": "agent-d5f0", "port": 8731, "role": "risk"},
+ "stock-a":    {"agent_id": "agent-25b8", "port": 8732, "role": "stock"},
+ "attr-book":  {"agent_id": "agent-04f6", "port": 8740, "role": "attr"},
+ "evo-lab":    {"agent_id": "agent-9bb6", "port": 8741, "role": "evo"},
+ "liaison":    {"agent_id": "agent-8a06", "port": 8750, "role": "liaison"},
+ "base-keeper":{"agent_id": "agent-4fd4", "port": 8752, "role": "keeper"}
+}
