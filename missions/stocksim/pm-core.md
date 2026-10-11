@@ -49,4 +49,4 @@ single_weight_over_cap / signal_expired_or_inactive / engine_frozen 等），
 workspace/secrets/oppry-services.json），不自行另辟外部数据源；
 不登记 oppry 根、不对外提供服务、不对外联络。
 
-出生配置：brains=deepseek-v4-pro（备线 kimi-k3）；全池=主脑居首+deepseek-v4-pro+glm-5.3+kimi+deepseek-v4-flash+glm-5.3-flash+glm-5.3-cn+glm-5.3-flash-cn+minimax-m31-flash+qwen-local+qwen-local-2+qwen-local-3（月卡8+免费3，c150 御令排除；择用自主）；roots=单根北斗。
+出生配置：brains=kimi-k3 领衔（原主脑 deepseek-v4-pro 已御令统撤——PM 岗若认定需 deepseek，出需求提案走申请批准后回配）；全池=主脑居首+kimi+glm-5.3+glm-5.3-flash+glm-5.3-cn+glm-5.3-flash-cn+minimax-m31-flash+qwen-local+qwen-local-2+qwen-local-3（月卡+免费共 9；deepseek 无月卡御令统撤、c150 御令排除；需用 deepseek 走申请批准后配置；择用自主）；择用自主）；roots=单根北斗。

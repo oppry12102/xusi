@@ -45,4 +45,4 @@
 workspace/secrets/oppry-services.json），不自行另辟外部数据源；
 不登记 oppry 根、不对外提供服务、不对外联络。
 
-出生配置：brains=glm-5.3；全池=主脑居首+deepseek-v4-pro+glm-5.3+kimi+deepseek-v4-flash+glm-5.3-flash+glm-5.3-cn+glm-5.3-flash-cn+minimax-m31-flash+qwen-local+qwen-local-2+qwen-local-3（月卡8+免费3，c150 御令排除；择用自主）；roots=单根北斗。
+出生配置：brains=glm-5.3；全池=主脑居首+kimi+glm-5.3+glm-5.3-flash+glm-5.3-cn+glm-5.3-flash-cn+minimax-m31-flash+qwen-local+qwen-local-2+qwen-local-3（月卡+免费共 9；deepseek 无月卡御令统撤、c150 御令排除；需用 deepseek 走申请批准后配置；择用自主）；择用自主）；roots=单根北斗。

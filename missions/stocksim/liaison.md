@@ -75,4 +75,4 @@
 
 心跳：向 http://192.168.3.100:8891/heartbeat/liaison 投心跳，常态 60min。
 
-出生配置：brains=kimi-k3；全池=主脑居首+deepseek-v4-pro+glm-5.3+kimi+deepseek-v4-flash+glm-5.3-flash+glm-5.3-cn+glm-5.3-flash-cn+minimax-m31-flash+qwen-local+qwen-local-2+qwen-local-3（月卡8+免费3，c150 御令排除；择用自主）；roots=双根（北斗 4dd8 + oppry 4a2f 两对条目——舰队唯一双根岗，名额 1）。
+出生配置：brains=kimi-k3；全池=主脑居首+kimi+glm-5.3+glm-5.3-flash+glm-5.3-cn+glm-5.3-flash-cn+minimax-m31-flash+qwen-local+qwen-local-2+qwen-local-3（月卡+免费共 9；deepseek 无月卡御令统撤、c150 御令排除；需用 deepseek 走申请批准后配置；择用自主）；择用自主）；roots=双根（北斗 4dd8 + oppry 4a2f 两对条目——舰队唯一双根岗，名额 1）。
