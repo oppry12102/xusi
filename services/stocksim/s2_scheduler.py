@@ -161,7 +161,8 @@ class Scheduler:
     def tick(self):
         t = now_cn()
         day = t.strftime("%Y-%m-%d")
-        timeline = WEEKEND_TIMELINE if t.weekday() == 5 else DEFAULT_TIMELINE
+        # 周六周日都走周末表（原 weekday()==5 会把周日漏进平日表——2026-10-11 实踩）
+        timeline = WEEKEND_TIMELINE if t.weekday() >= 5 else DEFAULT_TIMELINE
         for hhmm, job in timeline.items():
             key = f"{day}/{hhmm}"
             if hms() >= hhmm and self.fired.get(key) != job:
