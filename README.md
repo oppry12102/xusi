@@ -27,10 +27,21 @@ python3 -m xusi doctor       # 环境自检
 外部接入方式见 [`docs/api.md`](docs/api.md)（也在线提供：`GET /api/docs.md`）。
 小型实验任务的现成 mission 见 [`docs/mission-examples.md`](docs/mission-examples.md)。
 
-## 凭证设计（单档）
+## 凭证设计（两档）
 
-只有一档凭证：**admin token** = `etc/xusi.toml` 的 `[admin].secret`，
-由 `xusi install` / `xusi init` 生成。它通吃所有 `/api/*` 端点。
+管理面凭证两档，登录方式完全相同（Bearer / `?mtoken=`），仅权限不同：
+
+- **admin token** = `etc/xusi.toml` 的 `[admin].secret`，由 `xusi install` /
+  `xusi init` 生成。通吃所有 `/api/*` 端点。
+- **智能体专属 token** = 注册表记录的 `access_token` 字段，按需签发（创建
+  不自动发）：admin 在改参对话框「专属密钥」栏生成/重置/吊销，或 CLI
+  `xusi patch <id> --access-token regen|clear`。属地受限——只能访问绑定的
+  那一个 agent：状态/日志/会话/事件、启停/暂停/重启、投信收信、文件管理、
+  观测台直连；创建/改参/删除/备份/接入或遥控服务器一律 403，访问别的
+  agent 一律 404（与不存在同形，防探测）。专属 token 视角下 roots 里的
+  根 token 打码（`·已打码·`），防根凭证二次泄露。重置使旧 token 立即
+  失效；删除 agent 记录即 token 消亡。API 响应永不回 token 明文
+  （仅签发当次 `access_token_issued` 例外）。
 
 agent 侧的凭证（观察台、自建服务、根智能体等）全部由 agent 自己管理，xusi 不签
 不发不撤不碰——那是 xuseek 自家业务。例外之一：**详情页只读观察**（/v1/events、
@@ -99,7 +110,7 @@ xusi/
 │   ├── registry.py      注册表（agent 簿记 + 期望态）etc/agents.json（600）
 │   ├── brains.py        密钥池 → 创建时渲染一次 agent config.toml（厂段 models=[...] 展开为每模型一个平级条目）
 │   ├── ports.py         端口三重检验（注册表∪内核监听∪bind试探）
-│   ├── authtok.py       管理面凭证（verify(admin token) → rec）
+│   ├── authtok.py       管理面凭证两档（verify → rec：admin 通吃 / 智能体专属属地受限）
 │   ├── backup.py        本地备份（SIGSTOP 冻结窗快照）
 │   └── webui/           单文件管理页
 ├── etc/
@@ -162,6 +173,8 @@ xusi/
   data/，不转义就是 agent → 管理员浏览器的存储型 XSS 通道）。
 - **admin token 轮换**：`xusi init --rotate` 或改 `etc/xusi.toml` 的 `[admin].secret` →
   `systemctl --user restart xusi`，浏览器重新登录一次。
+- **专属 token 吊销**：改参对话框「吊销」按钮，或 `xusi patch <id> --access-token clear`
+  （管理面免重启，旧 token 下一次请求即 401）。
 
 ## 与 xuseek-v2 的关系
 

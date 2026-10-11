@@ -28,9 +28,12 @@ def api_health() -> dict:
 
 
 @router.get("/api/whoami")
-def api_whoami(_rec: dict = Depends(require_auth)) -> dict:
-    """唯一的角色：admin。rec 形如 {"token": <admin token>}——只用来
-    表示「鉴权通过」，对外 shape 保持最小。"""
+def api_whoami(rec: dict = Depends(require_auth)) -> dict:
+    """角色自报：admin（通吃）/ agent（专属 token，带绑定的 agent_id 与名
+    字）。前端靠 role 做 UI 门禁。"""
+    if rec.get("role") == "agent":
+        return {"role": "agent", "agent_id": rec["agent_id"],
+                "name": rec.get("name", "")}
     return {"role": "admin"}
 
 
@@ -51,23 +54,25 @@ def api_node_patch(req: PatchNodeReq, _rec: dict = Depends(require_admin)) -> di
 
 
 @router.get("/api/brains")
-def api_brains(_rec: dict = Depends(require_auth)) -> list[dict]:
+def api_brains(_rec: dict = Depends(require_admin)) -> list[dict]:
     return brains.pool_summary()
 
 
 @router.get("/api/default-roots")
-def api_default_roots(_rec: dict = Depends(require_auth)) -> dict:
+def api_default_roots(_rec: dict = Depends(require_admin)) -> dict:
     """缺省根智能体（etc/xusi.toml 的 [[default_roots]]）——创建对话框预填用。
     每次直读盘面（live_default_roots，不吃进程缓存）：换根 token 改 toml
-    即生效，不用重启管理面。只回齐备条目（address/token 缺一的剔除）。"""
+    即生效，不用重启管理面。只回齐备条目（address/token 缺一的剔除）。
+    admin-only：条目含根 token 明文，专属 token 不得经此二次获取。"""
     return {"roots": live_default_roots()}
 
 
 @router.get("/api/versions")
-def api_versions(_rec: dict = Depends(require_auth)) -> dict:
+def api_versions(_rec: dict = Depends(require_admin)) -> dict:
     """xuseek 版本仓库清单（zip 由管理员投放于 versions/，约定见 docs/versions.md）。
     创建 agent 的 source_version 缺省 = 清单最新版（每 agent 私有副本）。
-    default_runtime 供创建对话框预选（[manager].default_runtime）。"""
+    default_runtime 供创建对话框预选（[manager].default_runtime）。admin-only
+    （创建对话框的数据，专属角色无此 UI）。"""
     return {"repo_dir": str(get_config().versions_dir),
             "default_ready": bool(versions.list_versions()),
             "default_runtime": get_config().default_runtime,
@@ -75,7 +80,7 @@ def api_versions(_rec: dict = Depends(require_auth)) -> dict:
 
 
 @router.get("/api/ports/available")
-def api_ports(count: int = 10, _rec: dict = Depends(require_auth)) -> dict:
+def api_ports(count: int = 10, _rec: dict = Depends(require_admin)) -> dict:
     return {"range": [get_config().port_lo, get_config().port_hi],
             "ports": ports.available_ports(max(1, min(count, 50)))}
 

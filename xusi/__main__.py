@@ -7,7 +7,7 @@
     python -m xusi status                # 全部 agent 一览
     python -m xusi doctor                # 环境自检
     python -m xusi create|delete         # agent 增删（进程内直调 agentops，免 HTTP）
-    python -m xusi patch                 # 改参（brains/name/note/expose/runtime）
+    python -m xusi patch                 # 改参（brains/name/note/expose/runtime/--access-token）
     python -m xusi start|stop|pause|resume|restart
     python -m xusi mail|mailbox          # 投信/收信（与 agent 的唯一写通道）
     python -m xusi observe-token         # 签发观察台 token（CLI-only 机器用）
@@ -595,7 +595,8 @@ def cmd_delete(args) -> int:
 def cmd_patch(args) -> int:
     """改参（与 serve 的 PATCH 同一条 agentops.patch_agent 实现——CLI-only
     远端机器也能直调）。可改字段 = 簿记层（name/note）+ 进程层（expose，
-    需重启）+ 大脑（brains，下次呼吸生效）+ 运行时（须停止态）。"""
+    需重启）+ 大脑（brains，下次呼吸生效）+ 运行时（须停止态）+
+    专属 token（--access-token regen/clear）。"""
     from . import agentops
     from .dockerctl import DockerError
     from .systemdctl import SystemdError
@@ -612,8 +613,10 @@ def cmd_patch(args) -> int:
         changes["xmem"] = args.xmem.strip().lower() in ("on", "1", "true", "yes")
     if args.runtime:
         changes["runtime"] = args.runtime
+    if getattr(args, "access_token", None):
+        changes["access_token"] = args.access_token
     if not changes:
-        print("error: 至少给一个可改字段（--brains/--name/--note/--expose/--xmem/--runtime）",
+        print("error: 至少给一个可改字段（--brains/--name/--note/--expose/--xmem/--runtime/--access-token）",
               file=sys.stderr)
         return 2
     try:
@@ -625,6 +628,8 @@ def cmd_patch(args) -> int:
         print(json.dumps(r, ensure_ascii=False, indent=2))
         return 0
     print(f"  patched: {r['id']}")
+    if r.get("access_token_issued"):
+        print(f"  专属 token（仅显示一次）: {r['access_token_issued']}")
     if "brains" in changes:
         eff = f"（{r['brains_effective']}）" if r.get("brains_effective") else ""
         print(f"  brains : {' → '.join(r.get('brains', []))}{eff}")
@@ -1119,7 +1124,7 @@ def main() -> int:
     dl_.add_argument("agent_id")
     dl_.set_defaults(fn=cmd_delete)
 
-    pt_ = sub.add_parser("patch", help="改参 agent（brains/name/note/expose/runtime）")
+    pt_ = sub.add_parser("patch", help="改参 agent（brains/name/note/expose/runtime/access-token）")
     pt_.add_argument("agent_id")
     pt_.add_argument("--json", action="store_true", help="输出 JSON（remote 解析用）")
     pt_.add_argument("--name", default=None)
@@ -1129,6 +1134,8 @@ def main() -> int:
     pt_.add_argument("--xmem", default=None, choices=("on", "off"),
                     help="内核记忆层开关（下次呼吸生效，不重启）")
     pt_.add_argument("--runtime", default=None, choices=("systemd", "docker", "bare"))
+    pt_.add_argument("--access-token", default=None, choices=("regen", "clear"),
+                    help="专属 token：regen=签发/重置（打印一次），clear=吊销")
     pt_.set_defaults(fn=cmd_patch)
 
     ml_ = sub.add_parser("mail", help="给 agent 投信（与 agent 的唯一写通道）")

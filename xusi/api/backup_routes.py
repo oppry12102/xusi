@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from .. import backup
-from .auth import require_agent, require_admin
+from .auth import require_admin, require_admin_agent
 from .models import BackupReq, RestoreReq
 
 router = APIRouter()
@@ -21,7 +21,7 @@ router = APIRouter()
 
 @router.post("/api/agents/{agent_id}/backup", status_code=201)
 async def api_agent_backup(req: BackupReq,
-                           pair: tuple = Depends(require_agent)) -> JSONResponse:
+                           pair: tuple = Depends(require_admin_agent)) -> JSONResponse:
     """备份到 backend（默认 LocalBackend：etc/backups/）。"""
     agent, _rec = pair
     # snapshot 含 SIGSTOP 冻结窗 + 双遍 tar（分钟级）——线程池跑，
@@ -32,7 +32,7 @@ async def api_agent_backup(req: BackupReq,
 
 @router.get("/api/agents/{agent_id}/backups")
 async def api_agent_backups_list(with_meta: bool = False,
-                                 pair: tuple = Depends(require_agent)) -> JSONResponse:
+                                 pair: tuple = Depends(require_admin_agent)) -> JSONResponse:
     agent, _rec = pair
     # with_meta 要逐包开 tar 读头——线程池跑
     if with_meta:

@@ -11,6 +11,7 @@ CLI 进程互不可见，进程内锁管不住这两者（file_lock，见下）�
 from __future__ import annotations
 
 import fcntl
+import hmac
 import json
 import os
 import threading
@@ -104,6 +105,25 @@ def get_agent(agent_id: str) -> dict | None:
         for a in _load()["agents"]:
             if a.get("id") == agent_id:
                 return a
+    return None
+
+
+def find_by_access_token(token: str) -> dict | None:
+    """按专属 token 找 agent 记录（authtok.verify 的第二路比对用）。
+
+    记录字段 `access_token` = {"token", "created_at"}（缺失/null = 未签发）。
+    逐条 compare_digest（bytes 形）——早退的 str == 会泄露前缀时序。
+    不加缓存：_load() 每次读盘本就是本模块的既有模式（get_agent 同款），
+    换来 CLI regen/clear 对 serve 进程免重启即时生效。"""
+    if not token:
+        return None
+    tb = token.encode("utf-8")
+    with _LOCK:
+        for a in _load()["agents"]:
+            at = a.get("access_token")
+            if isinstance(at, dict) and at.get("token"):
+                if hmac.compare_digest(str(at["token"]).encode("utf-8"), tb):
+                    return a
     return None
 
 

@@ -1,7 +1,11 @@
-"""管理面凭证：`etc/xusi.toml` 的 `[admin].secret` 就是 admin token。
+"""管理面凭证：两档——admin token + 智能体专属 token。
 
-单 xusi 单档凭证：admin token 通吃所有 `/api/*`。其它档凭证已全部删除：
-- 反代入口 api token（/px /svc 已取消，etc/tokens.json 作废）；
+- admin token = `etc/xusi.toml` 的 `[admin].secret`，通吃所有 `/api/*`；
+- 智能体专属 token = 注册表记录的 `access_token` 字段（管理面 PATCH 改参
+  按需签发），属地受限：只能访问绑定的那一个 agent，管理能力（创建/改参/
+  删除/备份/远端）全部 403。
+
+其余凭证仍归各家：
 - 根智能体 token（创建时经 [[roots]] 渲染进出生 config，内核交割后即死键——
   那是 xuseek 互联自家的事）；
 - agent 自己的各类凭证（webui_tokens.json 等）由 agent 自己管理，xusi 不碰——
@@ -18,15 +22,22 @@ from .config import get_config
 
 
 def verify(token: str) -> dict | None:
-    """常数时间比对 admin token。匹配返回 `{"token": token}`，否则 None。
+    """双路比对：先 admin（常数时间），再查注册表的专属 token。
+
+    匹配返回带角色的 rec：admin → `{"token", "role": "admin"}`；
+    专属 → `{"token", "role": "agent", "agent_id", "name"}`；否则 None。
 
     比较走 bytes 形式——str 版 compare_digest 遇非 ASCII 头会 TypeError
-    （畸形请求打出 500 而非 401）。"""
+    （畸形请求打出 500 而非 401）。admin 分支永远先走。"""
     sec = get_config().admin_secret
-    if not sec or not token:
-        return None
-    if hmac.compare_digest(sec.encode("utf-8"), token.encode("utf-8")):
-        return {"token": token}
+    if sec and token and hmac.compare_digest(sec.encode("utf-8"), token.encode("utf-8")):
+        return {"token": token, "role": "admin"}
+    if token:
+        from . import registry          # 延迟 import：registry 反向依赖 config，顶层会环
+        rec = registry.find_by_access_token(token)
+        if rec:
+            return {"token": token, "role": "agent",
+                    "agent_id": rec["id"], "name": rec.get("name", "")}
     return None
 
 

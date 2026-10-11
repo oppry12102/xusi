@@ -14,8 +14,11 @@
 
 - 在线版：`GET /api/docs.md`（本文档）
 - Swagger：`/docs`
-- 鉴权：`Authorization: Bearer <admin token>` 或 `?mtoken=<admin token>`
-  （admin token = `etc/xusi.toml` 的 `[admin].secret`）
+- 鉴权（两档，登录方式相同：`Authorization: Bearer <token>` 或 `?mtoken=<token>`）：
+  **admin token**（`etc/xusi.toml` 的 `[admin].secret`，通吃）与
+  **智能体专属 token**（按需经改参 PATCH 签发，见 §2；属地受限——只能访问
+  绑定的那一个 agent：观察/生命周期/邮箱/文件可用，创建/改参/删除/备份/
+  远端管理一律 403，访问别的 agent 一律 404）
 - 端口：默认 8601；agent 端口段默认 8602–8699
 
 ## 1. 元信息
@@ -25,7 +28,7 @@
 | `GET /api/health` | 无 | 管理面存活探针 `{ok, service, version, agents}` |
 | `GET /api/node` | 无 | 本节点身份 `{id, name, version}`（无敏感字段） |
 | `PATCH /api/node` | admin | 改显示名 `{"name": "..."}` |
-| `GET /api/whoami` | admin | `{"role": "admin"}`（唯一的角色） |
+| `GET /api/whoami` | 任意有效 token | admin → `{"role": "admin"}`；专属 token → `{"role": "agent", "agent_id", "name"}`（前端 UI 门禁依据） |
 | `GET /api/brains` | admin | 密钥池摘要（**不回 api_key**）：`[{name, base_url, model, has_key}]` |
 | `GET /api/default-roots` | admin | 缺省根智能体（`etc/xusi.toml` 的 `[[default_roots]]`，创建对话框预填；**每次直读盘面，换根 token 改 toml 即生效、免重启**）：`{"roots":[{address, token}]}` |
 | `GET /api/versions` | admin | xuseek-v2 版本仓库清单（创建时 `source_version` 用它） |
@@ -64,12 +67,12 @@
 
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
-| `GET /api/agents` | admin | agent 一览（注册表 + systemd 单元 + 内核呼吸状态） |
-| `POST /api/agents` | admin | 创建并启动（见下） |
-| `GET /api/agents/{id}` | admin | 单个 agent 状态（进程/簿记；内核自报见 §4 status） |
-| `PATCH /api/agents/{id}[?apply_restart=1]` | admin | 改簿记与进程层字段（见下；port 创建后固定） |
-| `DELETE /api/agents/{id}` | admin | 删除（须先停止；home 移入 .trash） |
-| `POST /api/agents/{id}/start\|stop\|pause\|resume\|restart` | admin | 生命周期五件套 |
+| `GET /api/agents` | admin / 专属 | agent 一览（注册表 + systemd 单元 + 内核呼吸状态）。专属 token 只回绑定的那一个，且 roots 根 token 打码 |
+| `POST /api/agents` | admin | 创建并启动（见下；创建不自动发专属 token，按需经 PATCH 签发） |
+| `GET /api/agents/{id}` | admin / 专属 | 单个 agent 状态（进程/簿记；内核自报见 §4 status）。专属 token 查详情时 roots 根 token 打码（address 保留）；`access_token` 只回元信息 `{state, created_at}`，永不回 token 明文 |
+| `PATCH /api/agents/{id}[?apply_restart=1]` | admin | 改簿记与进程层字段（见下；port 创建后固定；含 `access_token` 伪字段签发/吊销专属 token） |
+| `DELETE /api/agents/{id}` | admin | 删除（须先停止；home 移入 .trash；记录移除即专属 token 消亡） |
+| `POST /api/agents/{id}/start\|stop\|pause\|resume\|restart` | admin / 专属 | 生命周期五件套（专属 token 仅限绑定的那个） |
 
 ### 创建
 
@@ -121,7 +124,8 @@ curl -X POST http://SERVER:8601/api/agents \
 
 ### 改参（PATCH）
 
-只接受：`name` / `note` / `expose` / `brains` / `runtime`。
+只接受：`name` / `note` / `expose` / `brains` / `runtime`，外加专属 token
+伪字段 `access_token`。
 
 - `name`/`note`：写注册表即生效
 - `expose`：进程监听参数，返回 `restart_required: true`；
@@ -143,6 +147,12 @@ curl -X POST http://SERVER:8601/api/agents \
   的 key 后对 agent 做任意 PATCH 即触发）
 - **mission / budgets 已归 agent 自治**——PATCH 它们返回 400，并提示
   投信让 agent 自己修改自己的 config.toml（内核每口呼吸热重载）
+- `access_token`（**伪字段**，不走普通改参路径）：`"regen"` = 签发/重置、
+  `"clear"` = 吊销**智能体专属 token**（管理面登录用、属地受限，见 §8）。
+  regen 的响应带 `access_token_issued`（**仅此一次**，此后任何端点都只回
+  `{state, created_at}` 元信息）；重置使旧 token 立即失效；审计记
+  `agent.token.regen` / `agent.token.clear`（不记 token 值）。可与普通字段
+  同请求；专属 token 自己 PATCH 一律 403（不能给自己续命）
 
 ## 3. 管理邮箱（唯一的写通道）
 
@@ -237,7 +247,7 @@ curl 'http://SERVER:8601/api/agents/{id}/logs?limit=300' \
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/agents/{id}/backup` | 备份 data/ + workspace/ + config.toml 到 etc/backups/（运行中 = SIGSTOP 冻结窗快照，按 runtime 分派） |
+| `POST /api/agents/{id}/backup` | 备份 data/ + workspace/ + config.toml 到 etc/backups/（运行中 = SIGSTOP 冻结窗快照，按 runtime 分派）。备份包不携带专属 token——恢复/克隆出的 agent 需重新签发 |
 | `GET /api/agents/{id}/backups[?with_meta=1]` | 该 agent 的备份清单 |
 | `GET /api/backups[?with_meta=1]` | 全量备份清单（从备份克隆用） |
 | `GET /api/backups/{key}` | 备份元数据 + 包内 meta |
@@ -258,3 +268,20 @@ curl 'http://SERVER:8601/api/agents/{id}/logs?limit=300' \
   端点；互联本身（目录、token 轮换、断线恢复）由 xuseek 内核自管（其
   docs/interconnect.md），xusi 不参与
 - `expose=true` 意味着 agent 端口 LAN 直通，访问凭证由 agent 自己管理，谨慎开启
+
+### 智能体专属 token（属地受限凭证）
+
+- **用途**：把某一个 agent 的日常管理（观察/启停/邮箱/文件）交给他人的
+  登录凭证——登录方式与 admin 完全相同，仅权限不同
+- **签发/吊销**：admin 经改参 PATCH `{"access_token": "regen"|"clear"}`
+  （WebUI 在改参对话框「专属密钥」栏；CLI `xusi patch <id> --access-token
+  regen|clear`）；按需签发，创建不自动发
+- **属地边界**：只能访问绑定的那一个 agent——`GET /api/agents` 只回它、
+  访问别的 agent 一律 404（与「不存在」同文案，防枚举探测）、对自己
+  PATCH/DELETE/备份与一切管理面操作 403（创建/远端/机器簿/密钥池/缺省根/
+  版本仓库/可用端口/node 改名全在其中）
+- **打码**：专属 token 的视角下 roots 里的根 token 显示 `·已打码·`（address
+  保留），防根凭证经受限凭证二次泄露；admin 视角不变
+- **存储**：注册表 `etc/agents.json` 的 `access_token` 字段（600 + flock
+  原子写，与 roots 快照同实践）；任何 API 响应都不回 token 明文（仅签发
+  当次 `access_token_issued` 例外）；删除 agent 记录即 token 消亡

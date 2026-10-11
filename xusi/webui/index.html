@@ -21,6 +21,8 @@
          border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
   header h1{font-size:17px;margin:0;font-weight:650}
   header h1 small{color:var(--sub);font-weight:400;margin-left:8px}
+  #agent-banner{font-size:12px;color:#8a5b00;background:#fff7e6;
+                border:1px solid #f0d9a8;border-radius:7px;padding:3px 10px}
   button{cursor:pointer;border:1px solid var(--line);background:#fff;border-radius:8px;
          padding:6px 13px;font-size:13px;color:var(--ink)}
   button:hover{border-color:var(--acc);color:var(--acc)}
@@ -221,6 +223,7 @@
     </button>
   </div>
   <div id="hstate" class="hint" style="color:var(--sub);font-size:12.5px"></div>
+  <div id="agent-banner" hidden></div>
   <select id="sel-scope" title="看板范围：本机 / 远端机器（切换后卡片与操作都作用于所选范围；配置在节点界面里）">
     <option value="local">本机</option>
   </select>
@@ -446,6 +449,21 @@
         <option value="bare">容器直跑（裸进程）</option>
       </select></div>
     <div><label>备注（可选）</label><input id="e-note" type="text"></div>
+    <div><label>专属密钥 <span style="font-weight:400;color:var(--sub);font-size:12px;margin-left:6px">管理面登录用 · 属地受限：只能访问这一个 agent（不能创建/改参/备份/远端管理）</span></label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="e-at-state" class="hint" style="font-size:12.5px"></span>
+        <span style="flex:1"></span>
+        <button id="e-at-regen" type="button">生成 / 重置</button>
+        <button id="e-at-clear" type="button" class="danger">吊销</button>
+      </div>
+      <div id="e-at-out" hidden style="margin-top:8px">
+        <div style="font-size:12px;color:var(--err)">⚠ 仅显示这一次，关闭对话框后不再可见——请立即复制交给使用者</div>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <input type="text" id="e-at-tok" readonly style="font-family:var(--mono);font-size:12px">
+          <button id="e-at-copy" type="button" class="mini">复制</button>
+        </div>
+      </div>
+    </div>
     <div><label>大脑</label>
       <div id="e-brains" class="check"></div></div>
     <div id="e-err" class="err"></div>
@@ -515,6 +533,7 @@ function setLogin(msg) {
   $("#btn-stopped").hidden = true;
   $("#summary").textContent = msg ? "⚠ " + msg : "";
   $("#hstate").textContent = "未认证";
+  $("#agent-banner").hidden = true;
 }
 
 async function login() {
@@ -834,13 +853,27 @@ async function refresh(first = false) {
       api("/api/whoami")]);
     me = who;
     meAdmin = (who.role === "admin");
+    // 专属模式：收敛 header 入口（loadScopes 对非 admin 提前 return，
+    // 不会替你藏 select——必须在这里显式藏）
+    $("#btn-new").hidden = !meAdmin;
+    $("#btn-node").hidden = !meAdmin;
+    $("#sel-scope").hidden = !meAdmin;   // admin 侧由 loadScopes 按机器簿数量细化
+    const banner = $("#agent-banner");
+    banner.hidden = meAdmin;
+    if (!meAdmin) {
+      scope = "local";
+      banner.textContent = `专属模式 · 本 token 仅绑定「${who.name || who.agent_id}」` +
+        "——创建/改参/备份/远端管理已收敛";
+    }
     $("#ver").textContent = "v" + h.version;
     $("#login-tip").hidden = true;
     await loadScopes();
     if (scope === "local") {
       const list = await api("/api/agents");
       agentsCache = list;
-      $("#hstate").textContent = `管理员 · ${list.length} 个 agent`;
+      $("#hstate").textContent = meAdmin
+        ? `管理员 · ${list.length} 个 agent`
+        : `专属模式 · ${who.name || who.agent_id}`;
       renderCards(list);
     } else {
       await refreshRemote();
@@ -990,7 +1023,8 @@ function renderCards(list) {
     }
     acts.push(`<button onclick="openDetail('${a.id}')">详情</button>`);
     const stopped = !run && ds !== "paused";
-    if (stopped) {
+    // ⋯ 菜单（备份/回滚/删除）是管理动作——仅 admin 渲染（专属 token 后端也 403）
+    if (stopped && me?.role === "admin") {
       const ovId = `ov-${a.id}`;
       // 远端：回滚（restore 对话框）未做——备份直接执行拉回控制端
       const restoreBtn = isR ? "" : `<button onclick="openRestore('${a.id}')">↺ 回滚</button>`;
@@ -1011,7 +1045,9 @@ function renderCards(list) {
         <span class="chip mono">${esc(a.listen_host || "127.0.0.1")}:${a.port}</span>
         ${(a.brains || []).map((b, i) => i === 0
           ? `<b class="chip bcur" title="默认大脑">${esc(b)}</b>`
-          : `<span class="chip bclk" data-id="${a.id}" data-brain="${esc(b)}" title="点击切换为默认大脑（下次呼吸生效，不重启）">${esc(b)}</span>`).join("")}
+          : (me?.role === "admin"
+            ? `<span class="chip bclk" data-id="${a.id}" data-brain="${esc(b)}" title="点击切换为默认大脑（下次呼吸生效，不重启）">${esc(b)}</span>`
+            : `<span class="chip" title="切换默认大脑需 admin token">${esc(b)}</span>`)).join("")}
       </div>
       <div class="row">
         <span>自动重启 <b>${(a.process || {}).auto_restarts ?? 0}</b></span>
@@ -1910,6 +1946,8 @@ async function openEdit(id) {
     editCur = s;
     $("#e-name").value = s.name || "";
     $("#e-note").value = s.note || "";
+    $("#e-at-state").textContent = atStateText(s);
+    $("#e-at-out").hidden = true; $("#e-at-tok").value = "";
     $("#e-expose").checked = !!s.expose;
     $("#e-runtime").value = s.runtime || "systemd";
     // running 时禁用 runtime 切换：后端要求停止态（运行中提交会 400）——
@@ -1933,6 +1971,50 @@ async function openEdit(id) {
   } catch (e) { alert(e.message); }
 }
 $("#btn-edit-save").onclick = saveEdit;
+
+/* ── 专属密钥（改参对话框内；独立 PATCH，不与普通字段混请求）───────── */
+function atStateText(s) {
+  const at = s && s.access_token;
+  if (!at || at.state !== "set") return "未签发";
+  return `已签发${at.created_at ? " · " + fmtT(at.created_at) : ""}`;
+}
+$("#e-at-regen").onclick = async () => {
+  if (!editCur) return;
+  const had = editCur.access_token?.state === "set";
+  if (!confirm(had
+    ? "重置将使旧专属 token 立即失效（正在用它登录的页面会被踢下线）。继续？"
+    : "为该 agent 签发专属 token？\n属地受限：只能访问这一个 agent，不能创建/改参/备份/远端管理。")) return;
+  $("#e-err").textContent = "";
+  try {
+    const r = await api(`/api/agents/${editCur.id}`,
+      {method: "PATCH", body: JSON.stringify({access_token: "regen"})});
+    $("#e-at-out").hidden = false;
+    $("#e-at-tok").value = r.access_token_issued || "";
+    $("#e-at-state").textContent = atStateText(r);
+    editCur = {...editCur, access_token: r.access_token};
+  } catch (e) { $("#e-err").textContent = e.message; }
+};
+$("#e-at-clear").onclick = async () => {
+  if (!editCur) return;
+  if (editCur.access_token?.state !== "set") { $("#e-err").textContent = "尚未签发，无需吊销"; return; }
+  if (!confirm("吊销后专属 token 立即失效（正在用它登录的页面会被踢下线）。继续？")) return;
+  $("#e-err").textContent = "";
+  try {
+    const r = await api(`/api/agents/${editCur.id}`,
+      {method: "PATCH", body: JSON.stringify({access_token: "clear"})});
+    $("#e-at-out").hidden = true; $("#e-at-tok").value = "";
+    $("#e-at-state").textContent = atStateText(r);
+    editCur = {...editCur, access_token: r.access_token};
+  } catch (e) { $("#e-err").textContent = e.message; }
+};
+$("#e-at-copy").onclick = async () => {
+  const v = $("#e-at-tok").value;
+  if (!v) return;
+  try { await navigator.clipboard.writeText(v); }
+  catch { $("#e-at-tok").select(); document.execCommand("copy"); }
+  $("#e-at-copy").textContent = "已复制";
+  setTimeout(() => $("#e-at-copy").textContent = "复制", 1500);
+};
 
 async function saveEdit() {
   const id = cur;

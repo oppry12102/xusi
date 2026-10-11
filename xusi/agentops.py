@@ -794,8 +794,13 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     """改参。name/note 写注册表即生效；expose 改的是进程监听参数，
     返回 restart_required，?apply=restart 立即执行；brains 手术式重渲染
     config.toml 大脑段（下次呼吸生效，不重启），返回 brains_effective。
-    runtime 切换进程载体（systemd/docker），须停止态、切换后不自动启动。"""
+    runtime 切换进程载体（systemd/docker），须停止态、切换后不自动启动。
+    access_token 是伪字段（"regen"=签发/重置，"clear"=吊销）：不走普通
+    改参路径，签发当次的响应带 access_token_issued（仅显示一次）。"""
     agent = get_agent_or_404(agent_id)
+    at_action = changes.pop("access_token", None)
+    if at_action is not None and at_action not in ("regen", "clear"):
+        raise AgentError('access_token 只接受 "regen"（签发/重置）或 "clear"（吊销）')
     bad = set(changes) - _PATCHABLE
     owned = sorted(b for b in bad if b in _AGENT_OWNED)
     if owned:
@@ -896,6 +901,17 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     if hot:
         registry.update_agent(agent_id, hot)
 
+    # 专属 token 签发/吊销（伪字段，独立于普通改参；audit 不记 token 值）
+    issued_token = None
+    if at_action == "regen":
+        issued_token = secrets.token_urlsafe(32)   # 43 字符，与观察台 token 同规格
+        registry.update_agent(agent_id, {"access_token": {
+            "token": issued_token, "created_at": registry.now_iso()}})
+        audit("agent.token.regen", agent=agent_id)
+    elif at_action == "clear":
+        registry.update_agent(agent_id, {"access_token": None})
+        audit("agent.token.clear", agent=agent_id)
+
     restarted = False
     if need_restart and apply_restart:
         _respawn(next_rec)
@@ -903,8 +919,17 @@ def patch_agent(agent_id: str, changes: dict, *, apply_restart: bool = False) ->
     ad: dict[str, Any] = {"fields": sorted(changes), "restarted": restarted}
     if brains_new is not None:
         ad.update(brains=brains_new, brains_effective="next_breath")
+    if at_action is not None:
+        ad["access_token"] = at_action
     audit("agent.patch", agent=agent_id, **ad)
     out = get_agent_or_404(agent_id)
+    # 防泄露：get_agent_or_404 回注册表原始记录（access_token 含 token 明文），
+    # 对外一律置换成元信息；签发当次另带 access_token_issued（仅显示一次）
+    at = out.pop("access_token", None)
+    out["access_token"] = {"state": "set" if at else "none",
+                           "created_at": (at or {}).get("created_at")}
+    if issued_token:
+        out["access_token_issued"] = issued_token
     out = {**out, "restart_required": need_restart, "restarted": restarted}
     if brains_new is not None:
         out["brains_effective"] = "next_breath"   # 下次呼吸生效，不重启
@@ -933,9 +958,21 @@ def _respawn(agent: dict) -> None:
 
 # ── 状态（systemd + 注册表；只读观察另见 observe）────────────────────
 
-def status(agent_id: str) -> dict:
-    """状态聚合：注册表 + systemd 单元 + 内核呼吸状态（只读观察）。"""
+def status(agent_id: str, *, mask_roots: bool = False) -> dict:
+    """状态聚合：注册表 + systemd 单元 + 内核呼吸状态（只读观察）。
+
+    mask_roots：专属 token 视角——roots 里的根 token 打码（address 保留：
+    那是该 agent 自己的互联根，其内核 config.toml 里本就有）。本函数是
+    显式字段白名单：access_token 只以元信息形出现（state/created_at），
+    token 明文永不出现。"""
     agent = get_agent_or_404(agent_id)
+    roots = agent.get("roots", [])
+    if mask_roots:
+        roots = [{"address": r.get("address", ""), "token": "·已打码·"}
+                 for r in roots]
+    at = agent.get("access_token")
+    at_meta = {"state": "set" if at else "none",
+               "created_at": (at or {}).get("created_at")}
     out: dict[str, Any] = {
         "id": agent["id"],
         "name": agent["name"],
@@ -947,7 +984,8 @@ def status(agent_id: str) -> dict:
         "xmem": agent.get("xmem", False),
         "note": agent.get("note", ""),
         "source_version": agent.get("source_version", ""),
-        "roots": agent.get("roots", []),
+        "access_token": at_meta,
+        "roots": roots,
         "desired_state": agent.get("desired_state", "running"),
         "runtime": agent.get("runtime") or "systemd",
         "listen_host": _listen_host(agent),

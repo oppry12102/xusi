@@ -8,8 +8,9 @@
 - 观察（只读）：GET events / status（窄通道，详情页用）；会话：GET sessions（磁盘）；
   Boot 自述：GET boot（workspace/BOOT.md，磁盘）；观测台直连：GET ui-url
 
-单 xusi：所有 agent 都在本机 registry。写端点（PATCH / DELETE / 5 lifecycle /
-mail）走 `require_agent`（admin + 本地存在性）。
+单 xusi：所有 agent 都在本机 registry。管理动作（PATCH / DELETE）走
+`require_admin_agent`；属地读写（5 lifecycle / mail / 观察 / fs）走
+`require_agent`——专属 token 也能用，但只能碰绑定的那一个。
 """
 import asyncio
 
@@ -17,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from .. import agentops
-from .auth import require_agent, require_admin, require_auth
+from .auth import require_agent, require_admin, require_admin_agent, require_auth
 from .models import CreateAgentReq, MailReq, PatchAgentReq
 
 router = APIRouter()
@@ -26,8 +27,13 @@ router = APIRouter()
 # ── CRUD ─────────────────────────────────────────────────────────────
 
 @router.get("/api/agents")
-async def api_agents_list(_rec: dict = Depends(require_auth)) -> list[dict]:
-    """agent 一览（本机 registry）。所有 token 都是 admin——列全量。"""
+async def api_agents_list(rec: dict = Depends(require_auth)) -> list[dict]:
+    """agent 一览（本机 registry）。admin 列全量；专属 token 只回绑定的
+    那一个，且 roots 里的根 token 打码（过滤在路由层做——agentops 保持
+    角色无关，权限判断不渗进业务层）。"""
+    if rec.get("role") == "agent":
+        return await asyncio.to_thread(
+            agentops.list_status, only_id=rec["agent_id"], mask_roots=True)
     return await asyncio.to_thread(agentops.list_status)
 
 
@@ -43,13 +49,15 @@ def api_agents_create(req: CreateAgentReq, _rec: dict = Depends(require_admin)) 
 
 @router.get("/api/agents/{agent_id}")
 async def api_agent_get(pair: tuple = Depends(require_agent)) -> JSONResponse:
-    agent, _rec = pair
-    return JSONResponse(await asyncio.to_thread(agentops.status, agent["id"]))
+    agent, rec = pair
+    # 专属 token 查详情：roots 里的根 token 打码（admin 不受影响）
+    return JSONResponse(await asyncio.to_thread(
+        agentops.status, agent["id"], mask_roots=(rec.get("role") == "agent")))
 
 
 @router.patch("/api/agents/{agent_id}")
 async def api_agent_patch(req: PatchAgentReq, apply_restart: bool = False,
-                          pair: tuple = Depends(require_agent)) -> JSONResponse:
+                          pair: tuple = Depends(require_admin_agent)) -> JSONResponse:
     """改 agent 字段（簿记 + 进程层）。apply_restart=1 对 expose 立即重启生效
     （port 创建后固定，PATCH 它返回 400）。"""
     changes = {k: v for k, v in req.model_dump().items() if v is not None}
@@ -63,7 +71,7 @@ async def api_agent_patch(req: PatchAgentReq, apply_restart: bool = False,
 
 
 @router.delete("/api/agents/{agent_id}")
-async def api_agent_delete(pair: tuple = Depends(require_agent)) -> JSONResponse:
+async def api_agent_delete(pair: tuple = Depends(require_admin_agent)) -> JSONResponse:
     agent, _rec = pair
     # delete 要停单元 + 把整个 home 挪进 .trash（GB 级目录可达分钟）——
     # 线程池跑，别冻事件循环

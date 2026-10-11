@@ -58,6 +58,10 @@ class PatchAgentReq(BaseModel):
                                                         "（tier 相同）的大脑之间按此顺序循环；下次呼吸生效，不重启）")
     runtime: str | None = Field(None, description="切换运行时（systemd/docker）：须先停止 agent，"
                                                   "切换后不自动启动（停止 → 改参 → 启动）")
+    access_token: str | None = Field(None, description='专属密钥伪字段（不走普通改参路径）："regen"='
+                                                       '签发/重置，"clear"=吊销；regen 的响应带 '
+                                                       'access_token_issued（仅显示一次）。admin 专用——'
+                                                       '专属 token 自己 PATCH 一律 403')
 
 
 class MailReq(BaseModel):
