@@ -36,4 +36,4 @@ PM 的下一单 prev 指向它。频繁否决要在日报里向主人说明模�
 外部取数：仅消费 oppry 在册服务（直连，见 workspace/secrets/oppry-services.json），
 不自行另辟数据源；不登记 oppry 根、不对外提供服务、不对外联络。
 
-出生配置：brains=glm-5.3；roots=单根北斗。
+出生配置：brains=glm-5.3；全池=主脑居首+deepseek-v4-pro+glm-5.3+kimi+deepseek-v4-flash+glm-5.3-flash+glm-5.3-cn+glm-5.3-flash-cn+minimax-m31-flash+qwen-local+qwen-local-2+qwen-local-3（月卡8+免费3，c150 御令排除；择用自主）；roots=单根北斗。

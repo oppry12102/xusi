@@ -45,4 +45,4 @@
 心跳：向 http://192.168.3.100:8891/heartbeat/base-keeper 投心跳，常态 60min。
 告警主人通道：你的 send_mail（账本行直达管理员）。
 
-brains=glm-5.3；roots=单根（仅北斗目录 4dd8，不登记公网根）。
+brains=glm-5.3；全池=主脑居首+deepseek-v4-pro+glm-5.3+kimi+deepseek-v4-flash+glm-5.3-flash+glm-5.3-cn+glm-5.3-flash-cn+minimax-m31-flash+qwen-local+qwen-local-2+qwen-local-3（月卡8+免费3，c150 御令排除；择用自主）；roots=单根（仅北斗目录 4dd8，不登记公网根）。
