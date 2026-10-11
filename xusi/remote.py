@@ -629,9 +629,11 @@ def install_host(h: dict):
         else:
             # $VERSION_CODENAME 必须留给远端 shell 展开——不要 shlex.quote 整个
             # 行（单引号会封死命令替换）；source 走 sh -c（. 是内建，sudo 直跑
-            # 报「找不到命令」）——2026-09-12 hdhz-nas 实踩两连
+            # 报「找不到命令」）——2026-09-12 hdhz-nas 实踩两连。
+            # 架构同样留给远端现取——arch=amd64 硬编码在 arm64 机上会拉进
+            # amd64 包（dpkg 架构不符拒装，2026-10-11 hdhz-rpi5 实踩）
             deb_cmd = ("sh -c 'V=$(. /etc/os-release; echo $VERSION_CODENAME); "
-                       "echo \"deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] "
+                       "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] "
                        "https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/debian $V stable\" "
                        "> /etc/apt/sources.list.d/docker-ce.list'")
             yield from step(
