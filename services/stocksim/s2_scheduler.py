@@ -79,8 +79,16 @@ class Scheduler:
     # ---------------------------------------------------------- 信件投递
 
     def _mgmt_auth(self):
-        """管理面 admin 凭据现取现用（etc/xusi.toml [admin].secret）——
-        轮换即生效；值不返回给调用方、不落日志。"""
+        """管理面 admin 凭据现取现用：先 env STOCKSIM_MGMT_KEY_FILE 指向的
+        JSON（{"url","secret"}——容器部署缝，base-keeper 侧）；回落
+        etc/xusi.toml [admin].secret（宿主直跑）。值不返回给调用方、不落日志。"""
+        kf = os.environ.get("STOCKSIM_MGMT_KEY_FILE")
+        if kf:
+            try:
+                d = json.load(open(kf))
+                return str(d.get("secret", "")).strip(), str(d.get("url", "")).strip()
+            except Exception:
+                pass
         try:
             raw = tomllib.load(open(os.path.join(XUSI_ROOT, "etc", "xusi.toml"), "rb"))
             host = str(raw.get("server", {}).get("host", "127.0.0.1"))
