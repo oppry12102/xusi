@@ -38,6 +38,15 @@ DEFAULT_TIMELINE = {          # 交易日时间轴（cron 语义内联，60s tic
 }
 WEEKEND_TIMELINE = {"09:00": "weekly"}   # 周六：催演化周会（P3 前 evo-lab 备用应答待命）
 
+
+def timeline_for(t):
+    """按星期选时间轴：周日全空（周会仅周六）；周六周末表；其余平日表。
+    （原 weekday()==5 漏周日、改 >=5 又把周日带进周末表——2026-10-11 两度实踩）"""
+    wd = t.weekday()
+    if wd == 6:
+        return {}
+    return WEEKEND_TIMELINE if wd == 5 else DEFAULT_TIMELINE
+
 DEFAULT_ROLES = {             # 心跳期望间隔（秒）：常态 60min / 盘中 15min
     "pm": 3600, "risk": 3600, "env": 3600, "theme": 3600, "attr": 3600,
     "keeper": 3600, "liaison": 3600, "stock": 3600, "evo": 3600,
@@ -72,9 +81,36 @@ class Scheduler:
         self.heartbeats = {}      # name → iso ts
         self.missed = {}          # name → 连续缺席次数
         self.down = set()         # 判失联的岗
-        self.fired = {}           # 当日已触发的时间轴任务
+        self.fired = {}           # 当日已触发的时间轴任务（落盘防重启重发）
+        self.state_path = os.path.join(data_dir, "state.json")
+        self._load_state()
         self.budget = {"daily_cap": 40.0, "spent": 0.0, "throttle": False}
         self.alert_log = os.path.join(data_dir, "alerts.log")
+
+    # ---------------------------------------------------------- 状态落盘
+
+    def _load_state(self):
+        """重启续防重发：只接当日 fired（evo-lab 周会三连发实踩——fired 在内存，
+        S2 每次重启都把当天已触发任务再发一遍）。"""
+        try:
+            if os.path.exists(self.state_path):
+                st = json.load(open(self.state_path))
+                today = now_cn().strftime("%Y-%m-%d")
+                self.fired = {k: v for k, v in st.get("fired", {}).items()
+                              if k.startswith(today)}
+        except Exception:
+            self.fired = {}
+
+    def _save_state(self):
+        try:
+            today = now_cn().strftime("%Y-%m-%d")
+            live = {k: v for k, v in self.fired.items() if k.startswith(today)}
+            tmp = self.state_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({"fired": live}, f, ensure_ascii=False)
+            os.replace(tmp, self.state_path)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------- 信件投递
 
@@ -169,16 +205,19 @@ class Scheduler:
     def tick(self):
         t = now_cn()
         day = t.strftime("%Y-%m-%d")
-        # 周六周日都走周末表（原 weekday()==5 会把周日漏进平日表——2026-10-11 实踩）
-        timeline = WEEKEND_TIMELINE if t.weekday() >= 5 else DEFAULT_TIMELINE
+        timeline = timeline_for(t)
+        fired_new = False
         for hhmm, job in timeline.items():
             key = f"{day}/{hhmm}"
             if hms() >= hhmm and self.fired.get(key) != job:
                 self.fired[key] = job
+                fired_new = True
                 try:
                     self.run_job(job)
                 except Exception as exc:
                     self.alert(f"job_{job}_error: {exc}")
+        if fired_new:
+            self._save_state()
         self.watchdog()
 
     def run_job(self, job):
