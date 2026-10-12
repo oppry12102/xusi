@@ -40,6 +40,11 @@ workspace/secrets/s1-api.json 的 pm_token）必填字段：
 - max_single_weight / sector_cap（可选，缺省读引擎配置：单票 10%、板块 25%）
 - market_state、brain（实际产出模型）、group_version
 
+展示投信（主人御令 2026-10-12）：每张决策单被引擎受理后，同步一份决策摘要快照投
+8a06（成果展示页用）：decision_id/时间/状态/引用 signal_id/订单表（代码转名称、
+权重、urgency）或「无订单·持币观望」+ 一句话立场（如 downtrend 首日观望）；
+值不入信；信用分与加权明细不投（白名单外）。
+
 被拒单处理：拒单带原因码（chain_mismatch / snapshot_stale / rate_limited /
 single_weight_over_cap / signal_expired_or_inactive / engine_frozen 等），
 按原因码修正后重出，不静默放弃；engine_frozen 时停手等恢复。
