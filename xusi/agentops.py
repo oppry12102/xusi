@@ -359,8 +359,9 @@ def create_agent(name: str, mission: str, brain_list: list[str], *,
     都过内核地板闸（≥ versions.KERNEL_FLOOR）。
 
     roots（可选）：根智能体列表 [{address, token}]——渲染进出生 config 的
-    [[roots]] 段，内核首次启动交割到 workspace/playbook/根智能体.json
-    （见 _validate_roots）。extra_config（可选）：管理员自由 TOML
+    [[roots]] 段（仅为旧内核兼容），并由 write_birth_three 直写
+    workspace/playbook/根智能体.json（新内核唯一读法；见 _validate_roots）。
+    extra_config（可选）：管理员自由 TOML
     原样追加（落盘前整体校验，见 brains.render_agent_config）。
 
     创建后 xusi 与该 agent 只剩邮箱通道：不再签发任何 agent 侧凭证
@@ -462,7 +463,8 @@ def _init_workspace(rec: dict, src_ver: str, roots: list | None = None,
 
     - 从版本仓库解压源码到实例私有副本（instances/<id>/xuseek/）
     - 渲染 config.toml（含所选大脑与 key）——出生配置，唯一一次
-      （data/、workspace/ 由内核启动时自建，xusi 不动）
+    - 直写出生三件到 workspace/playbook/（内核契约：机器不代写、管理员直写；
+      其余 workspace 内容仍归内核启动时自建）
 
     失败抛 AgentError，由 create_agent 的统一 try/except 回滚（home 仍可能存在，
     rollback 把它挪进 .trash）。"""
@@ -474,6 +476,38 @@ def _init_workspace(rec: dict, src_ver: str, roots: list | None = None,
                               #（id 本体；agent- 前缀是本机簿记/目录名，不进身份——见
                               #  xuseek2 docs/proposal-id-as-identity.md）
                               roots=roots, extra_config=extra_config, xmem=xmem)
+    brains.write_birth_three(home, rec["mission"],
+                             rec["id"].removeprefix("agent-"), roots)
+
+
+_BIRTH_FILES = ("初心.md", "我的身份.md", "根智能体.json")
+
+
+def birth_three_report(agent_id: str) -> list[str]:
+    """出生三件盘点（create 收尾核对 / repair-birth 前置审计共用）。缺件如实报。"""
+    rec = registry.get_agent(agent_id)
+    if not rec:
+        raise AgentError(f"agent 不存在：{agent_id}")
+    pb = _home(rec) / "workspace" / "playbook"
+    out = []
+    for name in _BIRTH_FILES:
+        p = pb / name
+        out.append(f"  birth {name}: " + (f"✓（{p.stat().st_size}B）" if p.exists() else "✗ 缺"))
+    return out
+
+
+def repair_birth(agent_id: str) -> list[str]:
+    """按注册表档案补写缺失的出生三件（幂等：已存在不覆写）。
+
+    数据源 = 注册表 rec（mission / id / roots 创建时已存档）——修复不需要
+    重问任何参数。返回 write_birth_three 的动作清单（无缺件时为空）。
+    修复权纪律：对存量 agent 动手前须管理员逐案示下，本函数只管补、不管批。"""
+    rec = registry.get_agent(agent_id)
+    if not rec:
+        raise AgentError(f"agent 不存在：{agent_id}")
+    return brains.write_birth_three(_home(rec), rec.get("mission", ""),
+                                    rec["id"].removeprefix("agent-"),
+                                    rec.get("roots"))
 
 
 def spawn_and_verify(rec: dict) -> None:

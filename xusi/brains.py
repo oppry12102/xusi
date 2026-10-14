@@ -260,8 +260,9 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     限额段恒为 [limits] max_rounds（内核地板起 [agent] 三段已删除，
     max_seconds/max_context_tokens 收到也渲染不进配置）。
 
-    roots（可选）：渲染 [[roots]] 数组表——根智能体出生交割键，首次启动
-    预检时一次性交割到 workspace/playbook/根智能体.json，交割后即死键。
+    roots（可选）：渲染 [[roots]] 数组表。注意：config 里这段在新内核（≥v2.9.3x
+    文件即一切）是死键、不会被交割——真正的交付物由 write_birth_three 在创建时
+    直写 workspace/playbook/根智能体.json；此处渲染仅为旧内核兼容留存。
 
     extra_config（可选）：管理员手写的自由 TOML（[amem] 等内核可选段
     或未来新段）原样追加到文件末尾——xusi 不必追踪内核每个新配置段。
@@ -293,7 +294,7 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
         lines[-1:] = [
             "# 你的 id（4-hex 短号，管理员分配、终身不变——机器对账的键：",
             "# 自述 id 字段、出信署名（X-Peer-Id 头的值）、letter 编号、目录注册。",
-            "# 内核首次启动交割至 workspace/playbook/我的身份.md，此后本行被忽略；",
+            "# 新内核不读本行（身份卡由管理面直写 playbook/我的身份.md）；仅为旧内核兼容，",
             "# 本文件归你自治，但这一行请勿修改——撞号换 id 走管理员（改此行+删身份卡+重启））",
             f'instance_id = {_q(instance_id)}',
             "",
@@ -340,7 +341,7 @@ def _render_roots(roots: list | None) -> list[str]:
         return []
     lines = [
         "# ── 根智能体（目录服务）——互联发现的唯一方案（内核 docs/interconnect.md）──",
-        "# 首次启动一次性交割到 workspace/playbook/根智能体.json；交割后此段即失效（死键）。",
+        "# 新内核不读此段（根文件由管理面直写 playbook/根智能体.json）；仅为旧内核兼容。",
         "# 重交割 = 删该文件 + 改此段 + 重启。token 可写 \"env:变量名\"。",
         "",
     ]
@@ -362,7 +363,8 @@ def write_agent_config(home: Path, mission: str, brains: list[str],
 
     只在创建时调用——出生配置，首写即终写；此后该文件归 agent 自治，
     xusi 不再读回、不再重渲染。instance_id = 4-hex 短号（id 分配制的终身键：
-    v2.8.87 起内核出生交割至 playbook/我的身份.md，自述/署名/目录注册用它）。
+    新内核从 playbook/我的身份.md 抠号——该卡由 write_birth_three 直写，
+    本行 instance_id 仅为旧内核兼容留存）。
     """
     text = render_agent_config(mission, brains, budgets,
                                instance_id=instance_id,
@@ -372,6 +374,59 @@ def write_agent_config(home: Path, mission: str, brains: list[str],
     p.write_text(text, encoding="utf-8")
     p.chmod(0o600)
     return p
+
+
+# ── 出生三件：内核契约是「管理员直接写 workspace/playbook/ 下的文件，机器一份
+#    都不代写」（xuseek2 config.py 死键表 + cli._preflight）。管理面就是管理员
+#    的手——创建时在此直写，履行的正是这个职责。config.toml 里的
+#    mission/instance_id/[[roots]] 照旧渲染仅为旧内核兼容，新内核不读。
+
+# 身份卡模板：id 行形状 = 内核 _ID_RE（id：`hex`）契约，逐字勿改
+# （xuseek2 seed.py 两处 _my_id() 按此抠号，抠不到 = 空号）。
+_ID_CARD_TEMPLATE = """# 我的身份
+
+- id：`{id}` —— 终身不变
+- 名字：自己起（随便改、可重复）——给人看；交互从不经过它（交互认 id 与地址）。
+- 全称写法：`{id}@根id`——跨根引用与长期落账用；@ 后=你登记的根自述里的
+  id 字段（按根智能体.json 的地址现取现读，勿抄任何示例号），是户口标注，
+  不是 id 的一部分。
+- 撞号换 id：根目录退回「id 已占」时，请管理员改 config.toml 的 instance_id 为新号、
+  删本文件、重启；首信附「formerly {id}」。目录名、地址、服务都不用动。
+"""
+
+
+def write_birth_three(home: Path, mission: str, instance_id: str,
+                      roots: list | None = None) -> list[str]:
+    """创建/修复时直写出生三件到 <home>/workspace/playbook/，返回可读核对行。
+
+    幂等：任一件已存在一律不覆写（adopt / restore / 重复 repair 场景不受伤）。
+    mission 或 instance_id 为空、roots 为空 → 对应件跳过（内核明说三件都可以
+    没有，缺件不报错）。根智能体.json 含 token → chmod 600。
+    """
+    pb = home / "workspace" / "playbook"
+    pb.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    p = pb / "初心.md"
+    if p.exists():
+        lines.append("初心.md      已存在，未覆写")
+    elif (mission or "").strip():
+        p.write_text(mission.strip() + "\n", encoding="utf-8")
+        lines.append(f"初心.md      ✓ {len(mission.strip())} 字")
+    p = pb / "我的身份.md"
+    if p.exists():
+        lines.append("我的身份.md   已存在，未覆写")
+    elif (instance_id or "").strip():
+        p.write_text(_ID_CARD_TEMPLATE.format(id=instance_id), encoding="utf-8")
+        lines.append(f"我的身份.md   ✓ id={instance_id}")
+    p = pb / "根智能体.json"
+    if p.exists():
+        lines.append("根智能体.json 已存在，未覆写")
+    elif roots:
+        p.write_text(json.dumps({"roots": list(roots)}, ensure_ascii=False, indent=1),
+                     encoding="utf-8")
+        p.chmod(0o600)
+        lines.append(f"根智能体.json ✓ {len(roots)} 根（600）")
+    return lines
 
 
 def probe_brain(spec: dict, timeout: float = 30.0) -> dict:

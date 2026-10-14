@@ -564,6 +564,25 @@ def cmd_create(args) -> int:
     print(f"  port          : {r['port']}")
     print(f"  runtime       : {r['runtime']}")
     print(f"  source        : {r.get('source_version', '')}")
+    for ln in agentops.birth_three_report(r["id"]):
+        print(ln)
+    return 0
+
+
+def cmd_repair_birth(args) -> int:
+    from . import agentops
+    try:
+        acts = agentops.repair_birth(args.agent_id)
+        rep = agentops.birth_three_report(args.agent_id)
+    except (agentops.AgentError, ValueError, TypeError, OSError) as e:
+        return _cli_agent_error(e)
+    if acts:
+        for ln in acts:
+            print(f"  补写 {ln}")
+    else:
+        print("  无缺件，未动笔")
+    for ln in rep:
+        print(ln)
     return 0
 
 
@@ -979,6 +998,7 @@ usage: xusi remote <cmd> [--on NAME] [参数...]
   start|stop|pause|resume|restart|delete --on NAME <agent-id>
   mail      --on NAME <agent-id> <text>  投信（与 agent 的唯一写通道）
   mailbox   --on NAME <agent-id> [--limit N] [--box outbox|inbox]
+  repair-birth --on NAME <agent-id>  按注册表档案补写缺失的出生三件（幂等）
   observe-token --on NAME <agent-id> [--new]
   install   --on NAME                   新机接入：python3.12 + linger + 推代码 + 播种 brains
   adopt     --on NAME                   收编存量部署：升级 → 停 serve → 接管既有 agent
@@ -1063,6 +1083,9 @@ def cmd_remote(args) -> int:
     if rfn == "create":
         return _remote_one(hosts[0], lambda h: remote.remote_create(h, list(args.rest),
                                                                     timeout=900))
+    if rfn == "repair-birth":
+        return _remote_one(hosts[0], lambda h: remote.xusi_cmd(h, ["repair-birth"] + list(args.rest),
+                                                               timeout=300))
     return _remote_one(hosts[0], lambda h: remote.remote_agent_op(h, rfn, list(args.rest)))
 
 
@@ -1114,6 +1137,10 @@ def main() -> int:
     c_.add_argument("--xmem", default=None, choices=("on", "off"),
                     help="内核记忆层开关（on = 注册内建记忆工具 xmem_write/read/...，判断全归大脑；缺省 off）")
     c_.set_defaults(fn=cmd_create)
+
+    rb_ = sub.add_parser("repair-birth", help="按注册表档案补写缺失的出生三件（幂等，已存在不覆写）")
+    rb_.add_argument("agent_id")
+    rb_.set_defaults(fn=cmd_repair_birth)
 
     for op in ("start", "stop", "pause", "resume", "restart"):
         op_ = sub.add_parser(op, help=f"{op} agent")
