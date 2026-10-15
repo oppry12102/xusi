@@ -1177,13 +1177,15 @@ $("#f-tab-opt-btn").onclick = () => switchCreateTab("opt");
 
 function renderBrainChecks(containerSel, defaults) {
   const defs = new Set(defaults || []);
-  // 三竖列分组：按量 / 月卡 / 免费——条目只显名字，整列全选点列首复选框；
-  // 细节（model、缺key）进 hover 提示。以后按量计费的新脑，把名前缀加进 PAYG 即归列
+  // 四竖列分组：按量 / 月卡 / 聚合 / 免费——条目只显名字，整列全选点列首复选框；
+  // 细节（model、缺key）进 hover 提示。以后按量计费的新脑，把名前缀加进 PAYG 即归列；
+  // 聚合 = 网关中转（c150/fad0 自聚合上游），免费 = 自托管（qwen-local）
   const PAYG = ["deepseek"];
   const GROUPS = [
     { title: "按量", test: n => PAYG.some(p => n.startsWith(p)) },
     { title: "月卡", test: n => /^(glm|kimi|minimax)/.test(n) },
-    { title: "免费", test: n => n.startsWith("c150") || n.startsWith("qwen-local") },
+    { title: "聚合", test: n => n.startsWith("c150") || n.startsWith("fad0") },
+    { title: "免费", test: n => n.startsWith("qwen-local") },
   ];
   const groups = GROUPS.map(g => ({ ...g, items: _brainsPool.filter(b => g.test(b.name)) }));
   const known = new Set(groups.flatMap(g => g.items.map(b => b.name)));
