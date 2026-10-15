@@ -857,7 +857,7 @@ async function refresh(first = false) {
     // 不会替你藏 select——必须在这里显式藏）
     $("#btn-new").hidden = !meAdmin;
     $("#btn-node").hidden = !meAdmin;
-    $("#sel-scope").hidden = !meAdmin;   // admin 侧由 loadScopes 按机器簿数量细化
+    if (!meAdmin) $("#sel-scope").hidden = true;   // admin 侧可见性全归 loadScopes——这里若无条件先显、loadScopes 再按机器簿收回去，无远端簿的机器每轮刷新都顶得「新建」按钮横跳一下
     const banner = $("#agent-banner");
     banner.hidden = meAdmin;
     if (!meAdmin) {
