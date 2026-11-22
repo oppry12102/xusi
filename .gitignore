@@ -35,6 +35,8 @@ instances/
 xuseek-v2/
 # 版本仓库整目录不入库（zip 含私有源码 xuseek-v2；约定文档在 docs/versions.md）
 versions/
+# 本地共享目录（同机同用户下容器智能体共用；里面是智能体放的大文件，永不入库——只锚根目录）
+/share/
 
 # ═══ 环境与杂物 ═══
 .venv/

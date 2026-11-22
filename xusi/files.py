@@ -1,4 +1,5 @@
-"""实例目录文件通道：只开放 upload/（可写·投递区）与 workspace/（只读）。
+"""实例目录文件通道：只开放 upload/（可写·投递区）、workspace/（只读）与
+share/（只读·本地共享，挂了的实例才有）。
 
 设计原则——管理面不干预 LLM：workspace 是 agent 领地，只许看（浏览/预览/
 下载/打包），一个字节不写；upload/ 是管理面领土，向 agent 单向投递文件。
@@ -19,6 +20,10 @@ agent 取件路径：内核 file_read/file_write 以 workspace 为牢（够不�
 三层共用同一份实现：api/files_routes.py（本地 HTTP）、__main__.py 的
 fs-* 子命令（远端零管理机经 ssh 执行的就是这份代码，校验在远端发生）。
 所有写操作落盘前记 audit（agent.fs.*）。
+
+本地共享（localshare.py）：挂了共享目录的实例，容器里的 /data/share（与世界根
+并排）就是共享目录本身——这里的开放根 share/ 映射到同一处，文件页看到的 =
+agent 看到的；只读，containment 基准 = 共享目录本身。
 """
 from __future__ import annotations
 
@@ -31,12 +36,14 @@ import time
 import uuid
 from pathlib import Path
 
+from . import localshare
 from .agentops import AgentError, audit
 from .config import get_config
 from .registry import get_agent
 
-# 开放区：首段白名单（实例目录的其余部分不可见）
-OPEN_ROOTS = ("upload", "workspace")
+# 开放区：首段白名单（实例目录的其余部分不可见）。share 不是实例目录里的东西
+# ——它是同机共享目录在该实例处的挂载，映射见 _resolve。
+OPEN_ROOTS = ("upload", "workspace", "share")
 WRITE_ROOT = "upload"
 
 _TEXT_CAP = 256 * 1024        # 文本预览封顶（超出截断打标，下载看全量）
@@ -82,24 +89,42 @@ def _agent(agent_id: str) -> dict:
     return a
 
 
-def _safe(agent_id: str, rel: str, *, write: bool = False) -> Path:
-    """三道闸（见模块 docstring）后的绝对路径。根视图（rel 为空）在这里
-    就拒——列目录函数对空路径单独合成根视图，不吃 _safe。"""
+def _resolve(agent_id: str, rel: str, *, write: bool = False) -> tuple[Path, Path, Path | None]:
+    """三道闸（见模块 docstring）后的 (绝对路径, containment 基准, 映射到的共享
+    目录或 None)。根视图（rel 为空）在这里就拒——列目录函数对空路径单独合成
+    根视图，不吃这里。"""
     parts = _norm(rel)
     if not parts:
         raise AgentError("路径不能为空")
     if parts[0] not in OPEN_ROOTS:
         raise AgentError(f"只开放 {' 与 '.join(OPEN_ROOTS)} 目录（实例目录其余部分不可见）")
     if write and parts[0] != WRITE_ROOT:
-        raise AgentError("workspace 只读（agent 领地，管理面不干预）——写操作只收 upload/ 路径")
+        raise AgentError("workspace 与 share 只读（agent 领地 / 同机共享目录，管理面不干预）"
+                         "——写操作只收 upload/ 路径")
     for p in parts:
         _check_seg(p)
+    if parts[0] == "share":
+        shared = localshare.mounted_dir(agent_id)
+        if shared is None:
+            raise AgentError("这个实例没有挂本地共享（不是容器形态，或挂载功能上线后还没重启过）")
+        base = shared.resolve()
+        return (shared / "/".join(parts[1:])).resolve(), base, base
     home = get_config().instance_home(agent_id)
-    base = (home / parts[0]).resolve()
-    p = (home / "/".join(parts)).resolve()
+    return (home / "/".join(parts)).resolve(), (home / parts[0]).resolve(), None
+
+
+def _safe_base(agent_id: str, rel: str, *, write: bool = False) -> tuple[Path, Path, Path | None]:
+    """_resolve + containment。第三个返回值非 None = 这条路径落在本地共享里
+    （打包时 containment 基准必须是共享目录本身：它的上一级是管理面根，
+    里面有 etc/ 的凭据——不能沿用「基准 = 开放根的上一级」）。"""
+    p, base, shared = _resolve(agent_id, rel, write=write)
     if p != base and base not in p.parents:
         raise AgentError(f"路径越界或符号链接指向开放区外：{rel}")
-    return p
+    return p, base, shared
+
+
+def _safe(agent_id: str, rel: str, *, write: bool = False) -> Path:
+    return _safe_base(agent_id, rel, write=write)[0]
 
 
 def _writable(rel: str) -> bool:
@@ -119,7 +144,7 @@ def list_dir(agent_id: str, rel: str = "") -> dict:
         up = home / WRITE_ROOT
         up.mkdir(parents=True, exist_ok=True)
         ws = home / "workspace"
-        return {"id": agent_id, "path": "", "entries": [
+        entries = [
             {"name": WRITE_ROOT, "dir": True, "size": None,
              "mtime": up.stat().st_mtime if up.exists() else None,
              "note": "投递区 · 可写（agent 经 shell 工具 ../upload/ 取件）"},
@@ -127,9 +152,15 @@ def list_dir(agent_id: str, rel: str = "") -> dict:
              "mtime": ws.stat().st_mtime if ws.exists() else None,
              "note": "agent 领地 · 只读" if ws.exists()
                      else "agent 领地 · 只读（尚未创建——首口呼吸后由内核自建）"},
-        ]}
-    root = (home / _norm(rel)[0]).resolve()
-    d = _safe(agent_id, rel)
+        ]
+        shared = localshare.mounted_dir(agent_id)   # 挂了本地共享的实例：第三个开放根
+        if shared is not None:
+            entries.append({"name": "share", "dir": True, "size": None,
+                            "mtime": shared.stat().st_mtime if shared.is_dir() else None,
+                            "note": f"本地共享 · 同机同用户智能体共用"
+                                    f"（容器里 = {localshare.CONTAINER_MOUNT}，世界根外面）· 只读"})
+        return {"id": agent_id, "path": "", "entries": entries}
+    d, root, _ = _safe_base(agent_id, rel)
     if not d.exists():
         return {"id": agent_id, "path": rel, "exists": False, "entries": []}
     if not d.is_dir():
@@ -216,10 +247,11 @@ def zip_dir(agent_id: str, rel: str) -> tuple[Path, Path]:
     打包前扫符号链接逃逸（followlinks=False 的 walk + resolve 验 containment，
     与 backup.py 同防线）：workspace 是 agent 任意写的，混进指向区外的链接
     就会把区外文件（config.toml 的 key 等）打进来。"""
-    p = _safe(agent_id, rel)
+    p, root, shared = _safe_base(agent_id, rel)
     if not p.is_dir():
         raise AgentError(f"不是目录：{rel}")
-    root = p.parent.resolve()
+    if shared is None:
+        root = p.parent.resolve()   # 开放根自身（upload/、workspace/）或其子目录：基准 = 上一级
     for dirpath, dirnames, filenames in os.walk(p, followlinks=False):
         for n in dirnames + filenames:
             full = Path(dirpath) / n

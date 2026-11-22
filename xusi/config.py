@@ -45,6 +45,8 @@ class XusiConfig:
     port_lo: int = 8602          # agent 端口分配下界（8601 归管理面）
     port_hi: int = 8699
     versions_dir: Path = ROOT / "versions"  # xuseek 源码唯一事实源：管理员投放 xuseek-<版本号>.zip
+    share_dir: Path = ROOT / "share"  # 本地共享目录：同一服务器、同一用户名下的容器智能体
+                                      # 共用（挂进各实例世界根的 share/，见 localshare.py）
     display_timezone: str = "Asia/Shanghai"
 
     # —— 身份 ——
@@ -124,7 +126,7 @@ class XusiConfig:
 
     def ensure_dirs(self) -> None:
         for d in (self.etc_dir, self.instances_dir, self.trash_dir,
-                  self.versions_dir, self.backup_dir, self.webui_dir):
+                  self.versions_dir, self.share_dir, self.backup_dir, self.webui_dir):
             d.mkdir(parents=True, exist_ok=True)
 
 
@@ -139,6 +141,8 @@ def load_config() -> XusiConfig:
     cfg.port_lo, cfg.port_hi = int(lo), int(hi)
     if "versions_dir" in mgr:
         cfg.versions_dir = Path(os.path.expanduser(str(mgr["versions_dir"]))).resolve()
+    if "share_dir" in mgr:
+        cfg.share_dir = Path(os.path.expanduser(str(mgr["share_dir"]))).resolve()
     if "display_timezone" in mgr:
         cfg.display_timezone = str(mgr["display_timezone"])
     # 三运行时：缺省运行时 + docker 镜像构建参数（详见 dockerctl.py/barectl.py）

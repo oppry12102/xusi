@@ -194,6 +194,14 @@ def _render_compose(unit: str, source_dir: Path, home: Path, host: str,
     if cfg.stall_s > 0:
         stall_env = f"      XUSEEK_STALL_S: {_yq(str(cfg.stall_s))}\n"
     health = f"curl -fsS http://127.0.0.1:{port}/v1/health || exit 1"
+    # 本地共享（localshare.py）：同机同用户的容器智能体共用一个目录，容器里
+    # 挂在 /data/share——与世界根并排、在它外面（内核工具对绝对路径无沙箱，
+    # 零内核改动）。共享目录不在、或实例侧挂载点处已有实例自己的内容 →
+    # 这一行不渲染（不挂）。
+    from . import localshare
+    share_vol = ""
+    if localshare.mountable(home, cfg.share_dir):
+        share_vol = f"      - {_yq(f'{cfg.share_dir}:{localshare.CONTAINER_MOUNT}')}\n"
     return f"""# 由 xusi 管理面渲染（runtime=docker）——不要手改：spawn 每次都会重渲染，
 # 路径/端口/镜像 tag 恒与注册表一致。镜像 fleet 共享（xuseek:<version>）：
 # 升级 source_version 只换内核副本，镜像不动。排障见 docs/container-runtime.md。
@@ -210,7 +218,7 @@ services:
     user: {_yq(cfg.docker_user)}
     volumes:
       - {_yq(f"{home}:/data")}
-    environment:
+{share_vol}    environment:
       TZ: {_yq(cfg.display_timezone)}
       HOME: "/data"
 {index_env}{stall_env}    restart: unless-stopped

@@ -1183,7 +1183,7 @@ function renderBrainChecks(containerSel, defaults) {
   const PAYG = ["deepseek"];
   const GROUPS = [
     { title: "按量", test: n => PAYG.some(p => n.startsWith(p)) },
-    { title: "月卡", test: n => /^(glm|kimi|minimax)/.test(n) },
+    { title: "月卡", test: n => /^(glm|kimi|minimax|qwen-ai)/.test(n) },
     { title: "聚合", test: n => n.startsWith("c150") || n.startsWith("fad0") },
     { title: "免费", test: n => n.startsWith("qwen-local") },
   ];

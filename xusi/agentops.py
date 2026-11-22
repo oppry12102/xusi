@@ -49,7 +49,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import barectl, brains, dockerctl, factsdb, ports, registry, systemdctl, versions
+from . import (barectl, brains, dockerctl, factsdb, localshare, ports, registry,
+               systemdctl, versions)
 from .config import get_config
 
 
@@ -131,7 +132,17 @@ def _spawn_unit(agent: dict) -> None:
     （systemd 瞬态单元 / docker 容器，镜像 tag 随 source_version）。"""
     cfg = get_config()
     src = _source_for(agent)
-    _rt(agent).spawn_agent(cfg.unit_name(agent["id"]), str(src),
+    rt = _rt(agent)
+    if rt is dockerctl:
+        # 本地共享（仅容器形态）：共享目录与挂载点就位 + playbook 指南缺则种。
+        # 返回的只有需要人看的行（种了 / 没挂及原因）——照旧时静默。
+        for ln in localshare.ensure(_home(agent)):
+            print(f"  {ln}")
+    else:
+        # 系统形态：不挂载（宿主直通），种相对路径版指南（缺则种）
+        for ln in localshare.ensure_system(_home(agent)):
+            print(f"  {ln}")
+    rt.spawn_agent(cfg.unit_name(agent["id"]), str(src),
                            str(_home(agent)), _listen_host(agent), agent["port"],
                            version=str(agent.get("source_version") or ""))
 
