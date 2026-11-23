@@ -56,3 +56,5 @@ serve.log
 services/stocksim/data/s1/
 services/stocksim/data/s2/alerts.log
 services/stocksim/data/s2/state.json
+# 运行日志（股票舰队等运行时产物，永不入库）
+services/stocksim/data/*.log
