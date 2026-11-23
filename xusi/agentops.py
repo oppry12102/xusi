@@ -729,9 +729,13 @@ def restart(agent_id: str) -> dict:
     return _finalize(agent_id, "running", "restart")
 
 
-def kernel_diff(home: Path, ver: str) -> list[str]:
-    """实例内核副本 vs 仓库同版本包的文件级差异（相对内核根路径，排序）。
-    空表 = 与包逐字节一致（无自改）。仓库无此版本的包 → 单行说明。
+def kernel_diff(home: Path, ver: str) -> tuple[list[str], int, int, int]:
+    """实例内核副本 vs 仓库同版本包的文件级差异。
+
+    返回 (差异清单, 仅包内有数, 仅副本有数, 内容不同数)——「仅包内有」= 副本
+    缺文件（部署时省略的 docs 等，换副本只是补缺，无害）；「仅副本有」/「内容
+    不同」= 树里有包外之物（自改或大脑堆放的数据，换副本会覆盖/删掉）。
+    仓库无此版本的包 → ([单行说明], 0, 0, 0)。
     口径与解压一致（versions._SKIP_PARTS / .pyc 不参比）；hash 用 CRC32
     （zip 内建、本地 zlib 现算——比对完整性足够）。"""
     import zipfile as _zf
@@ -740,7 +744,7 @@ def kernel_diff(home: Path, ver: str) -> list[str]:
     try:
         zp = versions.zip_for(ver)
     except versions.VersionError as e:
-        return [str(e)]
+        return [str(e)], 0, 0, 0
     in_zip: dict[str, int] = {}
     with _zf.ZipFile(zp) as zf:
         for info in zf.infolist():
@@ -757,7 +761,7 @@ def kernel_diff(home: Path, ver: str) -> list[str]:
     if "xuseek.sh" not in in_zip:                       # 源码根在一级子目录里
         cand = {n.split("/", 1)[0] for n in in_zip if n.endswith("/xuseek.sh")}
         if len(cand) != 1:
-            return [f"zip 结构异常（定位不到源码根）：{zp.name}"]
+            return [f"zip 结构异常（定位不到源码根）：{zp.name}"], 0, 0, 0
         prefix = cand.pop() + "/"
     in_zip = {n[len(prefix):]: c for n, c in in_zip.items() if n.startswith(prefix)}
     on_disk: dict[str, int] = {}
@@ -777,7 +781,7 @@ def kernel_diff(home: Path, ver: str) -> list[str]:
           [f"内容不同：{n}" for n in changed]
     if len(out) > 20:
         out = out[:20] + [f"…（共 {len(out)} 处差异）"]
-    return out
+    return out, len(only_zip), len(only_disk), len(changed)
 
 
 def upgrade_kernel(agent_id: str, version: str = "", force: bool = False) -> dict:
@@ -798,11 +802,16 @@ def upgrade_kernel(agent_id: str, version: str = "", force: bool = False) -> dic
         raise AgentError(f"目标版本 {new} 过旧（内核地板 {versions.KERNEL_FLOOR}）")
     if cur and versions.at_least(new, cur) and new == cur:
         raise AgentError(f"已是 {cur}，无需升级")
-    diff = kernel_diff(home, cur) if cur else ["（注册表无 source_version，无法自改检查）"]
-    if diff and not force:
+    diff, n_missing, n_extra, n_changed = kernel_diff(home, cur) if cur \
+        else (["（注册表无 source_version，无法自改检查）"], 0, 0, 0)
+    # 放行判据 = 差异只有「仅包内有」（副本缺文件，换副本=补缺）；只要树里
+    # 有一件包外之物或一处不同，就是自改/堆放——不 force 不动。
+    touches = n_extra + n_changed
+    if touches and not force:
         return {"id": agent_id, "from": cur, "to": new, "upgraded": False, "diff": diff,
-                "note": "内核副本与仓库同版本包有差异（本地自改）——未升级。确认放弃"
-                        "自改后用 --force（差异清单随本报告留档）"}
+                "note": f"内核副本与仓库同版本包有差异（包外之物 {n_extra} 件、"
+                        f"内容不同 {n_changed} 处）——未升级。确认放弃自改后用 "
+                        f"--force（差异清单随本报告留档）"}
     # 安全闸（force 也拦）：内核树里住着家（旧结构实例把账本/工作区写进内核
     # 目录）——换副本 = rm 掉的是账本不是代码，这不是 --force 该放行的事。
     markers = [m for m in ("data/facts.db", "config.toml", "workspace")
