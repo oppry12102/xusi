@@ -794,6 +794,11 @@ def upgrade_kernel(agent_id: str, version: str = "", force: bool = False) -> dic
     rt = _rt(agent)
     home = _home(agent)
     src = versions.kernel_dir(home)
+    if not src.is_dir():
+        return {"id": agent_id, "from": str(agent.get("source_version") or ""), "to": "",
+                "upgraded": False, "diff": [],
+                "note": f"内核副本目录不存在（{src}）——极老结构实例，进程载体的镜像"
+                        f"早于内核副本机制；重启会起不来。先人工核内径再动"}
     cur = str(agent.get("source_version") or "").strip()
     new = (version or "").strip() or (versions.list_versions() or [{}])[0].get("version", "")
     if not new:
