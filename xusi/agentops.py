@@ -42,6 +42,7 @@ import socket
 import threading
 import time
 import tomllib
+import zlib
 import urllib.error
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -726,6 +727,97 @@ def restart(agent_id: str) -> dict:
         _spawn_unit(agent)
     wait_health(agent["port"], agent_id, rt=_rt(agent))
     return _finalize(agent_id, "running", "restart")
+
+
+def kernel_diff(home: Path, ver: str) -> list[str]:
+    """实例内核副本 vs 仓库同版本包的文件级差异（相对内核根路径，排序）。
+    空表 = 与包逐字节一致（无自改）。仓库无此版本的包 → 单行说明。
+    口径与解压一致（versions._SKIP_PARTS / .pyc 不参比）；hash 用 CRC32
+    （zip 内建、本地 zlib 现算——比对完整性足够）。"""
+    import zipfile as _zf
+    from pathlib import PurePosixPath
+    src = versions.kernel_dir(home)
+    try:
+        zp = versions.zip_for(ver)
+    except versions.VersionError as e:
+        return [str(e)]
+    in_zip: dict[str, int] = {}
+    with _zf.ZipFile(zp) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            n = info.filename
+            parts = PurePosixPath(n).parts
+            if n.startswith(("/", "\\")) or ".." in parts:
+                continue
+            if any(p in versions._SKIP_PARTS for p in parts) or n.endswith(".pyc"):
+                continue
+            in_zip[n] = info.CRC
+    prefix = ""
+    if "xuseek.sh" not in in_zip:                       # 源码根在一级子目录里
+        cand = {n.split("/", 1)[0] for n in in_zip if n.endswith("/xuseek.sh")}
+        if len(cand) != 1:
+            return [f"zip 结构异常（定位不到源码根）：{zp.name}"]
+        prefix = cand.pop() + "/"
+    in_zip = {n[len(prefix):]: c for n, c in in_zip.items() if n.startswith(prefix)}
+    on_disk: dict[str, int] = {}
+    for dirpath, dirnames, filenames in os.walk(src):
+        dirnames[:] = [d for d in dirnames if d not in versions._SKIP_PARTS]
+        for f in filenames:
+            if f.endswith(".pyc"):
+                continue
+            fp = Path(dirpath) / f
+            rel = fp.relative_to(src).as_posix()
+            on_disk[rel] = zlib.crc32(fp.read_bytes()) & 0xFFFFFFFF
+    only_zip = sorted(set(in_zip) - set(on_disk))
+    only_disk = sorted(set(on_disk) - set(in_zip))
+    changed = sorted(k for k in set(in_zip) & set(on_disk) if in_zip[k] != on_disk[k])
+    out = [f"仅包内有：{n}" for n in only_zip] + \
+          [f"仅副本有：{n}" for n in only_disk] + \
+          [f"内容不同：{n}" for n in changed]
+    if len(out) > 20:
+        out = out[:20] + [f"…（共 {len(out)} 处差异）"]
+    return out
+
+
+def upgrade_kernel(agent_id: str, version: str = "", force: bool = False) -> dict:
+    """升级实例内核副本：自改检查 → （active 则优雅停）→ 换副本 → （原在跑则
+    拉起验收）。与仓库同版本包有差异 = 本地自改，非 force 拒绝升级、原树
+    不动（清单即自改账）；force 换新（清单随报告留档，自改丢失）。停-起走
+    既有 stop/start（含无声灭投信与端口验收）。不负责等待空闲——调用方挑时机。"""
+    agent = get_agent_or_404(agent_id)
+    unit = _unit(agent)
+    rt = _rt(agent)
+    home = _home(agent)
+    src = versions.kernel_dir(home)
+    cur = str(agent.get("source_version") or "").strip()
+    new = (version or "").strip() or (versions.list_versions() or [{}])[0].get("version", "")
+    if not new:
+        raise AgentError(f"版本仓库为空——先投放 zip（{versions.repo_dir()}，见 docs/versions.md）")
+    if not versions.at_least(new, versions.KERNEL_FLOOR):
+        raise AgentError(f"目标版本 {new} 过旧（内核地板 {versions.KERNEL_FLOOR}）")
+    if cur and versions.at_least(new, cur) and new == cur:
+        raise AgentError(f"已是 {cur}，无需升级")
+    diff = kernel_diff(home, cur) if cur else ["（注册表无 source_version，无法自改检查）"]
+    if diff and not force:
+        return {"id": agent_id, "from": cur, "to": new, "upgraded": False, "diff": diff,
+                "note": "内核副本与仓库同版本包有差异（本地自改）——未升级。确认放弃"
+                        "自改后用 --force（差异清单随本报告留档）"}
+    was_active = rt.unit_state(unit) == "active"
+    if was_active:
+        _notify_carrier_op(agent_id, "内核升级（换源码副本）", rt, unit)
+        stop(agent_id)
+    if diff:
+        for ln in diff:
+            print(f"  [自改留档] {ln}")
+    shutil.rmtree(src)
+    versions.extract(new, home / versions.SRC_DIR_NAME)
+    registry.update_agent(agent_id, {"source_version": new})
+    audit("agent.upgrade_kernel", agent=agent_id, **{"from": cur, "to": new, "forced": force})
+    if was_active:
+        start(agent_id)
+    return {"id": agent_id, "from": cur, "to": new, "upgraded": True,
+            "restarted": was_active, "diff": diff if diff else []}
 
 
 def _finalize(agent_id: str, desired: str, action: str) -> dict:

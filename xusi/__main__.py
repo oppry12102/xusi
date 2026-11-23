@@ -659,6 +659,27 @@ def cmd_patch(args) -> int:
     return 0
 
 
+def cmd_upgrade(args) -> int:
+    """升级 agent 内核副本（自改检查 → 停 → 换副本 → 起）。"""
+    from . import agentops
+    from .dockerctl import DockerError
+    from .systemdctl import SystemdError
+    try:
+        r = agentops.upgrade_kernel(args.agent_id, version=args.version or "",
+                                    force=bool(args.force))
+    except (agentops.AgentError, SystemdError, DockerError) as e:
+        return _cli_agent_error(e)
+    if not r.get("upgraded"):
+        print(f"  未升级：{r['id']}（{r.get('from')} → {r.get('to')}）")
+        print(f"  {r.get('note', '')}")
+        for ln in r.get("diff") or []:
+            print(f"    {ln}")
+        return 1
+    tag = f"，已重启" if r.get("restarted") else "（原为停止态，未拉起）"
+    print(f"  upgraded: {r['id']}  {r.get('from') or '？'} → {r.get('to')}{tag}")
+    return 0
+
+
 def cmd_mail(args) -> int:
     from . import agentops
     try:
@@ -1003,6 +1024,8 @@ usage: xusi remote <cmd> [--on NAME] [参数...]
   install   --on NAME                   新机接入：python3.12 + linger + 推代码 + 播种 brains
   adopt     --on NAME                   收编存量部署：升级 → 停 serve → 接管既有 agent
   upgrade   --on NAME                   重推代码 tar / git pull（管理面升级 / 内核版本发布）
+  upgrade-agent --on NAME <agent-id> [--version X] [--force]
+                                        升级远端 agent 内核副本（自改检查→停→换→起）
   backup    --on NAME <agent-id> [--out DIR]  远端备份 → 拉回控制端
   restore   --on NAME --from FILE [恢复参数]   备份包推上远端并恢复（跨主机迁移）\
 """
@@ -1074,6 +1097,9 @@ def cmd_remote(args) -> int:
         return _remote_adopt(hosts[0])
     if rfn == "upgrade":
         return _remote_upgrade(hosts[0])
+    if rfn == "upgrade-agent":
+        return _remote_one(hosts[0], lambda h: remote.xusi_cmd(h, ["upgrade"] + list(args.rest),
+                                                               timeout=900))
     if rfn == "brains":
         return _remote_brains(hosts[0])
     if rfn == "backup":
@@ -1146,6 +1172,13 @@ def main() -> int:
         op_ = sub.add_parser(op, help=f"{op} agent")
         op_.add_argument("agent_id")
         op_.set_defaults(fn=cmd_agent_op, op=op)
+
+    up_ = sub.add_parser("upgrade", help="升级 agent 内核副本（自改检查→停→换→起）")
+    up_.add_argument("agent_id")
+    up_.add_argument("--version", default="", help="目标版本（缺省=仓库最新）")
+    up_.add_argument("--force", action="store_true",
+                     help="副本与仓库同版本包有差异（本地自改）时仍升级（自改丢失）")
+    up_.set_defaults(fn=cmd_upgrade)
 
     dl_ = sub.add_parser("delete", help="删除 agent（须先停止；home 进 .trash）")
     dl_.add_argument("agent_id")
