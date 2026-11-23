@@ -803,6 +803,14 @@ def upgrade_kernel(agent_id: str, version: str = "", force: bool = False) -> dic
         return {"id": agent_id, "from": cur, "to": new, "upgraded": False, "diff": diff,
                 "note": "内核副本与仓库同版本包有差异（本地自改）——未升级。确认放弃"
                         "自改后用 --force（差异清单随本报告留档）"}
+    # 安全闸（force 也拦）：内核树里住着家（旧结构实例把账本/工作区写进内核
+    # 目录）——换副本 = rm 掉的是账本不是代码，这不是 --force 该放行的事。
+    markers = [m for m in ("data/facts.db", "config.toml", "workspace")
+               if (src / m).exists()]
+    if markers:
+        return {"id": agent_id, "from": cur, "to": new, "upgraded": False, "diff": diff,
+                "note": f"内核树里住着家（{'、'.join(markers)}）——旧结构实例，"
+                        f"换副本=删账本。先人工把家迁出内核树（或重造实例）再升级"}
     was_active = rt.unit_state(unit) == "active"
     if was_active:
         _notify_carrier_op(agent_id, "内核升级（换源码副本）", rt, unit)

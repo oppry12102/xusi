@@ -360,10 +360,13 @@ def xusi_cmd(h: dict, argv: list[str], *, timeout: int = 300) -> subprocess.Comp
 
 
 def scp_to(h: dict, local: Path, remote_path: str) -> None:
-    """上传：ssh + cat 单往返（mkdir 与写文件合并一条命令）。"""
+    """上传：ssh + cat 单往返（mkdir 与写文件合并一条命令）。remote_path 支持
+    ~ 前缀——quote 会把 ~ 变字面量（文件写进远端字面「~/」目录），~ 段显式
+    换 "$HOME" 引号拼接：`"$HOME"/'rest'` 相邻两段各自展开/转义。"""
     kind, opts = resolve_link(h)
-    d = remote_path.rsplit("/", 1)[0] if "/" in remote_path else "."
-    cmd = f"mkdir -p {shlex.quote(d)} && cat > {shlex.quote(remote_path)}"
+    tail = remote_path[2:] if remote_path.startswith("~/") else remote_path.lstrip("/")
+    d = tail.rsplit("/", 1)[0] if "/" in tail else "."
+    cmd = f'mkdir -p "$HOME"/{shlex.quote(d)} && cat > "$HOME"/{shlex.quote(tail)}'
     try:
         cp = subprocess.run(_build_ssh(h, kind, opts, cmd), input=local.read_bytes(),
                             capture_output=True, timeout=180)
