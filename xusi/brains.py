@@ -280,25 +280,19 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     lines = [
         "# ═══════════════════════════════════════════════════════════════════",
         "# 本文件由墟司（xusi 管理面）在创建时渲染一次——出生配置。",
-        "# 此后归你（agent）自治：改 mission / 调预算请直接编辑（内核每个大循环",
-        "# 热重载，无需重启；改前建议自行备份）。例外：大脑段 [brain] + [brains.*]",
+        "# 此后归你（agent）自治：调预算请直接编辑（内核每个大循环热重载，无需",
+        "# 重启；改前建议自行备份）。方向/使命改 playbook/初心.md（内核热重载），",
+        "# 身份在 playbook/我的身份.md。例外：大脑段 [brain] + [brains.*]",
         "# 由管理面改参按密钥池重渲染——你在这两段里的手改会被覆盖（下次呼吸生效）。",
         "# 新大脑的 api_key 可经管理邮箱向管理员索取。",
         "# ═══════════════════════════════════════════════════════════════════",
         "",
-        f"mission = {_q(mission)}",
         f'display_timezone = {_q(tz)}',
         "",
     ]
-    if instance_id:
-        lines[-1:] = [
-            "# 你的 id（4-hex 短号，管理员分配、终身不变——机器对账的键：",
-            "# 自述 id 字段、出信署名（X-Peer-Id 头的值）、letter 编号、目录注册。",
-            "# 新内核不读本行（身份卡由管理面直写 playbook/我的身份.md）；仅为旧内核兼容，",
-            "# 本文件归你自治，但这一行请勿修改——撞号换 id 走管理员（改此行+删身份卡+重启））",
-            f'instance_id = {_q(instance_id)}',
-            "",
-        ]
+    # mission / instance_id / roots 自 2026-11-23 起不再渲染：三者是死键
+    # （内核 ≥v2.9.3x 文件即一切，playbook 三件才是事实源），旧内核兼容的
+    # 前提随全舰统一 v2.9.52 终结；存量由管理面 2026-11-23 一次性清偿。
     lines.extend(render_brain_section(chosen))
     # 预算段：只写管理员显式给的键（0 = 不限），不做推导；缺省不写段，
     # 由内核按自身默认（按大脑窗口自动派生）处理。
@@ -314,9 +308,8 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
         if dropped:
             lines.append(f"# 这些键已由内核接管/移除，渲染时忽略：{', '.join(dropped)}")
         lines.append("")
-    # [[roots]]（可选）：根智能体出生交割段（内核地板起恒支持；
-    # 条目形状由 agentops._validate_roots 把关，此处只负责渲染）
-    lines.extend(_render_roots(roots))
+    # [[roots]] 不再渲染（死键清偿，见上）——根交割走 write_birth_three 的
+    # playbook/根智能体.json。
     # 附加配置（可选）：管理员自由 TOML 原样追加（逃生舱，见模块 docstring）
     extra = (extra_config or "").strip()
     if extra:
@@ -334,25 +327,6 @@ def render_agent_config(mission: str, brains: list[str], budgets: dict | None = 
     return text
 
 
-def _render_roots(roots: list | None) -> list[str]:
-    """[[roots]] 段：每个根智能体一个数组表（address/token 已由
-    _validate_roots 校验齐备、去重保序）。"""
-    if not roots:
-        return []
-    lines = [
-        "# ── 根智能体（目录服务）——互联发现的唯一方案（内核 docs/interconnect.md）──",
-        "# 新内核不读此段（根文件由管理面直写 playbook/根智能体.json）；仅为旧内核兼容。",
-        "# 重交割 = 删该文件 + 改此段 + 重启。token 可写 \"env:变量名\"。",
-        "",
-    ]
-    for r in roots:
-        lines.append("[[roots]]")
-        lines.append(f"address = {_q(r['address'])}")
-        lines.append(f"token = {_q(r['token'])}")
-        lines.append("")
-    return lines
-
-
 def write_agent_config(home: Path, mission: str, brains: list[str],
                        budgets: dict | None = None,
                        instance_id: str = "",
@@ -362,9 +336,9 @@ def write_agent_config(home: Path, mission: str, brains: list[str],
     """渲染并写入 <home>/config.toml（chmod 600，含 api_key）。
 
     只在创建时调用——出生配置，首写即终写；此后该文件归 agent 自治，
-    xusi 不再读回、不再重渲染。instance_id = 4-hex 短号（id 分配制的终身键：
-    新内核从 playbook/我的身份.md 抠号——该卡由 write_birth_three 直写，
-    本行 instance_id 仅为旧内核兼容留存）。
+    xusi 不再读回、不再重渲染。mission/instance_id/roots 参数保留签名但
+    不再渲染（2026-11-23 死键清偿：id 从 playbook/我的身份.md 来、方向从
+    初心.md 来、根交割从根智能体.json 来，三者由 write_birth_three 直写）。
     """
     text = render_agent_config(mission, brains, budgets,
                                instance_id=instance_id,
