@@ -1403,17 +1403,21 @@ def _kernel_version(home: Path) -> tuple[int, ...] | None:
 
 
 def mail(agent_id: str, text: str) -> dict:
-    """给大脑投信：事实账 mail 行（归档，永不清，投递+唤醒同源）；
-    内核 <2.9.32 再加写 data/mail.txt 信号闩（{"at","sender","text"} 一行
-    JSON，格式与旧内核 channels.append 一致）。
+    """给大脑投信（2026-11-25 统一收信面案，见 docs/proposal-admin-mail-unified-inbox.md）。
 
-    内核 v2.9.32 起信号闩退役（retire_queues 开机删闩、唤醒走账本局部基线
-    ——「内容在哪，信号就在哪」），账本行已同时完成投递与唤醒；此版本以上
-    再写闩文件只会造出大脑永不读、永不清的幽灵文件，故跳过。版本读不到
-    （None）按旧内核保守处理：照旧双写。闩写失败不阻塞（账本已在，真相
-    先落；stderr 可见）。
-    """
+    三行落点，各司其职：
+    一、信本体 = workspace/inbox.jsonl 一行 {"at","from":"admin","text"}——
+        与同伴信同文件同专属游标，绝不被流水游标越过（旧路径直写 facts
+        mail 行，会话中落账会被游标静默越过=永久丢失，5290 案实证）；
+    二、醒铃 = facts 归档一行 bell（note 带指针）——睡眠中的员
+        early_wake（门铃语义权威：xuseek/doorbell.py「睡下之后新到的铃行
+        才提前醒」；本行与同伴信收信服务的敲铃同形）；
+    三、facts 归档一行 mail（审计镜像+管理邮箱展示源；旧内核 <2.9.32 的
+        上下文馈送也靠它）。
+    内核 <2.9.32 再加写 data/mail.txt 信号闩（旧格式兼容）；版本读不到
+    （None）按旧内核保守处理。闩写失败不阻塞。"""
     import json as _json
+    import datetime as _dt
     agent = get_agent_or_404(agent_id)
     text = (text or "").strip()
     if not text:
@@ -1422,6 +1426,21 @@ def mail(agent_id: str, text: str) -> dict:
     if not home.exists():
         raise AgentError("实例目录不存在")
     fact = factsdb.append(home, "mail", sender="admin", text=text)
+    # ① 投递：信本体进收信面（inbox.jsonl，行格式与 seed 收信服务一致）
+    inbox = home / "workspace" / "inbox.jsonl"
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    line = _json.dumps({"at": _dt.datetime.now(_dt.timezone.utc)
+                        .strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "from": "admin", "text": text}, ensure_ascii=False)
+    with open(inbox, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+    # ② 醒铃：照收信服务的门铃语义（信已落盘，铃是加速器）
+    try:
+        factsdb.append(home, "bell",
+                       note="管理员来信已落账，在 $XUSEEK_HOME/workspace/inbox.jsonl")
+    except Exception as e:
+        print(f"[xusi] bell 行追加失败（信已落 inbox，唤醒缺席）: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
     audit("agent.mail", agent=agent_id, chars=len(text))
     ver = _kernel_version(home)
     if ver is not None and ver >= (2, 9, 32):
