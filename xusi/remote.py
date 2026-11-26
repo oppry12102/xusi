@@ -18,6 +18,7 @@ import json
 import re
 import shlex
 import shutil
+import sys
 import subprocess
 import tarfile
 import tempfile
@@ -359,10 +360,146 @@ def xusi_cmd(h: dict, argv: list[str], *, timeout: int = 300) -> subprocess.Comp
     return run_remote(h, f"cd {d} && {py} -m xusi {inner}", timeout=timeout)
 
 
+
+# ── 大件分片传输（慢链路：sustained 流必堵，小片+逐片校验+断点续传可过。
+#    tx-sv-1/2 实案：10MB 流 180s 必死，256KB-1MB 片 + md5 逐片校验全过；
+#    d019 1.3GB 备份直推两连断尾，分片全过——2026-11-25/26）──
+
+_CHUNK_THRESHOLD = 2 * 1024 * 1024   # 超过 2MB 自动走分片；小件直传零开销
+_CHUNK_SIZE = 1 * 1024 * 1024        # 片大小 1MB（sv 链路实测全过）
+
+
+def _md5_file(p) -> str:
+    h = hashlib.md5()
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def _scp_to_direct(h: dict, local: Path, remote_path: str) -> None:
+    """scp_to 的原始单流直传（小件用）。"""
+    kind, opts = resolve_link(h)
+    if remote_path.startswith("~/"):
+        tail = remote_path[2:]
+        dd = tail.rsplit("/", 1)[0] if "/" in tail else "."
+        cmd = f'mkdir -p "$HOME"/{shlex.quote(dd)} && cat > "$HOME"/{shlex.quote(tail)}'
+    else:
+        dd = remote_path.rsplit("/", 1)[0] if "/" in remote_path else "."
+        cmd = f"mkdir -p {shlex.quote(dd)} && cat > {shlex.quote(remote_path)}"
+    try:
+        cp = subprocess.run(_build_ssh(h, kind, opts, cmd), input=local.read_bytes(),
+                            capture_output=True, timeout=180)
+    except FileNotFoundError:
+        raise RemoteError("本机缺少 ssh/sshpass——控制端先 sudo apt-get install sshpass")
+    if cp.returncode != 0:
+        err = (cp.stderr or b"").decode(errors="replace")[:200]
+        raise RemoteError(f"上传失败：{err}")
+
+
+def scp_to_chunked(h: dict, local: Path, remote_path: str) -> None:
+    """分片上传：1MB 片 + 逐片 md5 校验 + 断点续传（片目录按目标路径锚定，
+    跨调用可续）+ 远端拼装终校验。失败片保留，重调即续传。"""
+    total = local.stat().st_size
+    lmd5 = _md5_file(local)
+    key = hashlib.sha1(remote_path.encode()).hexdigest()[:12]
+    rdir = f"/tmp/xusi-chunks/{key}"
+    ldir = Path(tempfile.mkdtemp(prefix="xusi-chunks-"))
+    try:
+        chunks = []
+        with open(local, "rb") as f:
+            i = 0
+            while True:
+                b = f.read(_CHUNK_SIZE)
+                if not b:
+                    break
+                cpath = ldir / f"part-{i:04d}"
+                cpath.write_bytes(b)
+                chunks.append((cpath, hashlib.md5(b).hexdigest()))
+                i += 1
+        n = len(chunks)
+        print(f"[xusi] 分片上传 → {h.get('name', '?')}: {total:,}B = {n} 片", file=sys.stderr)
+        for idx, (cpath, cmd5) in enumerate(chunks):
+            rpath = f"{rdir}/part-{idx:04d}"
+            done = False
+            for att in range(1, 4):
+                try:
+                    cp = run_remote(h, f"md5sum {shlex.quote(rpath)} 2>/dev/null | cut -d' ' -f1", timeout=30)
+                    if (cp.stdout or "").strip() == cmd5:
+                        done = True
+                        break
+                    _scp_to_direct(h, cpath, rpath)
+                    cp = run_remote(h, f"md5sum {shlex.quote(rpath)} | cut -d' ' -f1", timeout=45)
+                    if (cp.stdout or "").strip() == cmd5:
+                        done = True
+                        break
+                except Exception as e:
+                    reset_mux(h)
+                    print(f"[xusi] 片 {idx+1}/{n} 第{att}次: {str(e)[:50]}", file=sys.stderr)
+            if not done:
+                raise RemoteError(f"片 {idx+1}/{n} 三连败——片保留于 {rdir}，重调即续传")
+            print(f"[xusi] 片 {idx+1}/{n} ✓", file=sys.stderr)
+        cp = run_remote(h, f"cat {shlex.quote(rdir)}/part-* > {shlex.quote(remote_path)} && "
+                                  f"md5sum {shlex.quote(remote_path)} | cut -d' ' -f1", timeout=120)
+        got = (cp.stdout or "").strip()
+        if got != lmd5:
+            run_remote(h, f"rm -f {shlex.quote(remote_path)}", timeout=30)
+            raise RemoteError(f"拼装 md5 不符（{got[:12]}≠{lmd5[:12]}）——片保留于 {rdir}，重调即续传")
+        run_remote(h, f"rm -rf {shlex.quote(rdir)}", timeout=30)
+        print(f"[xusi] 分片上传完成并终校验 ✓", file=sys.stderr)
+    finally:
+        shutil.rmtree(ldir, ignore_errors=True)
+
+
+def scp_from_chunked(h: dict, remote_path: str, local: Path) -> None:
+    """分片下载：远端 split → 逐片 cat 拉回+校验 → 本地拼装终校验（对称）。"""
+    key = hashlib.sha1(remote_path.encode()).hexdigest()[:12]
+    rdir = f"/tmp/xusi-chunks/{key}"
+    cp = run_remote(h, f"mkdir -p {shlex.quote(rdir)} && split -b {_CHUNK_SIZE} -d "
+                              f"{shlex.quote(remote_path)} {shlex.quote(rdir)}/part- && ls "
+                              f"{shlex.quote(rdir)} | wc -l && md5sum {shlex.quote(remote_path)} | cut -d' ' -f1",
+                           timeout=300)
+    lines = (cp.stdout or '').strip().splitlines()
+    n = int(lines[0]); rmd5 = lines[1].strip() if len(lines) > 1 else ''
+    local.parent.mkdir(parents=True, exist_ok=True)
+    tmp = local.with_suffix(local.suffix + ".parts")
+    tmp.write_bytes(b"")
+    for i in range(n):
+        rp = f"{rdir}/part-{i:02d}"
+        part = local.with_suffix(f".p{i:02d}")
+        done = False
+        for att in range(1, 4):
+            try:
+                scp_from(h, rp, part)
+                if _md5_file(part):
+                    done = True
+                    break
+            except Exception as e:
+                reset_mux(h)
+                print(f"[xusi] 片 {i+1}/{n} 第{att}次: {str(e)[:50]}", file=sys.stderr)
+        if not done:
+            raise RemoteError(f"片 {i+1}/{n} 三连败——已拉部分保留于 {tmp}，重调即续传")
+        with open(tmp, "ab") as fo, open(part, "rb") as fi:
+            fo.write(fi.read())
+        part.unlink()
+    if _md5_file(tmp) != rmd5:
+        raise RemoteError(f"拼装 md5 不符（{rmd5[:12]}）——重调即续传")
+    shutil.move(str(tmp), str(local))
+    run_remote(h, f"rm -rf {shlex.quote(rdir)}", timeout=30)
+
+
+
 def scp_to(h: dict, local: Path, remote_path: str) -> None:
     """上传：ssh + cat 单往返（mkdir 与写文件合并一条命令）。~ 前缀显式换
     "$HOME" 引号拼接（quote 会把 ~ 变字面量，文件曾写进远端字面「~/」目录）；
     绝对路径原样 quote；其余按远端 cwd 相对路径。"""
+    if Path(local).is_file() and Path(local).stat().st_size > _CHUNK_THRESHOLD:
+        scp_to_chunked(h, Path(local), remote_path)
+        return
+    _scp_to_direct(h, Path(local), remote_path)
+
+
+def _scp_to_orig_doc_placeholder():
     kind, opts = resolve_link(h)
     if remote_path.startswith("~/"):
         tail = remote_path[2:]
@@ -382,7 +519,15 @@ def scp_to(h: dict, local: Path, remote_path: str) -> None:
 
 
 def scp_from(h: dict, remote_path: str, local: Path) -> None:
-    """下载：ssh + cat 单往返（stdout 原样落盘，二进制安全）。"""
+    """下载：ssh + cat 单往返（stdout 原样落盘，二进制安全）。
+    大件（>2MB）自动走分片拉（对称 scp_to_chunked——sv 系慢链路拉大件同样会堵）。"""
+    probe = run_remote(h, f"stat -c %s {shlex.quote(remote_path)} 2>/dev/null", timeout=30)
+    try:
+        if int((probe.stdout or "0").strip() or 0) > _CHUNK_THRESHOLD:
+            scp_from_chunked(h, remote_path, local)
+            return
+    except (ValueError, RemoteError):
+        pass  # stat 失败/远端无文件——维持直拉，让 cat 的报错说话
     kind, opts = resolve_link(h)
     cp = subprocess.run(_build_ssh(h, kind, opts, f"cat {shlex.quote(remote_path)}"),
                         capture_output=True, timeout=300)
